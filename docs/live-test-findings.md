@@ -229,3 +229,35 @@ After the live pass, a code review found three deterministic guardrail gaps:
 Regression coverage was added for each case. The guardrail eval runner now uses
 `pydantic-evals` and includes explicit cases for table scope, user PII, and
 malformed SQL.
+
+## Post-Review Golden Knowledge Orchestration Fix
+
+Status: Fixed
+
+The first full-agent retest used a real Gemini chat model and live BigQuery, but
+the model chose to call only the SQL tool and skipped the optional Golden
+Knowledge retrieval tool. Retrieval is now deterministic in the app
+orchestration layer: the app retrieves top Golden Trios from Qdrant before the
+model call, injects them into the prompt as analyst precedent, and logs the
+retrieved trio IDs on completion.
+
+Verification command:
+
+```bash
+docker compose run --rm app ask "Which product categories drove the most revenue last month?" --user manager_a
+```
+
+Evidence from trace `267a12cd4cca49cc854659467692312c`:
+
+```text
+golden_knowledge_retrieved ids:
+  trio_monthly_revenue_category
+  trio_customer_behavior_no_pii
+  trio_underperforming_branch_proxy
+agent_golden_context_prepared: same ids
+bigquery_query_succeeded: rows=10, tables=["order_items", "products"]
+agent_run_completed: retrieved_trio_ids recorded
+```
+
+The returned answer followed the retrieved revenue-category precedent: it
+excluded cancelled/returned items and included order count as context.

@@ -6,10 +6,10 @@
 flowchart TD
     Manager["Store / Regional Manager CLI"] --> App["Retail Agent App"]
     App --> Config["Persona + Safety Config"]
-    App --> Agent["PydanticAI Analysis Agent"]
-    Agent --> Retriever["Golden Knowledge Retriever"]
+    App --> Retriever["Golden Knowledge Retriever"]
     Retriever --> Qdrant["Qdrant Vector Store"]
     Retriever --> GoldenRaw["Golden Bucket Raw Trios"]
+    Retriever --> Agent["PydanticAI Analysis Agent"]
     Agent --> Guard["SQL Guardrails"]
     Guard --> BQ["BigQuery thelook_ecommerce"]
     BQ --> Guard
@@ -33,9 +33,9 @@ sequenceDiagram
 
     U->>CLI: ask question
     CLI->>L: run_started
-    CLI->>A: question + user profile + schema context
-    A->>Q: retrieve similar Golden Trios
-    Q-->>A: analyst precedent
+    CLI->>Q: retrieve similar Golden Trios
+    Q-->>CLI: analyst precedent ids + content
+    CLI->>A: question + user profile + schema context + precedent
     A->>G: proposed SQL
     G->>G: SELECT-only, table allowlist, PII block, limit
     G->>B: dry-run with byte cap

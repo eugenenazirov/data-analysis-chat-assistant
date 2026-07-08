@@ -17,6 +17,7 @@ The tests avoid live credentials. They cover:
 - PII redaction.
 - Config loading.
 - Golden Knowledge indexing/search with a deterministic embedder.
+- Agent orchestration prefetches Golden Knowledge before the model call.
 - `pydantic-evals` guardrail dataset outcomes.
 
 ## Deterministic Evals
@@ -54,6 +55,8 @@ docker compose run --rm app eval
 Expected behavior:
 
 - The first query returns an executive report with SQL and no PII.
+- The first query trace logs `golden_knowledge_retrieved` and
+  `agent_golden_context_prepared` before model completion.
 - The second query refuses or avoids email projection.
 - Eval command exits with code 0.
 

@@ -21,6 +21,7 @@ class AgentDependencies:
     logger: EventLogger
     user: UserProfile
     trace_id: str
+    golden_trios: list[RetrievedTrio]
 
 
 INSTRUCTIONS = """
@@ -65,7 +66,7 @@ async def retrieve_golden_knowledge(
 ) -> list[RetrievedTrio]:
     """Retrieve similar analyst-approved Question-SQL-Report trios."""
 
-    return ctx.deps.golden_store.search(question, ctx.deps.trace_id, limit=3)
+    return ctx.deps.golden_trios
 
 
 @analysis_agent.tool(retries=2)
@@ -98,6 +99,12 @@ async def run_question(
     trace_id = new_trace_id()
     user = config.user_profile(user_id)
     logger.event(trace_id, "agent_run_started", user_id=user_id, question=question)
+    golden_trios = golden_store.search(question, trace_id, limit=3)
+    logger.event(
+        trace_id,
+        "agent_golden_context_prepared",
+        ids=[trio.id for trio in golden_trios],
+    )
     deps = AgentDependencies(
         config=config,
         bigquery=bigquery,
@@ -105,10 +112,12 @@ async def run_question(
         logger=logger,
         user=user,
         trace_id=trace_id,
+        golden_trios=golden_trios,
     )
 
     prompt = (
         f"User question: {question}\n"
+        f"{_format_golden_context(golden_trios)}\n"
         f"Return a report matching preferred format {user.preferred_format}."
     )
     result = await analysis_agent.run(prompt, deps=deps, model=config.model.llm_model)
@@ -118,9 +127,30 @@ async def run_question(
         "agent_run_completed",
         refused=report.refused,
         sql=report.sql,
+        retrieved_trio_ids=[trio.id for trio in golden_trios],
         usage=getattr(result, "usage", None),
     )
     return report
+
+
+def _format_golden_context(trios: list[RetrievedTrio]) -> str:
+    if not trios:
+        return "Golden Knowledge analyst precedents: none retrieved."
+
+    blocks = ["Golden Knowledge analyst precedents:"]
+    for idx, trio in enumerate(trios, start=1):
+        tags = ", ".join(trio.tags) if trio.tags else "none"
+        blocks.append(
+            "\n".join(
+                [
+                    f"{idx}. ID: {trio.id} (score {trio.score:.4f}, tags: {tags})",
+                    f"Question: {trio.question}",
+                    f"SQL precedent: {trio.sql}",
+                    f"Analyst report precedent: {trio.analyst_report}",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
 
 
 def _sanitize_report(report: AnalysisReport, trace_id: str) -> AnalysisReport:
