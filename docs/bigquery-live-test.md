@@ -49,6 +49,36 @@ docker compose build
 docker compose run --rm app bq-smoke
 ```
 
+## Full Agent Test Without AI Studio API Key
+
+If you have a GCP project but no Google AI Studio API key, you can run the
+agent through Vertex AI using the same ADC credentials:
+
+```bash
+gcloud services enable aiplatform.googleapis.com --project "$PROJECT_ID"
+```
+
+Set these values in `.env`:
+
+```dotenv
+GOOGLE_CLOUD_LOCATION=us-central1
+LLM_MODEL=google-cloud:gemini-2.5-flash
+EMBEDDING_PROVIDER=hash
+```
+
+Then run:
+
+```bash
+docker compose up -d qdrant
+docker compose run --rm app index-golden --recreate
+docker compose run --rm app ask "What are the top 5 product categories by gross sales?" --user manager_a
+docker compose down
+```
+
+Use `EMBEDDING_PROVIDER=gemini` plus `GOOGLE_API_KEY` for the AI Studio
+embedding path requested by the original assignment. The Vertex path is useful
+for reproducible live testing when ADC is already configured.
+
 ## Interviewer Reproducibility
 
 The interviewer does not need your Google credentials. They can use their own
