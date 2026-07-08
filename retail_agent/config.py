@@ -47,6 +47,13 @@ class SafetyConfig(BaseModel):
             "phone_number",
             "customer_email",
             "customer_phone",
+            "first_name",
+            "last_name",
+            "street_address",
+            "postal_code",
+            "latitude",
+            "longitude",
+            "user_geom",
         ]
     )
     blocked_sql_keywords: list[str] = Field(

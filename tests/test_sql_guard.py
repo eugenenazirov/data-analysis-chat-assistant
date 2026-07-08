@@ -1,5 +1,6 @@
 import pytest
 
+from retail_agent.config import load_config
 from retail_agent.sql_guard import SQLSafetyError, validate_and_prepare_sql
 
 
@@ -35,6 +36,28 @@ def test_validate_blocks_pii_column(test_config):
         )
 
 
+@pytest.mark.parametrize(
+    "column",
+    [
+        "first_name",
+        "last_name",
+        "street_address",
+        "postal_code",
+        "latitude",
+        "longitude",
+        "user_geom",
+    ],
+)
+def test_validate_blocks_configured_user_pii_columns(column):
+    config = load_config()
+
+    with pytest.raises(SQLSafetyError, match="PII"):
+        validate_and_prepare_sql(
+            f"SELECT {column} FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 5",
+            config,
+        )
+
+
 def test_validate_blocks_destructive_sql(test_config):
     with pytest.raises(SQLSafetyError, match="Only SELECT"):
         validate_and_prepare_sql(
@@ -55,3 +78,23 @@ def test_validate_adds_limit_when_missing(test_config):
     )
 
     assert "LIMIT 25" in validation.safe_sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id FROM orders LIMIT 5",
+        "SELECT id FROM `thelook_ecommerce.orders` LIMIT 5",
+        "SELECT id FROM `other-project.thelook_ecommerce.orders` LIMIT 5",
+        "SELECT id FROM `bigquery-public-data.other_dataset.orders` LIMIT 5",
+        "SELECT id FROM `example-project.private.orders` LIMIT 5",
+    ],
+)
+def test_validate_blocks_tables_outside_allowed_dataset(test_config, sql):
+    with pytest.raises(SQLSafetyError, match="disallowed tables"):
+        validate_and_prepare_sql(sql, test_config)
+
+
+def test_validate_wraps_malformed_sql_as_safety_error(test_config):
+    with pytest.raises(SQLSafetyError, match="SQL parse failed"):
+        validate_and_prepare_sql("SELECT FROM", test_config)

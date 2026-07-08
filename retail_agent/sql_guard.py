@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from retail_agent.config import AgentConfig
 
@@ -32,7 +33,11 @@ WRITE_EXPRESSIONS = (
 
 
 def validate_and_prepare_sql(sql: str, config: AgentConfig) -> SQLValidation:
-    statements = sqlglot.parse(sql, read="bigquery")
+    try:
+        statements = sqlglot.parse(sql, read="bigquery")
+    except SqlglotError as exc:
+        raise SQLSafetyError(f"SQL parse failed: {exc}") from exc
+
     if len(statements) != 1:
         raise SQLSafetyError("Only one SQL statement is allowed.")
 
@@ -46,9 +51,16 @@ def validate_and_prepare_sql(sql: str, config: AgentConfig) -> SQLValidation:
     if any(_is_projection_star(star) for star in expression.find_all(exp.Star)):
         raise SQLSafetyError("SELECT * is forbidden; project only required columns.")
 
-    tables = _extract_tables(expression)
-    allowed = set(config.bigquery.allowed_tables)
-    unknown = [table for table in tables if table not in allowed]
+    table_refs = _extract_table_references(expression)
+    allowed = {
+        f"{config.bigquery.dataset}.{table}".lower()
+        for table in config.bigquery.allowed_tables
+    }
+    unknown = [
+        ref.full_name
+        for ref in table_refs
+        if ref.full_name.lower() not in allowed
+    ]
     if unknown:
         raise SQLSafetyError(
             f"Query references disallowed tables: {', '.join(sorted(set(unknown)))}."
@@ -68,16 +80,49 @@ def validate_and_prepare_sql(sql: str, config: AgentConfig) -> SQLValidation:
         )
 
     safe_sql = _ensure_limit(sql.strip(), config.bigquery.max_result_rows)
-    return SQLValidation(original_sql=sql, safe_sql=safe_sql, tables=tables)
+    return SQLValidation(
+        original_sql=sql,
+        safe_sql=safe_sql,
+        tables=[ref.name for ref in table_refs],
+    )
 
 
-def _extract_tables(expression: exp.Expression) -> list[str]:
-    tables: list[str] = []
+@dataclass(frozen=True)
+class TableReference:
+    name: str
+    full_name: str
+
+
+def _extract_table_references(expression: exp.Expression) -> list[TableReference]:
+    cte_names = {
+        cte.alias_or_name.lower()
+        for cte in expression.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
+    tables: list[TableReference] = []
     for table in expression.find_all(exp.Table):
         name = table.name
-        if name:
-            tables.append(name)
+        if not name:
+            continue
+        if _is_cte_reference(table, cte_names):
+            continue
+        full_name = _fully_qualified_name(table)
+        tables.append(TableReference(name=name, full_name=full_name))
     return tables
+
+
+def _is_cte_reference(table: exp.Table, cte_names: set[str]) -> bool:
+    return (
+        bool(table.name)
+        and table.name.lower() in cte_names
+        and not table.db
+        and not table.catalog
+    )
+
+
+def _fully_qualified_name(table: exp.Table) -> str:
+    parts = [part.name for part in table.parts if part.name]
+    return ".".join(parts)
 
 
 def _is_projection_star(star: exp.Star) -> bool:
@@ -92,7 +137,10 @@ def _is_projection_star(star: exp.Star) -> bool:
 
 
 def _ensure_limit(sql: str, max_rows: int) -> str:
-    expression = sqlglot.parse_one(sql, read="bigquery")
+    try:
+        expression = sqlglot.parse_one(sql, read="bigquery")
+    except SqlglotError as exc:
+        raise SQLSafetyError(f"SQL parse failed: {exc}") from exc
     if _has_top_level_limit(expression):
         return sql.rstrip(";")
     return f"{sql.rstrip(';')}\nLIMIT {max_rows}"
