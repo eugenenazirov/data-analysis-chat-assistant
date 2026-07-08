@@ -52,7 +52,7 @@ docker compose run --rm app bq-smoke
 ## Full Agent Test Without AI Studio API Key
 
 If you have a GCP project but no Google AI Studio API key, you can run the
-agent through Vertex AI using the same ADC credentials:
+agent and Gemini embeddings through Vertex AI using the same ADC credentials:
 
 ```bash
 gcloud services enable aiplatform.googleapis.com --project "$PROJECT_ID"
@@ -63,7 +63,8 @@ Set these values in `.env`:
 ```dotenv
 GOOGLE_CLOUD_LOCATION=us-central1
 LLM_MODEL=google-cloud:gemini-2.5-flash
-EMBEDDING_PROVIDER=hash
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-001
 ```
 
 Then run:
@@ -75,9 +76,9 @@ docker compose run --rm app ask "What are the top 5 product categories by gross 
 docker compose down
 ```
 
-Use `EMBEDDING_PROVIDER=gemini` plus `GOOGLE_API_KEY` for the AI Studio
-embedding path requested by the original assignment. The Vertex path is useful
-for reproducible live testing when ADC is already configured.
+Use `EMBEDDING_PROVIDER=hash` only for an offline Qdrant smoke test that avoids
+Gemini embedding calls. The real assignment path is `EMBEDDING_PROVIDER=gemini`,
+either through Vertex ADC or a Google AI Studio `GOOGLE_API_KEY`.
 
 ## Interviewer Reproducibility
 

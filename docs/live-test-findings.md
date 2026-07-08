@@ -261,3 +261,41 @@ agent_run_completed: retrieved_trio_ids recorded
 
 The returned answer followed the retrieved revenue-category precedent: it
 excluded cancelled/returned items and included order count as context.
+
+## Post-Review Gemini Embedding Live Test
+
+Status: Pass
+
+The embedding path now supports Vertex AI explicitly when `GOOGLE_API_KEY` is
+empty. In that mode, the app creates `genai.Client(vertexai=True, project=...,
+location=...)` and uses `gemini-embedding-001` for Golden Knowledge indexing and
+retrieval.
+
+Verification commands:
+
+```bash
+docker compose build app
+docker compose up -d qdrant
+docker compose run --rm -e EMBEDDING_PROVIDER=gemini app index-golden --recreate
+docker compose run --rm -e EMBEDDING_PROVIDER=gemini app ask "Which product categories drove the most revenue last month?" --user manager_a
+```
+
+Evidence:
+
+```text
+Indexed 5 Golden Knowledge trios.
+trace_id: f6c3e77decf84d42957992be27e2cc28
+golden_knowledge_retrieved ids:
+  trio_monthly_revenue_category
+  trio_product_performance_returns
+  trio_underperforming_branch_proxy
+scores:
+  0.8207
+  0.6709
+  0.6437
+bigquery_query_succeeded: rows=10, tables=["order_items", "products"]
+agent_run_completed: retrieved_trio_ids recorded
+```
+
+This verifies the full live path with Gemini chat, Gemini embeddings, Qdrant,
+SQL guardrails, and BigQuery.

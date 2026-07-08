@@ -26,7 +26,21 @@ class GeminiEmbedder:
             except ImportError as exc:
                 raise RuntimeError("google-genai is not installed.") from exc
             api_key = os.getenv("GOOGLE_API_KEY")
-            self._client = genai.Client(api_key=api_key) if api_key else genai.Client()
+            if api_key:
+                self._client = genai.Client(api_key=api_key)
+            else:
+                project = self.config.bigquery.project or os.getenv("GOOGLE_CLOUD_PROJECT")
+                location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+                if not project:
+                    raise RuntimeError(
+                        "GOOGLE_CLOUD_PROJECT is required for Vertex AI embeddings "
+                        "when GOOGLE_API_KEY is not set."
+                    )
+                self._client = genai.Client(
+                    vertexai=True,
+                    project=project,
+                    location=location,
+                )
         return self._client
 
     def embed(self, text: str) -> list[float]:

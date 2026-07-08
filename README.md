@@ -18,7 +18,8 @@ The working prototype uses:
    cp .env.example .env
    ```
 
-2. Fill in `GOOGLE_API_KEY` and `GOOGLE_CLOUD_PROJECT`.
+2. Fill in `GOOGLE_CLOUD_PROJECT`. `GOOGLE_API_KEY` is optional if you use
+   Vertex AI through Application Default Credentials.
 
 3. Authenticate BigQuery on the host:
 
@@ -61,13 +62,15 @@ The working prototype uses:
    docker compose run --rm app eval
    ```
 
-For a no-API-key Qdrant smoke test, use deterministic demo embeddings:
+For an offline Qdrant smoke test, use deterministic demo embeddings:
 
 ```bash
 docker compose run --rm -e EMBEDDING_PROVIDER=hash app index-golden --recreate
 ```
 
-Use `EMBEDDING_PROVIDER=gemini` for the real assignment path.
+Use `EMBEDDING_PROVIDER=gemini` for the real assignment path. It works with a
+Google AI Studio API key or with Vertex AI ADC when `GOOGLE_CLOUD_PROJECT` and
+`GOOGLE_CLOUD_LOCATION` are set.
 
 ## Local Python Setup
 

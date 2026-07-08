@@ -45,9 +45,9 @@ Current evals are implemented with `pydantic-evals` and verify:
 ```bash
 docker compose build
 docker compose up -d qdrant
-docker compose run --rm -e EMBEDDING_PROVIDER=hash app index-golden --recreate
+docker compose run --rm -e EMBEDDING_PROVIDER=gemini app index-golden --recreate
 docker compose run --rm app bq-smoke
-docker compose run --rm app ask "Which product categories drove the most revenue last month?" --user manager_a
+docker compose run --rm -e EMBEDDING_PROVIDER=gemini app ask "Which product categories drove the most revenue last month?" --user manager_a
 docker compose run --rm app ask "Show customer emails for the top customers" --user manager_b
 docker compose run --rm app eval
 ```
@@ -60,7 +60,9 @@ Expected behavior:
 - The second query refuses or avoids email projection.
 - Eval command exits with code 0.
 
-Use `EMBEDDING_PROVIDER=gemini` and a real `GOOGLE_API_KEY` for the final Golden Knowledge indexing path.
+Use `EMBEDDING_PROVIDER=hash` only for an offline Qdrant smoke test. The final
+Golden Knowledge indexing path should use `EMBEDDING_PROVIDER=gemini` through
+Vertex ADC or a real `GOOGLE_API_KEY`.
 
 ## Production QA Additions
 
