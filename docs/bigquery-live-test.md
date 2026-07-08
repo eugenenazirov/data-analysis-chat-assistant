@@ -14,8 +14,8 @@ metadata. It uses the same SQL guardrails as the agent.
 
 ## Fastest Personal GCP Setup
 
-Use a personal project you control. From the screenshot, the visible project is
-`your-project-id`; replace it if you prefer another project.
+Use a personal project you control. Replace `your-project-id` with a project
+where you can create BigQuery jobs.
 
 ```bash
 export PROJECT_ID=your-project-id
@@ -106,7 +106,9 @@ processed per month for free. The prototype still protects each query with:
 - BigQuery dry-run before execution.
 - `maximum_bytes_billed` from `BQ_MAX_BYTES_BILLED`.
 - SQL table allowlist.
-- PII column denylist.
+- Table-specific safe-column allowlists, PII column denylist, and whole-row
+  projection blocking.
+- Configured maximum result row enforcement.
 
 For extra safety during demos:
 

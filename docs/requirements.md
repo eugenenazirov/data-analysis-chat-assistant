@@ -17,7 +17,8 @@ Controls are layered:
 
 - SQL parser blocks DML/DDL.
 - SQL parser restricts tables to fully qualified assignment tables in `bigquery-public-data.thelook_ecommerce`.
-- SQL parser blocks configured PII columns such as email, phone, names, exact address, postal code, and geolocation.
+- SQL parser uses table-specific safe column allowlists, blocks configured PII columns such as email, phone, names, exact address, postal code, and geolocation, and rejects whole-row/table-alias projections such as `SELECT u FROM users AS u`.
+- SQL parser enforces the configured maximum result row limit even when the model supplies its own `LIMIT`.
 - The app redacts email/phone patterns from final outputs and logs.
 - BigQuery service account should be read-only.
 - Production can add BigQuery column-level security and data masking policies.
@@ -52,8 +53,8 @@ System level:
 - Query execution is capped with timeout and `maximum_bytes_billed`.
 - PydanticAI `ModelRetry` gives the model structured feedback for repair.
 - Empty result sets trigger one refinement attempt, then a clear explanation.
-- Qdrant readiness is checked at startup.
-- Logs preserve error class, trace ID, SQL validation decision, and retry count.
+- Qdrant readiness is required for `index-golden`; `ask` and `chat` continue without Golden Knowledge if Qdrant is unavailable and log that degradation.
+- Logs preserve error class, trace ID, SQL validation decision, retry feedback events, retry attempt/max-retry fields, and the configured retry budget.
 
 ## 6. Quality Assurance
 
@@ -71,7 +72,7 @@ Each run emits JSONL events with:
 - SQL validation status
 - dry-run bytes
 - BigQuery latency and row count
-- retry/failure class
+- retry feedback, retry attempt/max-retry fields, and failure class
 - final refusal status
 - redaction count
 

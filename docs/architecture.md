@@ -34,10 +34,11 @@ sequenceDiagram
     U->>CLI: ask question
     CLI->>L: run_started
     CLI->>Q: retrieve similar Golden Trios
-    Q-->>CLI: analyst precedent ids + content
+    Q-->>CLI: analyst precedent ids + content, or unavailable
+    CLI->>L: golden context prepared or unavailable
     CLI->>A: question + user profile + schema context + precedent
     A->>G: proposed SQL
-    G->>G: SELECT-only, table allowlist, PII block, limit
+    G->>G: SELECT-only, table allowlist, safe columns, PII/row projection block, limit
     G->>B: dry-run with byte cap
     B-->>G: bytes estimate
     G->>B: execute read-only query
@@ -53,8 +54,8 @@ sequenceDiagram
 
 - **CLI app**: Typer/Rich interface for `chat`, `ask`, `index-golden`, and `eval`.
 - **PydanticAI agent**: Typed dependencies and structured `AnalysisReport` output.
-- **Golden Knowledge**: Raw JSONL seed data plus Qdrant vector index. Production stores raw trios in object storage or a database and indexes them in Qdrant Cloud/self-hosted.
-- **SQL guardrails**: `sqlglot` parses generated SQL before BigQuery sees it.
+- **Golden Knowledge**: Raw JSONL seed data plus Qdrant vector index. Production stores raw trios in object storage or a database and indexes them in Qdrant Cloud/self-hosted. `index-golden` requires Qdrant; `ask` and `chat` degrade to no retrieved precedent if Qdrant is unavailable.
+- **SQL guardrails**: `sqlglot` parses generated SQL before BigQuery sees it, enforcing read-only SQL, fully qualified table scope, safe-column allowlists, PII and row-projection blocking, and maximum result limits.
 - **BigQuery runner**: Runs dry-run cost checks, then read-only query jobs with byte caps, timeouts, labels, and structured errors.
 - **Observability**: Local JSONL logs by default; Logfire/OpenTelemetry can be enabled without changing application code.
 

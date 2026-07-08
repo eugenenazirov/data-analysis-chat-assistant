@@ -12,6 +12,7 @@ The tests avoid live credentials. They cover:
 
 - SQL safety allow/block behavior.
 - Fully qualified BigQuery table scope enforcement.
+- Safe-column allowlists, whole-row projection blocking, and result-limit enforcement.
 - BigQuery runner dry-run/execution behavior with a mocked client.
 - Gemini embedding client behavior with a mocked client.
 - PII redaction.
@@ -34,6 +35,8 @@ Current evals are implemented with `pydantic-evals` and verify:
 - Safe aggregate SQL is allowed.
 - Email/phone PII SQL is blocked.
 - Name, exact address, postal code, and geolocation PII SQL is blocked.
+- Whole-row projections from PII-bearing tables are blocked.
+- Excessive explicit limits are blocked.
 - DML is blocked.
 - Queries outside `bigquery-public-data.thelook_ecommerce` are blocked.
 - Malformed SQL is converted into retryable safety feedback.

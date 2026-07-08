@@ -3,11 +3,11 @@
 ## Environment
 
 - Date: 2026-07-08
-- Gcloud personal config: `personal-delta-smile`
+- Gcloud personal config: `<personal-gcloud-config>`
 - Gcloud personal account: `<personal-account@example.com>`
-- Gcloud personal project: `your-project-id`
+- Gcloud personal project: `<your-project-id>`
 - Target dataset: `bigquery-public-data.thelook_ecommerce`
-- Local `.env`: configured for project `your-project-id`
+- Local `.env`: configured for project `<your-project-id>`
 
 ## Findings
 
@@ -18,9 +18,9 @@ Status: Pass
 The machine has a dedicated personal gcloud configuration:
 
 ```text
-personal-delta-smile
+<personal-gcloud-config>
   account: <personal-account@example.com>
-  project: your-project-id
+  project: <your-project-id>
 ```
 
 ### 2. Active gcloud config switched to personal project
@@ -28,13 +28,13 @@ personal-delta-smile
 Status: Pass
 
 The active gcloud configuration was switched from the work account to
-`personal-delta-smile`.
+`<personal-gcloud-config>`.
 
 ### 3. BigQuery API enablement
 
 Status: Pass
 
-`bigquery.googleapis.com` was enabled for `your-project-id`.
+`bigquery.googleapis.com` was enabled for `<your-project-id>`.
 
 ### 4. Application Default Credentials refresh
 
@@ -43,7 +43,7 @@ Status: Pass after retry with browser consent
 Attempted command:
 
 ```bash
-gcloud auth application-default login <personal-account@example.com> --project your-project-id
+gcloud auth application-default login <personal-account@example.com> --project <your-project-id>
 ```
 
 Observed result:
@@ -60,15 +60,15 @@ The OAuth flow was retried and consent was granted in the browser.
 Successful commands:
 
 ```bash
-gcloud auth application-default login <personal-account@example.com> --project your-project-id
-gcloud auth application-default set-quota-project your-project-id
+gcloud auth application-default login <personal-account@example.com> --project <your-project-id>
+gcloud auth application-default set-quota-project <your-project-id>
 ```
 
 Verified ADC state:
 
 ```text
 type: authorized_user
-quota_project_id: your-project-id
+quota_project_id: <your-project-id>
 has_refresh_token: True
 ```
 
@@ -106,7 +106,7 @@ docker compose run --rm app bq-smoke
 Evidence:
 
 ```text
-Project: your-project-id
+Project: <your-project-id>
 Dry-run bytes: 4340064
 Rows returned: 1
 order_item_rows: 180836
@@ -153,7 +153,7 @@ AI Studio API key.
 Commands:
 
 ```bash
-gcloud services enable aiplatform.googleapis.com --project your-project-id
+gcloud services enable aiplatform.googleapis.com --project <your-project-id>
 docker compose up -d qdrant
 docker compose run --rm app index-golden --recreate
 docker compose run --rm app ask "What are the top 5 product categories by gross sales?" --user manager_a
@@ -215,6 +215,40 @@ Notes:
   `cloud-platform`; retrying and granting consent resolved it.
 - Full agent testing without a Google AI Studio API key is possible via
   `google-cloud:gemini-2.5-flash` after enabling Vertex AI.
+
+## Reviewer Conditional-Pass Fixes
+
+Status: Fixed
+
+A strict reviewer found additional issues after the first review cycle:
+
+- Whole-row/table-alias projections such as `SELECT u FROM users AS u` and
+  `TO_JSON_STRING(u)` could bypass field-level PII checks.
+- Existing excessive limits such as `LIMIT 1000000` were accepted unchanged.
+- `ask`/`chat` could fail before answering when Qdrant was unavailable.
+- Observability docs overstated retry and validation logging detail.
+- Live-test docs contained local personal account/project identifiers.
+
+Fixes applied:
+
+- SQL validation now enforces table-specific safe-column allowlists, blocks
+  row projections from real table aliases, blocks excessive explicit limits,
+  and keeps fully qualified table scope enforcement.
+- BigQuery execution logs SQL validation success/failure, cost-limit failures,
+  BigQuery failure classes, retry attempt/max-retry fields, and retry feedback
+  emitted to the model.
+- `index-golden` still requires Qdrant, while `ask` and `chat` continue with no
+  retrieved Golden Knowledge and log `golden_knowledge_unavailable`.
+- Docs were updated to describe the current behavior and redact local personal
+  GCP identifiers.
+
+Regression coverage:
+
+- `tests/test_sql_guard.py` covers row projection and excessive-limit blocking.
+- `tests/test_agent.py` covers Qdrant retrieval failure fallback.
+- `tests/test_bigquery.py` covers validation/cost observability events.
+- `python -m retail_agent eval` includes row projection and excessive-limit
+  guardrail cases.
 
 ## Post-Review Guardrail Fixes
 
@@ -336,3 +370,40 @@ agent_run_completed: retrieved_trio_ids recorded and final SQL attached
 
 The CLI output included the executive report table, caveats, follow-ups, and
 the executed safe SQL.
+
+## Conditional-Pass Fix Verification
+
+Status: Pass
+
+After the conditional-pass fixes, the current Docker reviewer path was rerun:
+
+```bash
+docker compose build app
+docker compose run --rm app eval
+docker compose run --rm app bq-smoke
+docker compose run --rm app index-golden --recreate
+docker compose run --rm app ask "Which product categories drove the most revenue last month?" --user manager_a
+docker compose down
+```
+
+Results:
+
+- Docker build completed successfully.
+- Container evals passed, including row projection and excessive-limit cases.
+- BigQuery smoke test returned one aggregate row with dry-run bytes `4340064`.
+- Golden Knowledge indexing reported `Indexed 5 Golden Knowledge trios.`
+- Full `ask` path returned an executive table for the top 10 revenue
+  categories and attached the executed safe SQL.
+
+Evidence from trace `c230415d9642492ebbec7a45e3e52e51`:
+
+```text
+golden_knowledge_retrieved ids:
+  trio_monthly_revenue_category
+  trio_product_performance_returns
+  trio_underperforming_branch_proxy
+agent_golden_context_prepared: same ids
+sql_validation_succeeded: tables=["order_items", "products"]
+bigquery_query_succeeded: rows=10
+agent_run_completed: retrieved_trio_ids recorded and final SQL attached
+```

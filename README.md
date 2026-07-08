@@ -115,7 +115,8 @@ Implemented:
 - Gemini embeddings through Vertex AI ADC or Google AI Studio API key.
 - BigQuery SQL generation/execution path through PydanticAI tools.
 - SQL AST guardrails with `sqlglot`.
-- PII column blocking and output redaction.
+- Safe-column allowlists, PII/whole-row projection blocking, result-limit enforcement, and output redaction.
+- Graceful `ask`/`chat` fallback when Qdrant retrieval is unavailable.
 - Dry-run BigQuery cost cap, timeout, and retry feedback.
 - Structured local JSONL run logs.
 - Dockerized app and Qdrant services.
