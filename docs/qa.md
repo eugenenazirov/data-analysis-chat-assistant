@@ -11,10 +11,13 @@ pytest
 The tests avoid live credentials. They cover:
 
 - SQL safety allow/block behavior.
+- Fully qualified BigQuery table scope enforcement.
+- BigQuery runner dry-run/execution behavior with a mocked client.
+- Gemini embedding client behavior with a mocked client.
 - PII redaction.
 - Config loading.
 - Golden Knowledge indexing/search with a deterministic embedder.
-- Guardrail eval outcomes.
+- `pydantic-evals` guardrail dataset outcomes.
 
 ## Deterministic Evals
 
@@ -25,11 +28,14 @@ python -m retail_agent eval
 docker compose run --rm app eval
 ```
 
-Current evals verify:
+Current evals are implemented with `pydantic-evals` and verify:
 
 - Safe aggregate SQL is allowed.
-- PII SQL is blocked.
+- Email/phone PII SQL is blocked.
+- Name, exact address, postal code, and geolocation PII SQL is blocked.
 - DML is blocked.
+- Queries outside `bigquery-public-data.thelook_ecommerce` are blocked.
+- Malformed SQL is converted into retryable safety feedback.
 - Output PII is redacted.
 - Missing query limits are added.
 

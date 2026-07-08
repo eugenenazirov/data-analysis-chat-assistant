@@ -211,3 +211,21 @@ Notes:
   `cloud-platform`; retrying and granting consent resolved it.
 - Full agent testing without a Google AI Studio API key is possible via
   `google-cloud:gemini-2.5-flash` after enabling Vertex AI.
+
+## Post-Review Guardrail Fixes
+
+Status: Fixed
+
+After the live pass, a code review found three deterministic guardrail gaps:
+
+- Table allowlisting checked only the table basename, so a table named `orders`
+  in another project or dataset could pass validation.
+- The configured PII denylist did not cover all sensitive fields present in
+  `bigquery-public-data.thelook_ecommerce.users`, including names, exact
+  address, postal code, latitude, longitude, and `user_geom`.
+- Malformed SQL parse errors were not wrapped as `SQLSafetyError`, so they could
+  bypass the PydanticAI `ModelRetry` path.
+
+Regression coverage was added for each case. The guardrail eval runner now uses
+`pydantic-evals` and includes explicit cases for table scope, user PII, and
+malformed SQL.
