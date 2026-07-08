@@ -22,6 +22,7 @@ class AgentDependencies:
     user: UserProfile
     trace_id: str
     golden_trios: list[RetrievedTrio]
+    last_query_result: QueryResult | None = None
 
 
 INSTRUCTIONS = """
@@ -80,6 +81,7 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
                 "The query returned no rows. Revise the SQL once using broader "
                 "filters or explain why no matching data exists."
             )
+        ctx.deps.last_query_result = result
         return result
     except QueryExecutionError as exc:
         raise ModelRetry(str(exc)) from exc
@@ -122,6 +124,8 @@ async def run_question(
     )
     result = await analysis_agent.run(prompt, deps=deps, model=config.model.llm_model)
     report = _sanitize_report(result.output, trace_id)
+    if report.sql is None and deps.last_query_result is not None:
+        report.sql = deps.last_query_result.sql
     logger.event(
         trace_id,
         "agent_run_completed",

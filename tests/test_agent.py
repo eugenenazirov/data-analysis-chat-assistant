@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 from retail_agent import agent
-from retail_agent.models import AnalysisReport, RetrievedTrio
+from retail_agent.models import AnalysisReport, QueryResult, RetrievedTrio
 from retail_agent.observability import EventLogger
 
 
@@ -42,11 +42,15 @@ def test_run_question_prefetches_golden_knowledge_before_model(
     async def fake_run(prompt, *, deps, model):
         prompts.append(prompt)
         assert deps.golden_trios == golden_store.results
+        deps.last_query_result = QueryResult(
+            sql="SELECT category, revenue FROM safe_table LIMIT 10",
+            rows=[{"category": "Outerwear", "revenue": 100}],
+            total_rows=1,
+        )
         return SimpleNamespace(
             output=AnalysisReport(
                 question="Which categories drove revenue?",
                 answer="Outerwear led revenue.",
-                sql="SELECT 1",
             ),
             usage=lambda: None,
         )
@@ -65,6 +69,7 @@ def test_run_question_prefetches_golden_knowledge_before_model(
     )
 
     assert report.answer == "Outerwear led revenue."
+    assert report.sql == "SELECT category, revenue FROM safe_table LIMIT 10"
     assert golden_store.calls
     assert golden_store.calls[0]["limit"] == 3
     assert "Golden Knowledge analyst precedents" in prompts[0]
