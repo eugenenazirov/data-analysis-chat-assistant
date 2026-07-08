@@ -18,13 +18,17 @@ The working prototype uses:
    cp .env.example .env
    ```
 
-2. Fill in `GOOGLE_CLOUD_PROJECT`. `GOOGLE_API_KEY` is optional if you use
-   Vertex AI through Application Default Credentials.
+2. Fill in `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT`.
+   `GOOGLE_API_KEY` is optional because the default model path uses Vertex AI
+   through Application Default Credentials.
 
-3. Authenticate BigQuery on the host:
+3. Enable APIs and authenticate on the host:
 
    ```bash
+   export PROJECT_ID=your-project-id
+   gcloud services enable bigquery.googleapis.com aiplatform.googleapis.com --project "$PROJECT_ID"
    gcloud auth application-default login
+   gcloud auth application-default set-quota-project "$PROJECT_ID"
    ```
 
    The Compose file mounts `~/.config/gcloud` read-only into the app container.
@@ -50,7 +54,7 @@ The working prototype uses:
    docker compose run --rm app ask "Which product categories drove the most revenue last month?" --user manager_a
    ```
 
-7. Run a live BigQuery smoke test without Gemini or Qdrant:
+7. Run a live BigQuery smoke test without Gemini or Golden Knowledge retrieval:
 
    ```bash
    docker compose run --rm app bq-smoke
@@ -72,6 +76,11 @@ Use `EMBEDDING_PROVIDER=gemini` for the real assignment path. It works with a
 Google AI Studio API key or with Vertex AI ADC when `GOOGLE_CLOUD_PROJECT` and
 `GOOGLE_CLOUD_LOCATION` are set.
 
+The default reviewer path uses `LLM_MODEL=google-cloud:gemini-2.5-flash` and
+`EMBEDDING_MODEL=gemini-embedding-001` through Vertex AI. For Google AI Studio,
+set `GOOGLE_API_KEY` and switch `LLM_MODEL` to the corresponding `google:...`
+provider model.
+
 ## Local Python Setup
 
 ```bash
@@ -80,6 +89,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 docker compose up -d qdrant
 export QDRANT_URL=http://localhost:6333
+export GOOGLE_CLOUD_PROJECT=your-project-id
+export GOOGLE_CLOUD_LOCATION=us-central1
+export LLM_MODEL=google-cloud:gemini-2.5-flash
+export EMBEDDING_PROVIDER=gemini
 python -m retail_agent index-golden --recreate
 python -m retail_agent ask "Top products by sales" --user manager_b
 ```
@@ -98,6 +111,8 @@ python -m retail_agent eval
 Implemented:
 
 - Golden Knowledge retrieval from Qdrant.
+- Deterministic Golden Knowledge prefetch before each model run.
+- Gemini embeddings through Vertex AI ADC or Google AI Studio API key.
 - BigQuery SQL generation/execution path through PydanticAI tools.
 - SQL AST guardrails with `sqlglot`.
 - PII column blocking and output redaction.

@@ -75,7 +75,7 @@ def ask(
 def bq_smoke(
     config_path: Annotated[str, typer.Option("--config")] = "config/agent.yaml",
 ) -> None:
-    """Run a tiny live BigQuery query without Gemini or Qdrant."""
+    """Run a tiny live BigQuery query without Gemini or Golden Knowledge retrieval."""
 
     config = load_config(config_path)
     logger = EventLogger(config.observability.log_path)

@@ -125,7 +125,9 @@ Command:
 docker compose run --rm app index-golden --recreate
 ```
 
-The local `.env` used `EMBEDDING_PROVIDER=hash` for a no-API-key test path.
+At this point in the implementation, the local `.env` used
+`EMBEDDING_PROVIDER=hash` for a no-API-key test path. The final reviewer path
+now uses `EMBEDDING_PROVIDER=gemini`; see the later Gemini embedding live test.
 
 Evidence:
 
@@ -137,7 +139,7 @@ Indexed 5 Golden Knowledge trios.
 
 Status: Pass
 
-The local `.env` used:
+At this point in the implementation, the local `.env` used:
 
 ```dotenv
 LLM_MODEL=google-cloud:gemini-2.5-flash
@@ -201,9 +203,11 @@ All guardrail evals passed:
 - output PII redacted
 - missing query limit added
 
-## Bugs Found
+## Initial Bugs Found
 
-No application bugs found in the live BigQuery pass.
+No application bugs were found in the initial live BigQuery pass. Later
+post-review hardening found and fixed deterministic guardrail and orchestration
+gaps, documented below.
 
 Notes:
 
@@ -299,3 +303,36 @@ agent_run_completed: retrieved_trio_ids recorded
 
 This verifies the full live path with Gemini chat, Gemini embeddings, Qdrant,
 SQL guardrails, and BigQuery.
+
+## Final Reviewer-Path Verification
+
+Status: Pass
+
+After aligning the default config with the Vertex AI reviewer path, the full
+Docker flow was rerun without command-level embedding overrides:
+
+```bash
+docker compose build app
+docker compose up -d qdrant
+docker compose run --rm app index-golden --recreate
+docker compose run --rm app ask "Which product categories drove the most revenue last month?" --user manager_a
+```
+
+Evidence from trace `7a9a1d69d32641fd994c29f48411c891`:
+
+```text
+Indexed 5 Golden Knowledge trios.
+golden_knowledge_retrieved ids:
+  trio_monthly_revenue_category
+  trio_product_performance_returns
+  trio_underperforming_branch_proxy
+scores:
+  0.8207
+  0.6709
+  0.6437
+bigquery_query_succeeded: rows=10, tables=["order_items", "products"]
+agent_run_completed: retrieved_trio_ids recorded and final SQL attached
+```
+
+The CLI output included the executive report table, caveats, follow-ups, and
+the executed safe SQL.

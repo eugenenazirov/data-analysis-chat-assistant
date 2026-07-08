@@ -20,7 +20,7 @@ qdrant:
   timeout_seconds: 30
 
 model:
-  llm_model: "google:gemini-3.5-flash"
+  llm_model: "google-cloud:gemini-2.5-flash"
   embedding_provider: "gemini"
   embedding_model: "gemini-embedding-001"
   max_sql_retries: 2

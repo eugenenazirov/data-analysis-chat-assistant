@@ -1,6 +1,7 @@
 # Live BigQuery Setup
 
-This prototype can run a live BigQuery smoke test without Gemini or Qdrant:
+This prototype can run a live BigQuery smoke test without calling Gemini or
+Golden Knowledge retrieval:
 
 ```bash
 docker compose run --rm app bq-smoke

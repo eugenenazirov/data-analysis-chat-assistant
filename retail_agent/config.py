@@ -32,7 +32,7 @@ class QdrantConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    llm_model: str = "google:gemini-3.5-flash"
+    llm_model: str = "google-cloud:gemini-2.5-flash"
     embedding_provider: str = Field(default="gemini", pattern="^(gemini|hash)$")
     embedding_model: str = "gemini-embedding-001"
     max_sql_retries: int = 2

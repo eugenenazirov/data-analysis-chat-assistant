@@ -2,7 +2,7 @@
 
 ## 1. Hybrid Intelligence
 
-The prototype indexes analyst-approved Question → SQL → Report trios into Qdrant. At query time, the agent retrieves similar trios and uses them as precedent for business logic, not as fresh data.
+The prototype indexes analyst-approved Question → SQL → Report trios into Qdrant. At query time, the app retrieves similar trios before the model call and passes them in as precedent for business logic, not as fresh data.
 
 Production loop:
 
@@ -16,8 +16,8 @@ Production loop:
 Controls are layered:
 
 - SQL parser blocks DML/DDL.
-- SQL parser restricts tables to assignment tables.
-- SQL parser blocks configured PII columns such as `email` and `phone`.
+- SQL parser restricts tables to fully qualified assignment tables in `bigquery-public-data.thelook_ecommerce`.
+- SQL parser blocks configured PII columns such as email, phone, names, exact address, postal code, and geolocation.
 - The app redacts email/phone patterns from final outputs and logs.
 - BigQuery service account should be read-only.
 - Production can add BigQuery column-level security and data masking policies.
@@ -57,7 +57,7 @@ System level:
 
 ## 6. Quality Assurance
 
-- Pytest covers deterministic guardrails, redaction, config, and Qdrant indexing with mocked services.
+- Pytest covers deterministic guardrails, redaction, config, mocked BigQuery, mocked Gemini embeddings, deterministic Golden Knowledge indexing, and agent prefetch behavior.
 - `python -m retail_agent eval` runs guardrail evals without live BigQuery/Gemini credentials.
 - Production evaluation should add analyst-labeled cases, trajectory review, and LLM-as-judge rubrics for intent coverage.
 
