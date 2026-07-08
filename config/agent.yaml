@@ -1,0 +1,62 @@
+persona_tone: "direct, concise, executive-friendly, with clear business implications"
+golden_trios_path: "data/golden_trios.jsonl"
+
+bigquery:
+  location: "US"
+  dataset: "bigquery-public-data.thelook_ecommerce"
+  allowed_tables:
+    - orders
+    - order_items
+    - products
+    - users
+  max_bytes_billed: 200000000
+  timeout_seconds: 60
+  max_result_rows: 100
+  job_label_app: "retail-agent"
+
+qdrant:
+  url: "http://localhost:6333"
+  collection: "golden_trios"
+  timeout_seconds: 30
+
+model:
+  llm_model: "google:gemini-3.5-flash"
+  embedding_provider: "gemini"
+  embedding_model: "gemini-embedding-001"
+  max_sql_retries: 2
+  temperature: 0.1
+
+safety:
+  pii_columns:
+    - email
+    - phone
+    - phone_number
+    - customer_email
+    - customer_phone
+  blocked_sql_keywords:
+    - alter
+    - create
+    - delete
+    - drop
+    - insert
+    - merge
+    - truncate
+    - update
+
+observability:
+  log_path: "logs/agent-runs.jsonl"
+  enable_logfire: false
+
+users:
+  manager_a:
+    display_name: "Manager A"
+    preferred_format: "table"
+    tone: "concise, quantitative, comparison-heavy"
+  manager_b:
+    display_name: "Manager B"
+    preferred_format: "bullets"
+    tone: "brief, plain-language, action-oriented"
+  ceo:
+    display_name: "CEO"
+    preferred_format: "brief"
+    tone: "strategic, concise, focused on business implications"
