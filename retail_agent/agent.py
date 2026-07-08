@@ -6,7 +6,7 @@ from typing import Any
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from retail_agent.bigquery import BigQueryRunner, QueryExecutionError
-from retail_agent.config import AgentConfig
+from retail_agent.config import DEFAULT_SQL_RETRIES, AgentConfig
 from retail_agent.golden_store import GoldenStore
 from retail_agent.models import AnalysisReport, QueryResult, RetrievedTrio, UserProfile
 from retail_agent.observability import EventLogger, new_trace_id
@@ -70,13 +70,18 @@ async def retrieve_golden_knowledge(
     return ctx.deps.golden_trios
 
 
-@analysis_agent.tool(retries=2)
+@analysis_agent.tool(retries=DEFAULT_SQL_RETRIES)
 async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryResult:
     """Validate and run a read-only BigQuery SQL query."""
 
     try:
         result = ctx.deps.bigquery.execute(sql, ctx.deps.trace_id)
         if result.total_rows == 0:
+            _log_sql_retry_feedback(
+                ctx,
+                failure_class="EmptyResult",
+                error="The query returned no rows.",
+            )
             raise ModelRetry(
                 "The query returned no rows. Revise the SQL once using broader "
                 "filters or explain why no matching data exists."
@@ -84,8 +89,14 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         ctx.deps.last_query_result = result
         return result
     except QueryExecutionError as exc:
+        _log_sql_retry_feedback(
+            ctx, failure_class=exc.__class__.__name__, error=str(exc)
+        )
         raise ModelRetry(str(exc)) from exc
     except ValueError as exc:
+        _log_sql_retry_feedback(
+            ctx, failure_class=exc.__class__.__name__, error=str(exc)
+        )
         raise ModelRetry(str(exc)) from exc
 
 
@@ -101,7 +112,16 @@ async def run_question(
     trace_id = new_trace_id()
     user = config.user_profile(user_id)
     logger.event(trace_id, "agent_run_started", user_id=user_id, question=question)
-    golden_trios = golden_store.search(question, trace_id, limit=3)
+    try:
+        golden_trios = golden_store.search(question, trace_id, limit=3)
+    except Exception as exc:
+        golden_trios = []
+        logger.event(
+            trace_id,
+            "golden_knowledge_unavailable",
+            failure_class=exc.__class__.__name__,
+            error=str(exc),
+        )
     logger.event(
         trace_id,
         "agent_golden_context_prepared",
@@ -135,6 +155,20 @@ async def run_question(
         usage=getattr(result, "usage", None),
     )
     return report
+
+
+def _log_sql_retry_feedback(
+    ctx: RunContext[AgentDependencies], *, failure_class: str, error: str
+) -> None:
+    ctx.deps.logger.event(
+        ctx.deps.trace_id,
+        "sql_retry_feedback",
+        failure_class=failure_class,
+        retry_attempt=ctx.retry,
+        max_retries=ctx.max_retries,
+        configured_retry_budget=ctx.deps.config.model.max_sql_retries,
+        error=error,
+    )
 
 
 def _format_golden_context(trios: list[RetrievedTrio]) -> str:

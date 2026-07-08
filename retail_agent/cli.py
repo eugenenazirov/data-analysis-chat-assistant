@@ -29,10 +29,11 @@ WHERE created_at IS NOT NULL
 """
 
 
-def _runtime(config_path: str) -> Runtime:
+def _runtime(config_path: str, *, require_qdrant: bool = False) -> Runtime:
     config = load_config(config_path)
     runtime = Runtime(config)
-    runtime.golden_store.wait_until_ready()
+    if require_qdrant:
+        runtime.golden_store.wait_until_ready()
     return runtime
 
 
@@ -43,7 +44,7 @@ def index_golden(
 ) -> None:
     """Index seed Golden Knowledge trios into Qdrant."""
 
-    runtime = _runtime(config_path)
+    runtime = _runtime(config_path, require_qdrant=True)
     trios = runtime.golden_store.load_seed_trios(runtime.config.golden_trios_path)
     count = runtime.golden_store.index(trios, recreate=recreate)
     console.print(f"Indexed [bold]{count}[/bold] Golden Knowledge trios.")

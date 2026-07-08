@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from retail_agent.bigquery import BigQueryRunner, QueryCostExceeded
@@ -61,6 +63,12 @@ def test_bigquery_runner_dry_runs_then_executes_with_limit(test_config, tmp_path
     assert result.sql.endswith("LIMIT 25")
     assert result.rows == [{"category": "Jeans", "gross_sales": 123.45}]
     assert result.dry_run_bytes == 4096
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(event["event"] == "sql_validation_succeeded" for event in events)
+    assert any(event["event"] == "bigquery_query_succeeded" for event in events)
 
 
 def test_bigquery_runner_blocks_over_budget_before_execution(test_config, tmp_path):
@@ -73,9 +81,15 @@ def test_bigquery_runner_blocks_over_budget_before_execution(test_config, tmp_pa
 
     with pytest.raises(QueryCostExceeded):
         runner.execute(
-            "SELECT id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
+            "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
             trace_id="trace-id",
         )
 
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0][1].dry_run is True
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    cost_events = [event for event in events if event["event"] == "bigquery_cost_exceeded"]
+    assert cost_events[0]["dry_run_bytes"] == test_config.bigquery.max_bytes_billed + 1

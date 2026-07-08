@@ -55,11 +55,27 @@ class BigQueryRunner:
         return "\n".join(lines)
 
     def execute(self, sql: str, trace_id: str) -> QueryResult:
+        start = time.perf_counter()
+        try:
+            validation = validate_and_prepare_sql(sql, self.config)
+        except ValueError as exc:
+            self.logger.event(
+                trace_id,
+                "sql_validation_failed",
+                failure_class=exc.__class__.__name__,
+                error=str(exc),
+            )
+            raise
+        self.logger.event(
+            trace_id,
+            "sql_validation_succeeded",
+            tables=validation.tables,
+            safe_sql=validation.safe_sql,
+        )
+
         from google.api_core import exceptions
         from google.cloud import bigquery
 
-        start = time.perf_counter()
-        validation = validate_and_prepare_sql(sql, self.config)
         labels = {"app": self.config.bigquery.job_label_app, "trace": trace_id[:32]}
 
         dry_config = bigquery.QueryJobConfig(
@@ -72,10 +88,21 @@ class BigQueryRunner:
             dry_job = self.client.query(validation.safe_sql, job_config=dry_config)
             dry_bytes = int(dry_job.total_bytes_processed or 0)
         except exceptions.GoogleAPICallError as exc:
-            self.logger.event(trace_id, "bigquery_dry_run_failed", error=str(exc))
+            self.logger.event(
+                trace_id,
+                "bigquery_dry_run_failed",
+                failure_class=exc.__class__.__name__,
+                error=str(exc),
+            )
             raise QueryExecutionError(f"BigQuery dry run failed: {exc}") from exc
 
         if dry_bytes > self.config.bigquery.max_bytes_billed:
+            self.logger.event(
+                trace_id,
+                "bigquery_cost_exceeded",
+                dry_run_bytes=dry_bytes,
+                max_bytes_billed=self.config.bigquery.max_bytes_billed,
+            )
             raise QueryCostExceeded(
                 "Query would process "
                 f"{dry_bytes} bytes, above cap {self.config.bigquery.max_bytes_billed}."
@@ -93,12 +120,22 @@ class BigQueryRunner:
         except exceptions.GoogleAPICallError as exc:
             errors = getattr(locals().get("job", None), "errors", None)
             self.logger.event(
-                trace_id, "bigquery_query_failed", error=str(exc), details=errors
+                trace_id,
+                "bigquery_query_failed",
+                failure_class=exc.__class__.__name__,
+                error=str(exc),
+                details=errors,
             )
             raise QueryExecutionError(f"BigQuery query failed: {exc}") from exc
         except TimeoutError as exc:
             if "job" in locals():
                 job.cancel()
+            self.logger.event(
+                trace_id,
+                "bigquery_query_failed",
+                failure_class=exc.__class__.__name__,
+                error="BigQuery query timed out.",
+            )
             raise QueryExecutionError("BigQuery query timed out.") from exc
 
         duration_ms = int((time.perf_counter() - start) * 1000)

@@ -28,6 +28,11 @@ class FakeGoldenStore:
         return self.results
 
 
+class FailingGoldenStore:
+    def search(self, question: str, trace_id: str, limit: int = 3):
+        raise RuntimeError("Qdrant collection is unavailable")
+
+
 class FakeBigQueryRunner:
     def describe_allowed_tables(self) -> str:
         return "- `bigquery-public-data.thelook_ecommerce.order_items`: id INTEGER"
@@ -84,3 +89,52 @@ def test_run_question_prefetches_golden_knowledge_before_model(
         event for event in events if event["event"] == "agent_golden_context_prepared"
     ]
     assert prepared[0]["ids"] == ["trio_monthly_revenue_category"]
+
+
+def test_run_question_continues_when_golden_knowledge_is_unavailable(
+    test_config, tmp_path, monkeypatch
+):
+    async def fake_run(prompt, *, deps, model):
+        assert deps.golden_trios == []
+        assert "none retrieved" in prompt
+        deps.last_query_result = QueryResult(
+            sql="SELECT COUNT(*) AS order_count FROM safe_table LIMIT 10",
+            rows=[{"order_count": 42}],
+            total_rows=1,
+        )
+        return SimpleNamespace(
+            output=AnalysisReport(
+                question="How many orders?",
+                answer="There were 42 orders.",
+            ),
+            usage=lambda: None,
+        )
+
+    monkeypatch.setattr(agent.analysis_agent, "run", fake_run)
+
+    report = asyncio.run(
+        agent.run_question(
+            "How many orders?",
+            config=test_config,
+            bigquery=FakeBigQueryRunner(),
+            golden_store=FailingGoldenStore(),
+            logger=EventLogger(tmp_path / "runs.jsonl"),
+            user_id="manager_a",
+        )
+    )
+
+    assert report.answer == "There were 42 orders."
+    assert report.sql == "SELECT COUNT(*) AS order_count FROM safe_table LIMIT 10"
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    unavailable = [
+        event for event in events if event["event"] == "golden_knowledge_unavailable"
+    ]
+    assert unavailable[0]["failure_class"] == "RuntimeError"
+    prepared = [
+        event for event in events if event["event"] == "agent_golden_context_prepared"
+    ]
+    assert prepared[0]["ids"] == []
