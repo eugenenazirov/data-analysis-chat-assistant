@@ -81,6 +81,24 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                 ),
             ),
             _case(
+                name="row_projection_blocked",
+                inputs=GuardrailEvalCase(
+                    name="row_projection_blocked",
+                    kind="sql_blocked",
+                    sql="SELECT u FROM `bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 10",
+                    expected_error="row projection",
+                ),
+            ),
+            _case(
+                name="excessive_limit_blocked",
+                inputs=GuardrailEvalCase(
+                    name="excessive_limit_blocked",
+                    kind="sql_blocked",
+                    sql="SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 1000000",
+                    expected_error="exceeds maximum",
+                ),
+            ),
+            _case(
                 name="dml_blocked",
                 inputs=GuardrailEvalCase(
                     name="dml_blocked",

@@ -37,9 +37,52 @@ safety:
     - last_name
     - street_address
     - postal_code
+    - zip
     - latitude
     - longitude
     - user_geom
+  safe_columns_by_table:
+    orders:
+      - order_id
+      - user_id
+      - status
+      - gender
+      - created_at
+      - returned_at
+      - shipped_at
+      - delivered_at
+      - num_of_item
+    order_items:
+      - id
+      - order_id
+      - user_id
+      - product_id
+      - inventory_item_id
+      - status
+      - created_at
+      - shipped_at
+      - delivered_at
+      - returned_at
+      - sale_price
+    products:
+      - id
+      - cost
+      - category
+      - name
+      - brand
+      - retail_price
+      - department
+      - sku
+      - distribution_center_id
+    users:
+      - id
+      - age
+      - gender
+      - state
+      - city
+      - country
+      - traffic_source
+      - created_at
   blocked_sql_keywords:
     - alter
     - create

@@ -37,6 +37,19 @@ def test_validate_blocks_pii_column(test_config):
 
 
 @pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT u FROM `bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 5",
+        "SELECT TO_JSON_STRING(u) FROM `bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 5",
+        "SELECT ARRAY_AGG(u) FROM `bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 5",
+    ],
+)
+def test_validate_blocks_row_projection_from_pii_table_alias(test_config, sql):
+    with pytest.raises(SQLSafetyError, match="row projection"):
+        validate_and_prepare_sql(sql, test_config)
+
+
+@pytest.mark.parametrize(
     "column",
     [
         "first_name",
@@ -78,6 +91,18 @@ def test_validate_adds_limit_when_missing(test_config):
     )
 
     assert "LIMIT 25" in validation.safe_sql
+
+
+def test_validate_blocks_excessive_existing_limit(test_config):
+    with pytest.raises(SQLSafetyError, match="exceeds maximum"):
+        validate_and_prepare_sql(
+            """
+            SELECT order_id
+            FROM `bigquery-public-data.thelook_ecommerce.orders`
+            LIMIT 1000000
+            """,
+            test_config,
+        )
 
 
 @pytest.mark.parametrize(

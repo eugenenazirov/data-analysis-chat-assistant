@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 from retail_agent.models import UserProfile
 
 
+DEFAULT_SQL_RETRIES = 2
+
+
 class BigQueryConfig(BaseModel):
     project: str | None = None
     location: str = "US"
@@ -35,8 +38,57 @@ class ModelConfig(BaseModel):
     llm_model: str = "google-cloud:gemini-2.5-flash"
     embedding_provider: str = Field(default="gemini", pattern="^(gemini|hash)$")
     embedding_model: str = "gemini-embedding-001"
-    max_sql_retries: int = 2
+    max_sql_retries: int = DEFAULT_SQL_RETRIES
     temperature: float = 0.1
+
+
+SAFE_COLUMNS_BY_TABLE: dict[str, list[str]] = {
+    "orders": [
+        "order_id",
+        "user_id",
+        "status",
+        "gender",
+        "created_at",
+        "returned_at",
+        "shipped_at",
+        "delivered_at",
+        "num_of_item",
+    ],
+    "order_items": [
+        "id",
+        "order_id",
+        "user_id",
+        "product_id",
+        "inventory_item_id",
+        "status",
+        "created_at",
+        "shipped_at",
+        "delivered_at",
+        "returned_at",
+        "sale_price",
+    ],
+    "products": [
+        "id",
+        "cost",
+        "category",
+        "name",
+        "brand",
+        "retail_price",
+        "department",
+        "sku",
+        "distribution_center_id",
+    ],
+    "users": [
+        "id",
+        "age",
+        "gender",
+        "state",
+        "city",
+        "country",
+        "traffic_source",
+        "created_at",
+    ],
+}
 
 
 class SafetyConfig(BaseModel):
@@ -51,10 +103,16 @@ class SafetyConfig(BaseModel):
             "last_name",
             "street_address",
             "postal_code",
+            "zip",
             "latitude",
             "longitude",
             "user_geom",
         ]
+    )
+    safe_columns_by_table: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            table: list(columns) for table, columns in SAFE_COLUMNS_BY_TABLE.items()
+        }
     )
     blocked_sql_keywords: list[str] = Field(
         default_factory=lambda: [
