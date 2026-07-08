@@ -1,0 +1,25 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  app:
+    build: .
+    depends_on:
+      - qdrant
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      GOOGLE_APPLICATION_CREDENTIALS: /gcp/application_default_credentials.json
+    volumes:
+      - ./logs:/app/logs
+      - ${HOME}/.config/gcloud:/gcp:ro
+    command: ["--help"]
+
+volumes:
+  qdrant_storage:
