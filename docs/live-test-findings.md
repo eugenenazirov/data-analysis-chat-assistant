@@ -407,3 +407,33 @@ sql_validation_succeeded: tables=["order_items", "products"]
 bigquery_query_succeeded: rows=10
 agent_run_completed: retrieved_trio_ids recorded and final SQL attached
 ```
+
+## Aggregate Alias Collision Fix
+
+Status: Fixed
+
+A follow-up review found that row-projection detection could false-block valid
+aggregate aliases when the alias matched an allowed table name, for example
+`COUNT(*) AS orders ORDER BY orders DESC`.
+
+Fix applied:
+
+- SQL validation now checks whether an unqualified column is a select-output
+  alias before treating it as a whole-row table projection.
+- Row projections such as `SELECT u`, `TO_JSON_STRING(u)`, and `ARRAY_AGG(u)`
+  remain blocked.
+
+Regression coverage:
+
+- `tests/test_sql_guard.py` now covers aggregate aliases named `orders`,
+  `users`, and `products`.
+- Targeted row-projection tests still pass.
+
+Verification:
+
+```text
+.venv/bin/pytest -q: 39 passed
+.venv/bin/python -m retail_agent eval: pass
+.venv/bin/python -m pip check: no broken requirements
+docker compose build app && docker compose run --rm app eval && docker compose down: pass
+```

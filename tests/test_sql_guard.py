@@ -20,6 +20,32 @@ def test_validate_allows_safe_aggregate_sql(test_config):
     assert validation.tables == ["order_items"]
 
 
+@pytest.mark.parametrize(
+    ("table_name", "dimension", "aggregate_alias"),
+    [
+        ("orders", "status", "orders"),
+        ("users", "gender", "users"),
+        ("products", "category", "products"),
+    ],
+)
+def test_validate_allows_output_alias_matching_table_name(
+    test_config, table_name, dimension, aggregate_alias
+):
+    validation = validate_and_prepare_sql(
+        f"""
+        SELECT {dimension}, COUNT(*) AS {aggregate_alias}
+        FROM `bigquery-public-data.thelook_ecommerce.{table_name}`
+        GROUP BY {dimension}
+        ORDER BY {aggregate_alias} DESC
+        LIMIT 5
+        """,
+        test_config,
+    )
+
+    assert "LIMIT 5" in validation.safe_sql
+    assert validation.tables == [table_name]
+
+
 def test_validate_blocks_select_star(test_config):
     with pytest.raises(SQLSafetyError, match=r"SELECT \*"):
         validate_and_prepare_sql(

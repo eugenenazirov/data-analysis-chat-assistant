@@ -160,6 +160,9 @@ def _validate_column_safety(
         if not column_name:
             continue
 
+        if not qualifier and _is_select_alias_reference(column):
+            continue
+
         if not qualifier and column_name in table_aliases:
             ref = table_aliases[column_name]
             raise SQLSafetyError(
@@ -172,9 +175,6 @@ def _validate_column_safety(
             ref = table_aliases.get(qualifier)
             if ref is not None:
                 _ensure_safe_column(column_name, ref, safe_columns, pii_columns)
-            continue
-
-        if _is_select_alias_reference(column):
             continue
 
         direct_refs = _direct_table_references_for_column(column, cte_names)
