@@ -2,6 +2,9 @@
 
 Prototype and high-level design for an executive-facing retail analytics chat assistant.
 
+For a module-by-module reviewer guide and assignment mapping, start with
+[PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md).
+
 The working prototype uses:
 
 - PydanticAI for typed agent orchestration.
