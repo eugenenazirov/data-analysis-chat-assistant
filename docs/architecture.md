@@ -167,7 +167,7 @@ sequenceDiagram
 
     U->>API: POST /v1/sessions/{id}/turns + idempotency key
     API->>API: Verify OIDC identity and ownership
-    API->>DB: Lock session version; load summary and recent turns
+    API->>DB: Lock session version and load summary and recent turns
     DB-->>API: Pinned versions + bounded history
     API->>Q: Retrieve top-k from active index version
     Q-->>API: Approved trios or unavailable
@@ -201,6 +201,7 @@ sequenceDiagram
     participant U as Manager
     participant API as Assistant API
     participant DB as PostgreSQL
+    participant Worker as Background Worker
     participant Audit as Locked Audit Export
 
     U->>API: Preview deletion filter
@@ -209,11 +210,13 @@ sequenceDiagram
     API->>DB: Store frozen IDs/hash + token hash + 5 minute expiry
     API-->>U: Preview + one-time confirmation token
     U->>API: Confirm action ID + token + idempotency key
-    API->>DB: Lock pending action; verify owner/token/expiry/status
+    API->>DB: Lock pending action and verify owner/token/expiry/status
     API->>DB: Delete exactly frozen owned IDs + append audit event
     DB-->>API: Committed deletion count
     API-->>U: Deleted count + trace ID
-    DB-->>Audit: Worker exports append-only audit event
+    Worker->>DB: Claim audit export outbox event
+    DB-->>Worker: Append-only audit event
+    Worker->>Audit: Export event with object lock
 ```
 
 Broad or ambiguous requests must be narrowed before preview. The confirmation
