@@ -460,8 +460,8 @@ uv run python -m compileall -q retail_agent: pass
 Test and evaluation verification:
 
 ```text
-112 tests passed
-91.04% branch-aware coverage (85% release gate)
+129 tests passed
+91.08% branch-aware coverage (85% release gate)
 10/10 deterministic guardrail evaluations passed
 4/4 answer-quality replay cases passed
 intent/calculation/Recall@3/MRR/faithfulness/multi-turn replay aggregates: 1.00
@@ -527,3 +527,33 @@ instruction and passed all four automated cases at 1.00 for intent, calculation,
 Recall@3, MRR, faithfulness, and multi-turn resolution; the saved trace was also
 rechecked with the final percent-scaling rule. Local and containerized BigQuery
 smoke tests passed with stable job IDs and no SDK retry warning.
+
+## Contextual Number Faithfulness Re-Review
+
+Date: 2026-07-10
+
+The final contextual-number edge is covered by adversarial regressions:
+
+- the current year cannot support `Revenue was 2026` or `Revenue was $2,026`;
+- context language must form a number-anchored phrase such as `top 10`, `10
+  results`, `last 3 months`, or `calendar year 2026`;
+- currency symbols and units can never be justified by SQL context;
+- current and previous years require nearby temporal language before they are
+  accepted as contextual values;
+- the numeral in an exact returned alphanumeric dimension such as `501 Jeans`
+  is classified as dimension text;
+- a bare quantitative claim of `501` cannot borrow support from that string
+  dimension.
+
+The implementation matches exact returned dimension values before evaluating
+remaining numeric claims against metric columns and SQL context. Purely numeric
+strings are intentionally not exempted because they are ambiguous with measures.
+The saved credentialed live trace was deterministically rescored after the fix;
+all four cases retained faithfulness `1.00`, including the valid `top 10
+customers` framing case.
+
+The subsequent word-order probes `Revenue this year was 2026 dollars` and
+`Revenue for the top result was 10 dollars` are also full-gate regressions. Both
+remain rejected without the word `dollars`, proving that phrase binding rather
+than currency detection closes the bypass. Compact suffix parsing now also
+distinguishes `3 months` from `3M`.

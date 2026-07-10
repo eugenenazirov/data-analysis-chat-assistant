@@ -260,7 +260,10 @@ Loads the versioned answer-quality dataset and scores:
   additional verified measures may accompany the required columns.
 - Golden Knowledge Retrieval Recall@3 and mean reciprocal rank.
 - Metric-aware support for numerical report claims, including currency/rate
-  cues and same-measure derivations without cross-column value pooling.
+  cues and same-measure derivations without cross-column value pooling. SQL
+  context numbers require number-anchored phrases such as `top 10` or `last 3
+  months`, while numerals inside exact returned alphanumeric dimensions are
+  classified as dimension text.
 - Multi-turn history use plus structural resolution against contextual canonical SQL.
 - Analyst-scored executive usefulness.
 

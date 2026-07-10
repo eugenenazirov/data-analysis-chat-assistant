@@ -81,8 +81,13 @@ The evaluator scores:
 - Retrieval Recall@3 and mean reciprocal rank;
 - metric-aware support for every numeric claim in query results. Currency,
   percentage, and nearby measure language select the relevant column; SQL
-  context values require their own nearby context language; derivations remain
-  restricted to values from the same measure;
+  context values require number-anchored phrases such as `top 10`, `10 results`,
+  `last 3 months`, or `calendar year 2026`; qualifiers elsewhere in a sentence
+  cannot support the number. Currency symbols and units cannot borrow context
+  values.
+  Numerals inside an exact returned alphanumeric dimension, such as `501 Jeans`,
+  are recognized as dimension text rather than quantitative claims; derivations
+  remain restricted to values from the same measure;
 - multi-turn history use and structural resolution of the contextual canonical SQL;
 - analyst usefulness on a five-point rubric.
 

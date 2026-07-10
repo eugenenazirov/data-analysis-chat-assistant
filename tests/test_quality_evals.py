@@ -3,6 +3,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from retail_agent.agent import TurnResult
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger
@@ -49,6 +51,33 @@ def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
     result = evaluate_quality_case(test_config, case, replay)
 
     assert result.passed is False
+    assert result.scores.faithfulness == 0
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        f"Revenue was {datetime.now(UTC).year}.",
+        f"Revenue was ${datetime.now(UTC).year:,}.",
+        f"Revenue was {datetime.now(UTC).year} this year.",
+        f"Revenue in calendar year was ${datetime.now(UTC).year:,}.",
+        f"Revenue this year was {datetime.now(UTC).year}.",
+        f"Revenue this year was {datetime.now(UTC).year} dollars.",
+        f"Revenue was in {datetime.now(UTC).year} dollars.",
+        "Revenue for the top result was 10.",
+        "Revenue for the top result was 10 dollars.",
+        "Revenue was top 10 dollars.",
+    ],
+)
+def test_quality_eval_rejects_sql_context_value_as_revenue(test_config, answer):
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={"report": case.replay.report.model_copy(update={"answer": answer})}
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is False
     assert result.scores.faithfulness == 0
 
 
@@ -286,7 +315,10 @@ def test_faithfulness_accepts_top_n_and_current_date_context():
     current_year = datetime.now(UTC).year
     report = AnalysisReport(
         question="question",
-        answer=f"The top 10 result for {current_year} produced 100 in revenue.",
+        answer=(
+            f"The top 10 result for calendar year {current_year} "
+            "produced 100 in revenue."
+        ),
     )
 
     score = _faithfulness_score(
@@ -297,6 +329,89 @@ def test_faithfulness_accepts_top_n_and_current_date_context():
     )
 
     assert score == 1
+
+
+def test_faithfulness_accepts_top_n_before_numeric_identifier_dimension():
+    report = AnalysisReport(
+        question="question",
+        answer="Here are the top 10 customers by spend.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"customer_id": 67_493, "total_spend": 1_549.39}],
+        "SELECT customer_id, total_spend FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+@pytest.mark.parametrize(
+    "answer,sql",
+    [
+        (
+            f"In {datetime.now(UTC).year}, revenue was 100.",
+            "SELECT revenue FROM table WHERE day <= CURRENT_DATE()",
+        ),
+        (
+            "Revenue was 100 over the last 3 months.",
+            "SELECT revenue FROM table WHERE day >= "
+            "DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)",
+        ),
+        (
+            "The query returned 10 results with revenue of 100.",
+            "SELECT revenue FROM table LIMIT 10",
+        ),
+        (
+            f"Month {datetime.now(UTC).month} revenue was 100.",
+            "SELECT revenue FROM table WHERE day <= CURRENT_DATE()",
+        ),
+    ],
+)
+def test_faithfulness_accepts_structurally_bound_context_numbers(answer, sql):
+    report = AnalysisReport(question="question", answer=answer)
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 100}],
+        sql,
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_accepts_number_embedded_in_returned_dimension():
+    report = AnalysisReport(
+        question="question",
+        answer="501 Jeans generated 4000 in revenue.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"product_name": "501 Jeans", "revenue": 4_000}],
+        "SELECT product_name, revenue FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_does_not_borrow_number_from_string_dimension():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was 501.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"product_name": "501 Jeans", "revenue": 4_000}],
+        "SELECT product_name, revenue FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 0
 
 
 def test_faithfulness_accepts_rounded_suffixes_and_derived_percentages():

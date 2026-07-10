@@ -25,19 +25,20 @@ from retail_agent.sql_guard import validate_and_prepare_sql
 
 NUMBER_PATTERN = re.compile(
     r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?"
-    r"(?:\s*(?:%|[KMBkmb]|thousand|million|billion))?",
+    r"(?:\s*(?:%|[KMBkmb](?![A-Za-z])|thousand|million|billion))?",
     re.IGNORECASE,
 )
 MAX_DERIVATION_VALUES_PER_MEASURE = 100
 MAX_MEASURE_MENTION_DISTANCE = 48
 type QualityMode = Literal["replay", "live"]
+type _ContextKind = Literal["interval", "limit", "month", "year"]
 
 
 @dataclass(frozen=True)
 class _ContextNumber:
     value: float
-    aliases: frozenset[str]
-    unqualified: bool = False
+    kind: _ContextKind
+    unit: str | None = None
 
 
 class JoinKey(BaseModel):
@@ -560,18 +561,20 @@ def _faithfulness_details(
     claim_matches = list(NUMBER_PATTERN.finditer(text))
     if not claim_matches:
         return 1.0, []
+    dimension_spans = _returned_numeric_dimension_spans(text, rows)
     measures: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         for column, value in row.items():
             if isinstance(value, (int, float)):
                 measures[column].append(float(value))
     context_values = _supported_context_numbers(sql)
-    if not measures and not context_values:
+    if not measures and not context_values and not dimension_spans:
         return 0.0, [_parse_number(match.group()) for match in claim_matches]
     unsupported = [
         _parse_number(match.group())
         for match in claim_matches
-        if not _claim_supported(
+        if not _claim_is_returned_dimension(match, dimension_spans)
+        and not _claim_supported(
             _parse_number(match.group()),
             measures,
             context_values,
@@ -587,25 +590,48 @@ def _faithfulness_details(
     )
 
 
+def _returned_numeric_dimension_spans(
+    text: str, rows: list[dict[str, Any]]
+) -> list[tuple[int, int]]:
+    values = {
+        value.strip()
+        for row in rows
+        for value in row.values()
+        if isinstance(value, str)
+        and any(character.isdigit() for character in value)
+        and any(character.isalpha() for character in value)
+        and value.strip()
+    }
+    spans: list[tuple[int, int]] = []
+    for value in values:
+        flexible_value = r"\s+".join(re.escape(part) for part in value.split())
+        pattern = re.compile(rf"(?<!\w){flexible_value}(?!\w)", re.IGNORECASE)
+        spans.extend(match.span() for match in pattern.finditer(text))
+    return spans
+
+
+def _claim_is_returned_dimension(
+    claim: re.Match[str], dimension_spans: list[tuple[int, int]]
+) -> bool:
+    return any(
+        start <= claim.start() and claim.end() <= end
+        for start, end in dimension_spans
+    )
+
+
 def _supported_context_numbers(sql: str) -> list[_ContextNumber]:
     values = [
         _ContextNumber(
             value=float(raw),
-            aliases=frozenset({"top", "limit", "row", "rows", "result", "results"}),
+            kind="limit",
         )
         for raw in re.findall(r"\bLIMIT\s+(\d+)\b", sql, re.IGNORECASE)
     ]
     values.extend(
         _ContextNumber(
             value=float(raw),
-            aliases=frozenset(
-                {
-                    unit.lower(),
-                    f"{unit.lower()}s",
-                    "last",
-                    "past",
-                }
-            ),
+            kind="interval",
+            unit=unit.lower(),
         )
         for raw, unit in re.findall(
             r"\bINTERVAL\s+(\d+)\s+(DAY|WEEK|MONTH|QUARTER|YEAR)\b",
@@ -618,10 +644,10 @@ def _supported_context_numbers(sql: str) -> list[_ContextNumber]:
         previous_month = today.replace(day=1) - timedelta(days=1)
         values.extend(
             [
-                _ContextNumber(float(today.year), frozenset({"year"}), True),
-                _ContextNumber(float(today.month), frozenset({"month"})),
-                _ContextNumber(float(previous_month.year), frozenset({"year"}), True),
-                _ContextNumber(float(previous_month.month), frozenset({"month"})),
+                _ContextNumber(float(today.year), "year"),
+                _ContextNumber(float(today.month), "month"),
+                _ContextNumber(float(previous_month.year), "year"),
+                _ContextNumber(float(previous_month.month), "month"),
             ]
         )
     return values
@@ -707,19 +733,45 @@ def _context_claim_supported(
     context_values: list[_ContextNumber],
     tolerance: float,
 ) -> bool:
-    normalized_text = text.lower()
+    if _is_currency_claim(text, claim_match):
+        return False
     for context in context_values:
-        if not _numbers_match(claim, context.value, tolerance):
-            continue
-        if context.unqualified:
+        if _numbers_match(
+            claim, context.value, tolerance
+        ) and _claim_has_context_structure(text, claim_match, context):
             return True
-        if any(
-            _span_distance(claim_match.span(), mention.span())
-            <= MAX_MEASURE_MENTION_DISTANCE
-            for alias in context.aliases
-            for mention in re.finditer(rf"\b{re.escape(alias)}\b", normalized_text)
-        ):
-            return True
+    return False
+
+
+def _claim_has_context_structure(
+    text: str,
+    claim: re.Match[str],
+    context: _ContextNumber,
+) -> bool:
+    prefix = text[max(0, claim.start() - 32) : claim.start()].lower()
+    suffix = text[claim.end() : min(len(text), claim.end() + 24)].lower()
+
+    if context.kind == "limit":
+        return bool(
+            re.search(r"\b(?:first|limit(?:\s+of)?|limited\s+to|top)\s*$", prefix)
+            or re.match(r"^\s*(?:results?|rows?)\b", suffix)
+        )
+    if context.kind == "interval" and context.unit is not None:
+        unit = re.escape(context.unit.rstrip("s"))
+        return bool(re.match(rf"^\s*{unit}s?\b", suffix))
+    if context.kind == "year":
+        return bool(
+            re.search(
+                r"\b(?:(?:calendar|fiscal)\s+year|during|fy|in|since|year)\s*$",
+                prefix,
+            )
+            or re.match(r"^\s*(?:(?:calendar|fiscal)\s+year|year|ytd)\b", suffix)
+        )
+    if context.kind == "month":
+        return bool(
+            re.search(r"\bmonth\s*$", prefix)
+            or re.match(r"^\s*months?\b", suffix)
+        )
     return False
 
 
@@ -799,7 +851,13 @@ def _measure_tokens(measure_name: str) -> set[str]:
 
 def _is_currency_claim(text: str, claim: re.Match[str]) -> bool:
     prefix = text[max(0, claim.start() - 2) : claim.start()]
-    return any(symbol in prefix for symbol in "$€£¥")
+    suffix = text[claim.end() : min(len(text), claim.end() + 16)].lower()
+    return any(symbol in prefix for symbol in "$€£¥") or bool(
+        re.match(
+            r"^\s*(?:dollars?|eur|euros?|gbp|jpy|pounds?|usd|yen)\b",
+            suffix,
+        )
+    )
 
 
 def _claim_text_tolerance(text: str, claim: re.Match[str]) -> float:
