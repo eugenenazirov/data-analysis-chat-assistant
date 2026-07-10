@@ -550,215 +550,109 @@ def test_faithfulness_accepts_structurally_bound_context_numbers(answer, sql):
     assert score == 1
 
 
-def test_faithfulness_accepts_supported_currency_code_prefix():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was USD10M.",
-    )
+@pytest.mark.parametrize(
+    "answer,rows,sql,expected",
+    [
+        pytest.param(
+            "Revenue was USD10M.",
+            [{"revenue": 10_000_000}],
+            "SELECT revenue FROM table",
+            1,
+            id="currency-code-prefix",
+        ),
+        pytest.param(
+            "Revenue was 2026€.",
+            [{"revenue": 2_026}],
+            "SELECT revenue FROM table WHERE day <= CURRENT_DATE()",
+            1,
+            id="postfix-currency-symbol",
+        ),
+        pytest.param(
+            "The return rate was in the top 10%.",
+            [{"return_rate": 0.1}],
+            "SELECT return_rate FROM table LIMIT 10",
+            1,
+            id="percentage-metric-not-limit",
+        ),
+        pytest.param(
+            "501 Jeans generated 4000 in revenue.",
+            [{"product_name": "501 Jeans", "revenue": 4_000}],
+            "SELECT product_name, revenue FROM table LIMIT 10",
+            1,
+            id="numeric-string-dimension",
+        ),
+        pytest.param(
+            "Revenue was 501.",
+            [{"product_name": "501 Jeans", "revenue": 4_000}],
+            "SELECT product_name, revenue FROM table LIMIT 10",
+            0,
+            id="no-borrow-from-string-dimension",
+        ),
+        pytest.param(
+            "Revenue was 50.1K and the first category led the second by 5.4%.",
+            [
+                {"category": "first", "revenue": 50_091.67},
+                {"category": "second", "revenue": 47_518.39},
+            ],
+            "SELECT revenue FROM table LIMIT 10",
+            1,
+            id="rounded-and-derived-percentage",
+        ),
+        pytest.param(
+            "The result was 105.",
+            [{"orders": 100, "customers": 5}],
+            "SELECT orders, customers FROM table LIMIT 10",
+            0,
+            id="no-cross-measure-combination",
+        ),
+        pytest.param(
+            "Revenue was 50.",
+            [{"orders": 50, "revenue": 4_000}],
+            "SELECT orders, revenue FROM table LIMIT 10",
+            0,
+            id="named-measure-association",
+        ),
+        pytest.param(
+            "Revenue was 50.",
+            [{"revenue": 0.5}],
+            "SELECT revenue FROM table LIMIT 10",
+            0,
+            id="no-implicit-percent-scaling",
+        ),
+        pytest.param(
+            "Revenue was 10.",
+            [{"revenue": 4_000}],
+            "SELECT revenue FROM table LIMIT 10",
+            0,
+            id="limit-is-not-measure",
+        ),
+        pytest.param(
+            "Revenue reached $50 from 12 orders.",
+            [{"revenue": 50, "orders": 12}],
+            "SELECT revenue, orders FROM table LIMIT 10",
+            1,
+            id="currency-disambiguates-orders",
+        ),
+        pytest.param(
+            "New York lost $300 compared with California.",
+            [{"lost_revenue": 300, "total_sales": 1_000}],
+            "SELECT lost_revenue, total_sales FROM table LIMIT 10",
+            1,
+            id="loss-cue-selects-measure",
+        ),
+        pytest.param(
+            "The two categories generated over $97,000 in revenue.",
+            [{"revenue": 50_091.67}, {"revenue": 47_518.39}],
+            "SELECT revenue FROM table LIMIT 10",
+            1,
+            id="rounded-derived-total",
+        ),
+    ],
+)
+def test_faithfulness_numeric_claim_cases(answer, rows, sql, expected):
+    report = AnalysisReport(question="question", answer=answer)
 
-    score = _faithfulness_score(
-        report,
-        [{"revenue": 10_000_000}],
-        "SELECT revenue FROM table",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_accepts_supported_postfix_currency_symbol():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was 2026€.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"revenue": 2_026}],
-        "SELECT revenue FROM table WHERE day <= CURRENT_DATE()",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_validates_percentage_against_metric_not_limit():
-    report = AnalysisReport(
-        question="question",
-        answer="The return rate was in the top 10%.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"return_rate": 0.1}],
-        "SELECT return_rate FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_accepts_number_embedded_in_returned_dimension():
-    report = AnalysisReport(
-        question="question",
-        answer="501 Jeans generated 4000 in revenue.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"product_name": "501 Jeans", "revenue": 4_000}],
-        "SELECT product_name, revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_does_not_borrow_number_from_string_dimension():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was 501.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"product_name": "501 Jeans", "revenue": 4_000}],
-        "SELECT product_name, revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 0
-
-
-def test_faithfulness_accepts_rounded_suffixes_and_derived_percentages():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was 50.1K and the first category led the second by 5.4%.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [
-            {"category": "first", "revenue": 50_091.67},
-            {"category": "second", "revenue": 47_518.39},
-        ],
-        "SELECT revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_does_not_combine_unrelated_measures():
-    report = AnalysisReport(
-        question="question",
-        answer="The result was 105.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"orders": 100, "customers": 5}],
-        "SELECT orders, customers FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 0
-
-
-def test_faithfulness_associates_numeric_claim_with_named_measure():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was 50.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"orders": 50, "revenue": 4_000}],
-        "SELECT orders, revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 0
-
-
-def test_faithfulness_does_not_apply_percent_scaling_without_percent_sign():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was 50.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"revenue": 0.5}],
-        "SELECT revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 0
-
-
-def test_faithfulness_does_not_treat_limit_as_a_measure_value():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue was 10.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"revenue": 4_000}],
-        "SELECT revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 0
-
-
-def test_faithfulness_uses_currency_to_disambiguate_nearby_order_count():
-    report = AnalysisReport(
-        question="question",
-        answer="Revenue reached $50 from 12 orders.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"revenue": 50, "orders": 12}],
-        "SELECT revenue, orders FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_uses_loss_word_for_currency_measure():
-    report = AnalysisReport(
-        question="question",
-        answer="New York lost $300 compared with California.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"lost_revenue": 300, "total_sales": 1_000}],
-        "SELECT lost_revenue, total_sales FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 1
-
-
-def test_faithfulness_accepts_explicitly_rounded_derived_total():
-    report = AnalysisReport(
-        question="question",
-        answer="The two categories generated over $97,000 in revenue.",
-    )
-
-    score = _faithfulness_score(
-        report,
-        [{"revenue": 50_091.67}, {"revenue": 47_518.39}],
-        "SELECT revenue FROM table LIMIT 10",
-        tolerance=0.001,
-    )
-
-    assert score == 1
+    assert _faithfulness_score(report, rows, sql, tolerance=0.001) == expected
 
 
 def test_quality_eval_rejects_unverified_report_sql(test_config):

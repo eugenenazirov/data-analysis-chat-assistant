@@ -223,6 +223,15 @@ def _table_alias_map(table_refs: list[TableReference]) -> dict[str, TableReferen
     return aliases
 
 
+def normalized_table_aliases(expression: exp.Expression) -> dict[str, str]:
+    cte_names = _extract_cte_names(expression)
+    table_refs = _extract_table_references(expression, cte_names)
+    return {
+        alias: reference.name.lower()
+        for alias, reference in _table_alias_map(table_refs).items()
+    }
+
+
 def _direct_table_references_for_column(
     column: exp.Column, cte_names: set[str]
 ) -> list[TableReference]:

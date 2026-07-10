@@ -22,7 +22,7 @@ from retail_agent.config import AgentConfig
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger, new_trace_id
 from retail_agent.ports import AnalysisAgentPort, KnowledgeRetrieverPort, WarehousePort
-from retail_agent.sql_guard import validate_and_prepare_sql
+from retail_agent.sql_guard import normalized_table_aliases, validate_and_prepare_sql
 
 NUMBER_PATTERN = re.compile(
     r"(?<![\w.])(?:(?:EUR|GBP|JPY|USD|[$€£¥])\s*)?"
@@ -46,6 +46,17 @@ class _ContextNumber:
     value: float
     kind: _ContextKind
     unit: str | None = None
+
+
+@dataclass(frozen=True)
+class _NumericClaim:
+    match: re.Match[str]
+    value: float
+    tolerance: float
+    measure_names: frozenset[str]
+    currency: bool
+    percentage: bool
+    scaled: bool
 
 
 class JoinKey(BaseModel):
@@ -430,8 +441,12 @@ def _intent_score(
     try:
         validation = validate_and_prepare_sql(sql, config)
         canonical_validation = validate_and_prepare_sql(canonical_sql, config)
-        candidate_signature = _intent_signature(validation.safe_sql)
-        canonical_signature = _intent_signature(canonical_validation.safe_sql)
+        candidate_expression = sqlglot.parse_one(validation.safe_sql, read="bigquery")
+        canonical_expression = sqlglot.parse_one(
+            canonical_validation.safe_sql, read="bigquery"
+        )
+        candidate_signature = _intent_signature(candidate_expression)
+        canonical_signature = _intent_signature(canonical_expression)
     except (ValueError, SqlglotError):
         return 0.0
     normalized = " ".join(validation.safe_sql.lower().split())
@@ -446,7 +461,7 @@ def _intent_score(
         for fragment in expectations.forbidden_sql_fragments
     )
     structure_ok = candidate_signature.satisfies(canonical_signature)
-    joins_ok = _joins_are_allowed(validation.safe_sql, expectations.allowed_joins)
+    joins_ok = _joins_are_allowed(candidate_expression, expectations.allowed_joins)
     return (
         1.0
         if tables_ok and fragments_ok and forbidden_ok and structure_ok and joins_ok
@@ -530,9 +545,13 @@ def _field_tokens(field_name: str) -> set[str]:
     ignored = {"by", "from", "gross", "lost", "to", "total", "value"}
     return {
         synonyms.get(word, word)
-        for word in re.split(r"[^a-z0-9]+", field_name.lower())
-        if word and word not in ignored
+        for word in _name_words(field_name)
+        if word not in ignored
     }
+
+
+def _name_words(name: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[a-z0-9]+", name.lower()))
 
 
 def _retrieval_scores(retrieved: list[str], expected: list[str]) -> tuple[float, float]:
@@ -578,27 +597,48 @@ def _faithfulness_details(
                     numeric_identifiers if _is_identifier_column(column) else measures
                 )
                 target[column].append(float(value))
+    claims = [
+        _build_numeric_claim(text, match, measures, tolerance)
+        for match in claim_matches
+    ]
     context_values = _supported_context_numbers(sql)
     if not measures and not numeric_identifiers and not context_values and not dimension_spans:
-        return 0.0, [_parse_number(match.group()) for match in claim_matches]
+        return 0.0, [claim.value for claim in claims]
     unsupported = [
-        _parse_number(match.group())
-        for match in claim_matches
-        if not _claim_is_returned_dimension(match, dimension_spans)
-        and not _claim_is_numeric_identifier(text, match, numeric_identifiers)
-        and not _claim_supported(
-            _parse_number(match.group()),
-            measures,
-            context_values,
-            max(tolerance, _claim_text_tolerance(text, match)),
-            measure_names=_measure_names_for_claim(text, match, measures),
-            text=text,
-            claim_match=match,
-        )
+        claim.value
+        for claim in claims
+        if not _claim_is_returned_dimension(claim.match, dimension_spans)
+        and not _claim_is_numeric_identifier(text, claim, numeric_identifiers)
+        and not _claim_supported(claim, measures, context_values, text)
     ]
     return (
         (len(claim_matches) - len(unsupported)) / len(claim_matches),
         unsupported,
+    )
+
+
+def _build_numeric_claim(
+    text: str,
+    match: re.Match[str],
+    measures: dict[str, list[float]],
+    tolerance: float,
+) -> _NumericClaim:
+    currency = _is_currency_claim(text, match)
+    return _NumericClaim(
+        match=match,
+        value=_parse_number(match.group()),
+        tolerance=max(tolerance, _claim_text_tolerance(text, match)),
+        measure_names=frozenset(
+            _measure_names_for_claim(
+                text,
+                match,
+                measures,
+                currency_claim=currency,
+            )
+        ),
+        currency=currency,
+        percentage=_is_percentage_claim(text, match),
+        scaled=_is_scaled_claim(match),
     )
 
 
@@ -638,27 +678,23 @@ def _is_identifier_column(column: str) -> bool:
 
 def _claim_is_numeric_identifier(
     text: str,
-    claim: re.Match[str],
+    claim: _NumericClaim,
     identifiers: dict[str, list[float]],
 ) -> bool:
-    if (
-        not identifiers
-        or _is_currency_claim(text, claim)
-        or _is_percentage_claim(text, claim)
-        or _is_scaled_claim(claim)
-    ):
+    if not identifiers or claim.currency or claim.percentage or claim.scaled:
         return False
 
-    value = _parse_number(claim.group())
     matching_columns = {
         column
         for column, values in identifiers.items()
-        if any(value == identifier for identifier in values)
+        if any(claim.value == identifier for identifier in values)
     }
     if not matching_columns:
         return False
 
-    prefix = text[max(0, claim.start() - 40) : claim.start()].lower()
+    prefix = text[
+        max(0, claim.match.start() - 40) : claim.match.start()
+    ].lower()
     if len(identifiers) == 1 and re.search(
         rf"\bid{IDENTIFIER_SEPARATOR_PATTERN}$", prefix
     ):
@@ -670,7 +706,7 @@ def _claim_is_numeric_identifier(
 
 
 def _identifier_entity_prefix_matches(prefix: str, column: str) -> bool:
-    entity = column.lower().removesuffix("_id").replace("_", " ").strip()
+    entity = " ".join(_name_words(column.removesuffix("_id")))
     if not entity:
         return False
     aliases = {entity}
@@ -721,30 +757,19 @@ def _supported_context_numbers(sql: str) -> list[_ContextNumber]:
 
 
 def _claim_supported(
-    claim: float,
+    claim: _NumericClaim,
     measures: dict[str, list[float]],
     context_values: list[_ContextNumber],
-    tolerance: float,
-    *,
-    measure_names: set[str],
     text: str,
-    claim_match: re.Match[str],
 ) -> bool:
-    if _context_claim_supported(
-        claim,
-        text,
-        claim_match,
-        context_values,
-        tolerance,
-    ):
+    if _context_claim_supported(claim, text, context_values):
         return True
 
-    currency_claim = _is_currency_claim(text, claim_match)
-    percentage_claim = _is_percentage_claim(text, claim_match)
-    if currency_claim and percentage_claim:
+    if claim.currency and claim.percentage:
         return False
 
-    if currency_claim:
+    measure_names = set(claim.measure_names)
+    if claim.currency:
         monetary_measures = _measures_with_tokens(measures, MONETARY_MEASURE_TOKENS)
         if not monetary_measures:
             return False
@@ -757,26 +782,31 @@ def _claim_supported(
             return False
         measure_names = set(measures)
 
-    if percentage_claim:
+    if claim.percentage:
         return _percentage_claim_supported(
-            claim,
+            claim.value,
             measures,
             measure_names,
-            tolerance,
+            claim.tolerance,
         )
 
     selected_measures = [measures[name] for name in measure_names]
     raw_values = [value for values in selected_measures for value in values]
-    if any(_numbers_match(claim, value, tolerance) for value in raw_values):
+    if any(
+        _numbers_match(claim.value, value, claim.tolerance) for value in raw_values
+    ):
         return True
 
     for values in selected_measures:
         derivations = _same_measure_derivations(
             values,
             include_additive=True,
-            include_ratios=not currency_claim,
+            include_ratios=not claim.currency,
         )
-        if any(_numbers_match(claim, value, tolerance) for value in derivations):
+        if any(
+            _numbers_match(claim.value, value, claim.tolerance)
+            for value in derivations
+        ):
             return True
     return False
 
@@ -825,22 +855,16 @@ def _same_measure_derivations(
 
 
 def _context_claim_supported(
-    claim: float,
+    claim: _NumericClaim,
     text: str,
-    claim_match: re.Match[str],
     context_values: list[_ContextNumber],
-    tolerance: float,
 ) -> bool:
-    if (
-        _is_currency_claim(text, claim_match)
-        or _is_percentage_claim(text, claim_match)
-        or _is_scaled_claim(claim_match)
-    ):
+    if claim.currency or claim.percentage or claim.scaled:
         return False
     for context in context_values:
         if _numbers_match(
-            claim, context.value, tolerance
-        ) and _claim_has_context_structure(text, claim_match, context):
+            claim.value, context.value, claim.tolerance
+        ) and _claim_has_context_structure(text, claim.match, context):
             return True
     return False
 
@@ -881,10 +905,12 @@ def _measure_names_for_claim(
     text: str,
     claim: re.Match[str],
     measures: dict[str, list[float]],
+    *,
+    currency_claim: bool,
 ) -> set[str]:
     normalized_text = text.lower()
     eligible_measures = set(measures)
-    if _is_currency_claim(text, claim):
+    if currency_claim:
         eligible_measures = _measures_with_tokens(measures, MONETARY_MEASURE_TOKENS)
 
     if len(eligible_measures) == 1:
@@ -909,7 +935,7 @@ def _measure_names_for_claim(
 
 
 def _measure_aliases(measure_name: str) -> set[str]:
-    words = [word for word in re.split(r"[^a-z0-9]+", measure_name.lower()) if word]
+    words = _name_words(measure_name)
     aliases = set(words) - {"count", "gross", "id", "number", "total"}
     if words:
         aliases.add(" ".join(words))
@@ -931,9 +957,7 @@ def _measure_aliases(measure_name: str) -> set[str]:
 
 
 def _measure_tokens(measure_name: str) -> set[str]:
-    return {
-        word for word in re.split(r"[^a-z0-9]+", measure_name.lower()) if word
-    }
+    return set(_name_words(measure_name))
 
 
 def _measures_with_tokens(
@@ -1077,8 +1101,8 @@ class _SQLIntentSignature:
         )
 
 
-def _intent_signature(sql: str) -> _SQLIntentSignature:
-    expression = sqlglot.parse_one(sql, read="bigquery")
+def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
+    expression = sqlglot.parse_one(sql, read="bigquery") if isinstance(sql, str) else sql
     select = expression.find(exp.Select)
     aliases: dict[str, frozenset[str]] = {}
     dimensions: set[str] = set()
@@ -1175,17 +1199,14 @@ def _is_conditional_predicate_column(
     return False
 
 
-def _joins_are_allowed(sql: str, allowed_joins: list[JoinKey]) -> bool:
-    expression = sqlglot.parse_one(sql, read="bigquery")
+def _joins_are_allowed(
+    expression: exp.Expression, allowed_joins: list[JoinKey]
+) -> bool:
     joins = list(expression.find_all(exp.Join))
     if not joins:
         return True
 
-    aliases = {
-        (table.alias or table.name).lower(): table.name.lower()
-        for table in expression.find_all(exp.Table)
-        if table.name
-    }
+    aliases = normalized_table_aliases(expression)
     allowed = {join.normalized() for join in allowed_joins}
     for join in joins:
         join_keys = {

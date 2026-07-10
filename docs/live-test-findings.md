@@ -461,7 +461,7 @@ Test and evaluation verification:
 
 ```text
 157 tests passed
-91.12% branch-aware coverage (85% release gate)
+91.20% branch-aware coverage (85% release gate)
 10/10 deterministic guardrail evaluations passed
 4/4 answer-quality replay cases passed
 intent/calculation/Recall@3/MRR/faithfulness/multi-turn replay aggregates: 1.00
