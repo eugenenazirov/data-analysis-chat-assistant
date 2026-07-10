@@ -36,6 +36,7 @@ MONETARY_MEASURE_TOKENS = frozenset(
     {"amount", "cost", "price", "revenue", "sales", "spend"}
 )
 RATE_MEASURE_TOKENS = frozenset({"percentage", "rate", "ratio"})
+IDENTIFIER_SEPARATOR_PATTERN = r"\s*(?:[:#-]\s*)?"
 type QualityMode = Literal["replay", "live"]
 type _ContextKind = Literal["interval", "limit", "month", "year"]
 
@@ -658,7 +659,9 @@ def _claim_is_numeric_identifier(
         return False
 
     prefix = text[max(0, claim.start() - 40) : claim.start()].lower()
-    if len(identifiers) == 1 and re.search(r"\bid\s*$", prefix):
+    if len(identifiers) == 1 and re.search(
+        rf"\bid{IDENTIFIER_SEPARATOR_PATTERN}$", prefix
+    ):
         return True
     return any(
         _identifier_entity_prefix_matches(prefix, column)
@@ -675,7 +678,8 @@ def _identifier_entity_prefix_matches(prefix: str, column: str) -> bool:
         aliases.add(f"{entity}s")
     return any(
         re.search(
-            rf"\b{re.escape(alias)}(?:\s*(?:\(\s*)?id)?\s*$",
+            rf"\b{re.escape(alias)}(?:\s*(?:\(\s*)?id)?"
+            rf"{IDENTIFIER_SEPARATOR_PATTERN}$",
             prefix,
         )
         for alias in aliases

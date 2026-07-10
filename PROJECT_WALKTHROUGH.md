@@ -268,8 +268,9 @@ Loads the versioned answer-quality dataset and scores:
   same-measure ratios, while currency claims require monetary metrics and
   additive derivations. Approximation words plus `~` and `≈` enable bounded
   rounding tolerance. Numeric identifier columns are separated from measures
-  and require exact value plus an adjacent `ID` or entity cue. Numerals inside
-  exact returned alphanumeric dimensions are classified as dimension text.
+  and require exact value plus an adjacent `ID` or entity cue, with one optional
+  `:`, `#`, or `-` separator. Numerals inside exact returned alphanumeric
+  dimensions are classified as dimension text.
 - Multi-turn history use plus structural resolution against contextual canonical SQL.
 - Analyst-scored executive usefulness.
 

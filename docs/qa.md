@@ -94,7 +94,8 @@ The evaluator scores:
   Numeric `id`/`*_id` fields are identifier dimensions rather than measures.
   They require exact returned-value equality plus a structurally adjacent `ID`
   or matching entity cue; a generic `ID` cue is accepted only when one numeric
-  identifier column was returned.
+  identifier column was returned. One optional `:`, `#`, or `-` separator is
+  allowed between that validated cue and the numeric identifier.
   Numerals inside an exact returned alphanumeric dimension, such as `501 Jeans`,
   are recognized as dimension text rather than quantitative claims; derivations
   remain restricted to values from the same measure;

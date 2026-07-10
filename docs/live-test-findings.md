@@ -460,7 +460,7 @@ uv run python -m compileall -q retail_agent: pass
 Test and evaluation verification:
 
 ```text
-152 tests passed
+157 tests passed
 91.12% branch-aware coverage (85% release gate)
 10/10 deterministic guardrail evaluations passed
 4/4 answer-quality replay cases passed
@@ -589,3 +589,9 @@ and validated as identifier dimensions using exact equality plus a structurally
 adjacent `ID` or corresponding entity cue. A generic `ID` cue is rejected when
 multiple numeric identifier columns make it ambiguous; wrong values and typed
 currency/percentage identifier claims remain unsupported.
+
+The complete critical customer case is parameterized for `Customer ID: 67493`,
+`Customer (ID: 67493)`, `Customer #67493`, and `Customer ID #67493`, alongside
+the original `(ID 67493)` wording. Identifier binding permits exactly one
+optional `:`, `#`, or `-` separator after the validated cue; doubled separators
+remain unsupported.

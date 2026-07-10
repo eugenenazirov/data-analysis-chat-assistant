@@ -169,14 +169,26 @@ def test_quality_eval_accepts_symbol_rounded_live_regional_report(
     assert result.scores.faithfulness == 1
 
 
-def test_quality_eval_accepts_structurally_bound_live_customer_id(test_config):
+@pytest.mark.parametrize(
+    "identifier_text",
+    [
+        "customer (ID 67493)",
+        "customer ID: 67493",
+        "customer (ID: 67493)",
+        "customer #67493",
+        "customer ID #67493",
+    ],
+)
+def test_quality_eval_accepts_structurally_bound_live_customer_id(
+    test_config, identifier_text
+):
     case = load_quality_cases(CASES_PATH)[1]
     rows = [{"customer_id": 67_493, "orders": 2, "total_spend": 1_549.39}]
     report = case.replay.report.model_copy(
         update={
             "answer": "Here is our top spending customer:",
             "highlights": [
-                "Our top spending customer (ID 67493) spent $1549.39 across 2 orders."
+                f"Our top spending {identifier_text} spent $1549.39 across 2 orders."
             ],
         }
     )
@@ -220,7 +232,10 @@ def test_faithfulness_uses_entity_cue_to_disambiguate_numeric_id():
     assert score == 1
 
 
-@pytest.mark.parametrize("answer", ["Customer ID 67494.", "Customer ID $67493."])
+@pytest.mark.parametrize(
+    "answer",
+    ["Customer ID 67494.", "Customer ID $67493.", "Customer ID:: 67493."],
+)
 def test_faithfulness_rejects_wrong_or_typed_numeric_id(answer):
     report = AnalysisReport(question="question", answer=answer)
 
