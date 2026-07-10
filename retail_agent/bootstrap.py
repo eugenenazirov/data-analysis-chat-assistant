@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from retail_agent.agent import build_analysis_agent
 from retail_agent.bigquery import BigQueryRunner
 from retail_agent.config import AgentConfig
 from retail_agent.embeddings import GeminiEmbedder, HashingEmbedder
@@ -19,3 +20,4 @@ class Runtime:
             else GeminiEmbedder(config)
         )
         self.golden_store = GoldenStore(config, self.embedder, self.logger)
+        self.analysis_agent = build_analysis_agent(config)

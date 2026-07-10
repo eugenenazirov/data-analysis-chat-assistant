@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from google.api_core import exceptions
+from google.cloud import bigquery
 
-from retail_agent.bigquery import BigQueryRunner, QueryCostExceeded
+from retail_agent.bigquery import BigQueryRunner, QueryCostExceeded, QueryExecutionError
 from retail_agent.observability import EventLogger
 
 
@@ -21,9 +24,13 @@ class FakeJob:
         self.rows = rows or []
         self.job_id = "fake-job"
         self.errors = None
+        self.cancelled = False
 
     def result(self, timeout: int):
         return self.rows
+
+    def cancel(self):
+        self.cancelled = True
 
 
 class FakeBigQueryClient:
@@ -93,3 +100,118 @@ def test_bigquery_runner_blocks_over_budget_before_execution(test_config, tmp_pa
     ]
     cost_events = [event for event in events if event["event"] == "bigquery_cost_exceeded"]
     assert cost_events[0]["dry_run_bytes"] == test_config.bigquery.max_bytes_billed + 1
+
+
+def test_bigquery_runner_lazily_builds_configured_client(test_config, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_client(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(bigquery, "Client", fake_client)
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+
+    first = runner.client
+    second = runner.client
+
+    assert first is second
+    assert calls == [{"location": "US"}]
+
+
+def test_describe_allowed_tables_tolerates_per_table_schema_failure(test_config, tmp_path):
+    class SchemaClient:
+        def get_table(self, full_name):
+            if full_name.endswith("users"):
+                raise RuntimeError("metadata unavailable")
+            return SimpleNamespace(
+                schema=[SimpleNamespace(name="order_id", field_type="INTEGER")]
+            )
+
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = SchemaClient()
+
+    description = runner.describe_allowed_tables()
+
+    assert "order_id INTEGER" in description
+    assert "users`: schema unavailable" in description
+
+
+def test_bigquery_runner_logs_validation_failure(test_config, tmp_path):
+    log_path = tmp_path / "runs.jsonl"
+    runner = BigQueryRunner(test_config, EventLogger(log_path))
+
+    with pytest.raises(ValueError):
+        runner.execute(
+            "DELETE FROM `bigquery-public-data.thelook_ecommerce.orders` WHERE 1=1",
+            "trace",
+        )
+
+    events = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert events[-1]["event"] == "sql_validation_failed"
+
+
+def test_bigquery_runner_wraps_dry_run_api_failure(test_config, tmp_path):
+    class DryRunFailureClient:
+        def query(self, sql, job_config):
+            raise exceptions.ServiceUnavailable("BigQuery unavailable")
+
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = DryRunFailureClient()
+
+    with pytest.raises(QueryExecutionError, match="dry run failed"):
+        runner.execute(
+            "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
+            "trace",
+        )
+
+
+def test_bigquery_runner_wraps_execution_api_failure(test_config, tmp_path):
+    class ExecutionFailureClient:
+        def __init__(self):
+            self.calls = 0
+
+        def query(self, sql, job_config):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeJob(total_bytes_processed=10)
+            raise exceptions.ServiceUnavailable("BigQuery unavailable")
+
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = ExecutionFailureClient()
+
+    with pytest.raises(QueryExecutionError, match="query failed"):
+        runner.execute(
+            "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
+            "trace",
+        )
+
+
+def test_bigquery_runner_cancels_timed_out_job(test_config, tmp_path):
+    timeout_job = FakeJob(total_bytes_billed=10)
+
+    def timeout_result(timeout):
+        raise TimeoutError("slow")
+
+    timeout_job.result = timeout_result
+
+    class TimeoutClient:
+        def __init__(self):
+            self.calls = 0
+
+        def query(self, sql, job_config):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeJob(total_bytes_processed=10)
+            return timeout_job
+
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = TimeoutClient()
+
+    with pytest.raises(QueryExecutionError, match="timed out"):
+        runner.execute(
+            "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
+            "trace",
+        )
+
+    assert timeout_job.cancelled is True

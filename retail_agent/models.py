@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+type FailureCode = Literal[
+    "model_unavailable",
+    "warehouse_unavailable",
+    "retry_exhausted",
+    "internal_error",
+]
 
 
 class UserProfile(BaseModel):
@@ -61,11 +68,16 @@ class AnalysisReport(BaseModel):
     caveats: list[str] = Field(default_factory=list)
     followups: list[str] = Field(default_factory=list)
     refused: bool = False
+    degraded: bool = False
     trace_id: str | None = None
 
 
 class AgentFailure(BaseModel):
     question: str
     message: str
+    failure_code: FailureCode
     trace_id: str | None = None
     retryable: bool = False
+
+
+type AnalysisResponse = AnalysisReport | AgentFailure

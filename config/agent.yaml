@@ -1,4 +1,5 @@
 persona_tone: "direct, concise, executive-friendly, with clear business implications"
+persona_version: "prototype-config-v1"
 golden_trios_path: "data/golden_trios.jsonl"
 
 bigquery:
@@ -24,6 +25,8 @@ model:
   embedding_provider: "gemini"
   embedding_model: "gemini-embedding-001"
   max_sql_retries: 2
+  max_history_turns: 6
+  max_history_bytes: 65536
   temperature: 0.1
 
 safety:

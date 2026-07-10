@@ -429,7 +429,7 @@ Regression coverage:
   `users`, and `products`.
 - Targeted row-projection tests still pass.
 
-Verification:
+Historical pre-uv verification:
 
 ```text
 .venv/bin/pytest -q: 39 passed
@@ -437,3 +437,67 @@ Verification:
 .venv/bin/python -m pip check: no broken requirements
 docker compose build app && docker compose run --rm app eval && docker compose down: pass
 ```
+
+## Senior Remediation Verification
+
+Date: 2026-07-10
+
+The project was migrated to uv/Python 3.12 and reverified after adding
+conversation history, top-level failure handling, effective runtime retry
+configuration, answer-quality evaluation, and the platform-agnostic production
+HLD.
+
+Local frozen-environment verification:
+
+```text
+uv lock --check: pass
+uv sync --frozen --all-groups: pass (Python 3.12.13)
+uv pip check: all installed packages compatible
+uv run ruff check .: pass
+uv run python -m compileall -q retail_agent: pass
+```
+
+Test and evaluation verification:
+
+```text
+98 tests passed
+90.79% branch-aware coverage (85% release gate)
+10/10 deterministic guardrail evaluations passed
+4/4 answer-quality replay cases passed
+intent/calculation/Recall@3/MRR/faithfulness/multi-turn replay aggregates: 1.00
+mean replay analyst usefulness: 0.90 normalized (4.5/5)
+```
+
+Container verification:
+
+```text
+docker compose build app: pass using uv.lock with --frozen --no-dev
+docker compose run --rm app eval: pass
+docker compose run --rm app eval --suite quality --mode replay: pass
+runtime image imports retail_agent 0.1.0 and does not contain the uv executable
+```
+
+Credentialed live quality verification:
+
+```text
+Gemini Golden Knowledge indexing: 5 trios indexed
+4/4 live cases completed with Gemini and BigQuery
+intent aggregate: 1.00
+calculation aggregate: 1.00
+Retrieval Recall@3 aggregate: 1.00
+Retrieval MRR aggregate: 1.00
+numeric faithfulness aggregate: 1.00
+multi-turn aggregate: 1.00
+automated live gate: pass
+```
+
+The final report is recorded locally at `logs/quality-eval-live.json`. Its
+overall `passed` field remains `false` solely because analyst usefulness scores
+are deliberately unset, while `automated_passed` is `true`. The implementation
+does not substitute an automated or AI-authored score for the required human
+review.
+
+The final cleanup review also verified that displayed SQL is always the exact
+executed statement, tool-exhausted warehouse outages retain their retryable
+classification, chat history is byte-bounded, and live-eval backoff only retries
+when the SQL tool was never invoked.

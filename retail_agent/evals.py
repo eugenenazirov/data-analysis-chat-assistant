@@ -76,7 +76,10 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                 inputs=GuardrailEvalCase(
                     name="user_pii_sql_blocked",
                     kind="sql_blocked",
-                    sql="SELECT first_name FROM `bigquery-public-data.thelook_ecommerce.users` LIMIT 10",
+                    sql=(
+                        "SELECT first_name FROM "
+                        "`bigquery-public-data.thelook_ecommerce.users` LIMIT 10"
+                    ),
                     expected_error="PII",
                 ),
             ),
@@ -85,7 +88,10 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                 inputs=GuardrailEvalCase(
                     name="row_projection_blocked",
                     kind="sql_blocked",
-                    sql="SELECT u FROM `bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 10",
+                    sql=(
+                        "SELECT u FROM `bigquery-public-data.thelook_ecommerce.users` "
+                        "AS u LIMIT 10"
+                    ),
                     expected_error="row projection",
                 ),
             ),
@@ -94,7 +100,10 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                 inputs=GuardrailEvalCase(
                     name="excessive_limit_blocked",
                     kind="sql_blocked",
-                    sql="SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 1000000",
+                    sql=(
+                        "SELECT order_id FROM "
+                        "`bigquery-public-data.thelook_ecommerce.orders` LIMIT 1000000"
+                    ),
                     expected_error="exceeds maximum",
                 ),
             ),

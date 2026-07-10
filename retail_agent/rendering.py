@@ -4,26 +4,30 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
-from retail_agent.models import AnalysisReport
+from retail_agent.models import AgentFailure, AnalysisResponse
 
 
-def render_report(console: Console, report: AnalysisReport) -> None:
+def render_report(console: Console, report: AnalysisResponse) -> None:
+    if isinstance(report, AgentFailure):
+        console.print(f"[bold red]Analysis unavailable:[/bold red] {report.message}")
+        if report.retryable:
+            console.print("[yellow]This failure may be temporary; retry is safe.[/yellow]")
+        console.print(f"[dim]trace_id={report.trace_id}[/dim]")
+        return
+
     if report.refused:
         console.print(f"[bold red]Refused:[/bold red] {report.answer}")
         console.print(f"[dim]trace_id={report.trace_id}[/dim]")
         return
 
-    console.print(Markdown(f"## Answer\n{report.answer}"))
-    if report.highlights:
-        console.print(Markdown("## Highlights\n" + "\n".join(f"- {item}" for item in report.highlights)))
+    title = "## Degraded result" if report.degraded else "## Answer"
+    console.print(Markdown(f"{title}\n{report.answer}"))
+    _render_list_section(console, "Highlights", report.highlights)
     if report.table:
         _render_table(console, report.table)
-    if report.assumptions:
-        console.print(Markdown("## Assumptions\n" + "\n".join(f"- {item}" for item in report.assumptions)))
-    if report.caveats:
-        console.print(Markdown("## Caveats\n" + "\n".join(f"- {item}" for item in report.caveats)))
-    if report.followups:
-        console.print(Markdown("## Follow-ups\n" + "\n".join(f"- {item}" for item in report.followups)))
+    _render_list_section(console, "Assumptions", report.assumptions)
+    _render_list_section(console, "Caveats", report.caveats)
+    _render_list_section(console, "Follow-ups", report.followups)
     if report.sql:
         console.print(Markdown(f"## SQL\n```sql\n{report.sql}\n```"))
     console.print(f"[dim]trace_id={report.trace_id}[/dim]")
@@ -37,3 +41,8 @@ def _render_table(console: Console, rows: list[dict[str, object]]) -> None:
     for row in rows:
         table.add_row(*(str(row.get(column, "")) for column in columns))
     console.print(table)
+
+
+def _render_list_section(console: Console, title: str, items: list[str]) -> None:
+    if items:
+        console.print(Markdown(f"## {title}\n" + "\n".join(f"- {item}" for item in items)))

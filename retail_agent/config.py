@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from retail_agent.models import UserProfile
 
-
 DEFAULT_SQL_RETRIES = 2
+DEFAULT_HISTORY_BYTES = 64 * 1024
 
 
 class BigQueryConfig(BaseModel):
@@ -38,7 +38,9 @@ class ModelConfig(BaseModel):
     llm_model: str = "google-cloud:gemini-2.5-flash"
     embedding_provider: str = Field(default="gemini", pattern="^(gemini|hash)$")
     embedding_model: str = "gemini-embedding-001"
-    max_sql_retries: int = DEFAULT_SQL_RETRIES
+    max_sql_retries: int = Field(default=DEFAULT_SQL_RETRIES, ge=0, le=3)
+    max_history_turns: int = Field(default=6, ge=1, le=20)
+    max_history_bytes: int = Field(default=DEFAULT_HISTORY_BYTES, ge=4_096, le=1_048_576)
     temperature: float = 0.1
 
 
@@ -140,6 +142,7 @@ class AgentConfig(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     persona_tone: str = "clear, concise, executive-friendly"
+    persona_version: str = "prototype-config-v1"
     users: dict[str, UserProfile] = Field(default_factory=dict)
     golden_trios_path: Path = Path("data/golden_trios.jsonl")
 
@@ -182,6 +185,9 @@ def _env_overrides() -> dict[str, Any]:
         ("LLM_MODEL",): ("model", "llm_model"),
         ("EMBEDDING_PROVIDER",): ("model", "embedding_provider"),
         ("EMBEDDING_MODEL",): ("model", "embedding_model"),
+        ("MAX_SQL_RETRIES",): ("model", "max_sql_retries"),
+        ("MAX_CHAT_HISTORY_TURNS",): ("model", "max_history_turns"),
+        ("MAX_CHAT_HISTORY_BYTES",): ("model", "max_history_bytes"),
         ("AGENT_LOG_PATH",): ("observability", "log_path"),
     }
     for env_names, path in env_map.items():
@@ -190,7 +196,12 @@ def _env_overrides() -> dict[str, Any]:
             if raw is None:
                 continue
             section, field = path
-            if field in {"max_bytes_billed"}:
+            if field in {
+                "max_bytes_billed",
+                "max_sql_retries",
+                "max_history_turns",
+                "max_history_bytes",
+            }:
                 overrides[section][field] = int(raw)
             else:
                 overrides[section][field] = raw

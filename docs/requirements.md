@@ -1,83 +1,122 @@
 # Requirements Mapping
 
+The prototype proves the risky agent behaviors in a CLI. The production HLD in
+`docs/architecture.md` specifies the durable API, storage, authorization, and
+operations that are intentionally outside the assignment prototype.
+
 ## 1. Hybrid Intelligence
 
-The prototype indexes analyst-approved Question → SQL → Report trios into Qdrant. At query time, the app retrieves similar trios before the model call and passes them in as precedent for business logic, not as fresh data.
+Prototype:
 
-Production loop:
+- Approved Question -> SQL -> Analyst Report trios are embedded into Qdrant.
+- Retrieval occurs deterministically before every model run.
+- Follow-up retrieval combines the preceding and current user questions.
+- Retrieved IDs are included in structured events and `TurnResult` diagnostics.
 
-1. Analyst approves or edits a generated report.
-2. The raw trio is stored with metadata, reviewer, timestamp, and data-domain tags.
-3. A background indexer embeds the trio and writes it to Qdrant.
-4. Retrieval logs record which trios influenced each answer.
+Production:
+
+- Interactions enter a candidate queue, never the active index directly.
+- Analysts edit and approve candidates.
+- PostgreSQL approval and an outbox event commit together.
+- Workers write versioned raw artifacts to S3-compatible storage, build a
+  versioned Qdrant collection, run release gates, and atomically promote its
+  alias. The previous version remains available for rollback.
 
 ## 2. Safety And PII Masking
 
-Controls are layered:
+Prototype controls are layered:
 
-- SQL parser blocks DML/DDL.
-- SQL parser restricts tables to fully qualified assignment tables in `bigquery-public-data.thelook_ecommerce`.
-- SQL parser uses table-specific safe column allowlists, blocks configured PII columns such as email, phone, names, exact address, postal code, and geolocation, and rejects whole-row/table-alias projections such as `SELECT u FROM users AS u`.
-- SQL parser enforces the configured maximum result row limit even when the model supplies its own `LIMIT`.
-- The app redacts email/phone patterns from final outputs and logs.
-- BigQuery service account should be read-only.
-- Production can add BigQuery column-level security and data masking policies.
+- `sqlglot` permits only one read-only query and restricts fully qualified tables.
+- Table-specific safe-column allowlists block PII, `SELECT *`, whole-row aliases,
+  and hidden row serialization.
+- Missing limits are added; excessive limits are rejected.
+- BigQuery dry-run byte caps and timeouts bound cost.
+- Recursive output and telemetry redaction masks email and phone patterns.
+- The model receives explicit analytics-only and no-PII instructions.
+
+Production adds OIDC identity, least-privilege workload credentials, row-level
+security for owned data, restricted encrypted transcripts, network policies,
+secret injection, and immutable audit exports. Warehouse masking remains defense
+in depth rather than replacing application validation.
 
 ## 3. Destructive Saved Reports Oversight
 
-The prototype does not implement destructive saved-report deletion. The production design treats it as a separate workflow:
+This is production-design-only because the assignment prototype does not include
+a Saved Reports library.
 
-1. User asks to delete reports.
-2. Report service verifies ownership and scopes candidates.
-3. Assistant shows a preview count and sample report titles.
-4. User must confirm with a generated confirmation token.
-5. Service deletes only owned reports and writes an audit event.
-6. Ambiguous or broad requests require narrowing before confirmation.
+- Preview queries are always scoped to the authenticated owner.
+- Candidate report IDs are frozen and hashed; sample titles and count are shown.
+- Confirmation is one-time, owner-bound, idempotent, and expires after five
+  minutes.
+- The transaction locks the pending action, deletes exactly the frozen owned IDs,
+  consumes the token, and appends the audit event.
+- Reports created after preview are never silently included.
+- Audit exports use object lock with 400-day retention.
 
 ## 4. Continuous Improvement
 
 User level:
 
-- User profiles in `config/agent.yaml` define preferred report format and tone.
-- Production should store these preferences in a user profile database.
+- The prototype reads explicit formatting preferences from configuration.
+- Production persists versioned preferences in PostgreSQL through an authenticated
+  self-service endpoint. The model cannot silently change them.
 
 System level:
 
-- Successful interactions are candidates for review.
-- Only human-approved interactions enter Golden Knowledge.
-- Eval failures and low-confidence traces feed backlog items.
+- Only analyst-approved interactions enter Golden Knowledge.
+- Candidate index versions must pass retrieval and answer-quality gates.
+- Prompt, persona, model, and index versions are recorded on every turn for
+  comparison and rollback.
 
 ## 5. Resilience And Graceful Error Handling
 
-- BigQuery dry-runs catch syntax and cost issues before execution.
-- Query execution is capped with timeout and `maximum_bytes_billed`.
-- PydanticAI `ModelRetry` gives the model structured feedback for repair.
-- Empty result sets trigger one refinement attempt, then a clear explanation.
-- Qdrant readiness is required for `index-golden`; `ask` and `chat` continue without Golden Knowledge if Qdrant is unavailable and log that degradation.
-- Logs preserve error class, trace ID, SQL validation decision, retry feedback events, retry attempt/max-retry fields, and the configured retry budget.
+Prototype:
+
+- SQL validation/runtime/empty-result feedback uses a configurable 0-3 tool retry
+  budget that is applied when the PydanticAI agent is constructed.
+- Qdrant failure degrades retrieval without failing the answer.
+- A top-level agent boundary catches provider failures and emits
+  `agent_run_failed`.
+- If a verified query already completed, the user receives a redacted degraded
+  table and SQL. Otherwise the user receives a typed safe failure.
+- `chat` continues after a failed turn; `ask` exits nonzero without a traceback.
+- No whole-agent replay occurs after a tool may have executed.
+
+Production adds per-dependency timeouts, circuit breaking, durable idempotency,
+HA PostgreSQL, derived-index rebuild, bounded Kubernetes concurrency, backups,
+and tested recovery objectives.
 
 ## 6. Quality Assurance
 
-- Pytest covers deterministic guardrails, redaction, config, mocked BigQuery, mocked Gemini embeddings, deterministic Golden Knowledge indexing, and agent prefetch behavior.
-- `python -m retail_agent eval` runs guardrail evals without live BigQuery/Gemini credentials.
-- Production evaluation should add analyst-labeled cases, trajectory review, and LLM-as-judge rubrics for intent coverage.
+- Pytest covers deterministic safety, adapters, retries, provider failures,
+  degraded reports, conversation history, contextual retrieval, CLI continuity,
+  and evaluator behavior.
+- Branch-aware coverage is gated at 85%.
+- `eval` runs deterministic guardrail cases.
+- `eval --suite quality --mode replay` scores committed answer-quality traces.
+- `eval --suite quality --mode live` runs Gemini and BigQuery, compares generated
+  and canonical results from the same data, and writes a versioned JSON report.
+- Quality scores cover structural AST intent, calculation accuracy, Retrieval
+  Recall@3 and mean reciprocal rank, lineage-aware numeric faithfulness,
+  multi-turn context resolution, and analyst usefulness.
+- A live release cannot pass until analyst usefulness scores are supplied.
 
 ## 7. Observability
 
-Each run emits JSONL events with:
+Prototype JSONL events include trace/session/turn IDs, user, model, history size,
+retrieved trio IDs, SQL validation, warehouse bytes/latency/rows, retries and
+budget, failure code, degraded status, usage, redactions, and terminal status.
 
-- `trace_id`
-- user id
-- retrieved Golden Trio ids
-- SQL validation status
-- dry-run bytes
-- BigQuery latency and row count
-- retry feedback, retry attempt/max-retry fields, and failure class
-- final refusal status
-- redaction count
+Production sends the same fields through OpenTelemetry to Prometheus,
+Alertmanager, Grafana, Loki, and Tempo. The HLD defines concrete availability,
+latency, dependency-degradation, quality, cost, PII, and ownership objectives and
+alerts.
 
-Logfire/OpenTelemetry can export traces to an external backend.
+## 8. Agility And Persona Management
 
-## 8. Persona Management
+Prototype tone and format remain in `config/agent.yaml` for reviewer convenience.
 
-Prototype tone and format live in `config/agent.yaml`. Production should move these instructions into an admin-editable config store with validation, versioning, approvals, and rollback.
+Production separates immutable safety instructions from editable persona style.
+OIDC-authorized non-developers create drafts, run validation/evals, publish a
+version pointer without deployment, and roll back. Sessions and traces pin the
+persona version used for reproducibility.

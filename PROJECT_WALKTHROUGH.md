@@ -38,10 +38,10 @@ docker compose run --rm app eval
 ### Local Python Path
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m retail_agent eval
+uv lock --check
+uv sync --frozen --all-groups
+uv run python -m retail_agent eval
+uv run python -m retail_agent eval --suite quality --mode replay
 ```
 
 For live BigQuery and Gemini setup, see `README.md` and
@@ -52,13 +52,13 @@ For live BigQuery and Gemini setup, see `README.md` and
 1. `retail_agent/cli.py` receives `ask` or `chat` input.
 2. `retail_agent/bootstrap.py` creates shared runtime objects: config, logger,
    BigQuery runner, embedder, and Qdrant-backed Golden Store.
-3. `retail_agent/agent.py` creates a trace ID and loads the user's formatting
-   preferences from `config/agent.yaml`.
+3. `retail_agent/agent.py` creates a session-aware turn, trace ID, and loads the
+   user's formatting preferences from `config/agent.yaml`.
 4. The app retrieves similar Golden Knowledge trios from Qdrant through
    `retail_agent/golden_store.py`. If Qdrant is unavailable, `ask` and `chat`
    continue without retrieved precedent and log the degradation.
-5. The PydanticAI agent receives the question, schema context, user preference,
-   and retrieved Golden Knowledge precedent.
+5. The PydanticAI agent receives the question, bounded conversation history,
+   schema context, user preference, and retrieved Golden Knowledge precedent.
 6. When the model proposes SQL, `retail_agent/bigquery.py` sends it through
    `retail_agent/sql_guard.py` before BigQuery sees it.
 7. The BigQuery runner performs a dry-run with byte limits, then executes the
@@ -67,8 +67,12 @@ For live BigQuery and Gemini setup, see `README.md` and
 9. `retail_agent/pii.py` redacts email and phone patterns from final output and
    logs.
 10. `retail_agent/rendering.py` prints the report with Rich tables and Markdown.
-11. `retail_agent/observability.py` writes structured JSONL events under
-   `logs/`.
+11. The turn returns updated conversation state so `chat` can pass PydanticAI
+    message history into the next turn.
+12. A top-level failure boundary returns a typed failure or verified degraded
+    report instead of terminating the CLI.
+13. `retail_agent/observability.py` writes session/turn-aware JSONL events under
+    `logs/`.
 
 ## Module By Module
 
@@ -77,7 +81,7 @@ For live BigQuery and Gemini setup, see `README.md` and
 Owns the Typer command-line interface:
 
 - `ask`: one-shot analytics question.
-- `chat`: interactive session.
+- `chat`: stateful interactive session with bounded message history.
 - `index-golden`: loads seed trios and writes them to Qdrant.
 - `bq-smoke`: live BigQuery smoke test without Gemini or Golden Knowledge.
 - `eval`: deterministic guardrail evals.
@@ -94,7 +98,8 @@ Builds runtime dependencies once from config:
 - `GeminiEmbedder` or deterministic `HashingEmbedder`
 - `GoldenStore`
 
-This keeps CLI commands small and makes dependency wiring easy to test.
+It also builds the PydanticAI agent with the configured tool retry budget. This
+keeps CLI commands small and makes dependency wiring easy to test.
 
 ### `retail_agent/config.py` and `config/agent.yaml`
 
@@ -103,6 +108,7 @@ Define all runtime configuration:
 - BigQuery dataset, allowed tables, byte cap, timeout, max rows.
 - Qdrant URL and collection name.
 - LLM and embedding model names.
+- SQL retry budget plus chat-history turn and serialized-byte limits.
 - Persona tone and per-user output preferences.
 - PII denylist and table-specific safe-column allowlists.
 - Local JSONL log path.
@@ -118,6 +124,7 @@ Defines Pydantic models shared across the system:
 - `RetrievedTrio`: Qdrant search result passed to the agent.
 - `QueryResult`: SQL execution result from BigQuery.
 - `AnalysisReport`: structured final agent output.
+- `AgentFailure`: typed user-safe failure without provider details.
 
 These typed contracts are one reason the prototype is easier to test and extend.
 
@@ -125,11 +132,17 @@ These typed contracts are one reason the prototype is easier to test and extend.
 
 Owns PydanticAI orchestration:
 
+- Builds an agent whose tool retry budget comes from runtime configuration.
 - Defines the executive-facing assistant instructions.
 - Adds runtime context: trace ID, user profile, schema description, and tone.
 - Prefetches Golden Knowledge before the model run.
 - Exposes `run_sql_query` as a tool with retry feedback through `ModelRetry`.
-- Sanitizes the final report and attaches the executed SQL if the model omits it.
+- Carries recent PydanticAI messages across chat turns and contextualizes
+  retrieval for follow-up questions. Large SQL tool returns are compacted and
+  history is bounded by both turns and serialized bytes.
+- Converts top-level failures into typed failures or redacted degraded reports.
+- Sanitizes the final report and always replaces model-supplied SQL with the
+  verified statement that actually executed.
 
 This module is where Hybrid Intelligence, personalization, SQL self-healing, and
 final report structure meet.
@@ -232,6 +245,21 @@ Defines deterministic `pydantic-evals` guardrail checks:
 
 These evals run without live BigQuery or Gemini credentials.
 
+### `retail_agent/quality_evals.py`
+
+Loads the versioned answer-quality dataset and scores:
+
+- AST-level intent-to-SQL contracts.
+- Candidate/canonical calculation accuracy.
+- Golden Knowledge Retrieval Recall@3 and mean reciprocal rank.
+- Lineage-aware support for numerical report claims; derivations only compare
+  values from the same measure.
+- Multi-turn history use plus structural resolution against contextual canonical SQL.
+- Analyst-scored executive usefulness.
+
+Replay mode is deterministic for CI. Live mode runs generated and canonical
+queries against the same BigQuery data and writes a machine-readable report.
+
 ### `retail_agent/rendering.py`
 
 Formats `AnalysisReport` for the terminal using Rich:
@@ -257,12 +285,13 @@ The test suite covers the deterministic pieces:
 
 ### Docker And Project Files
 
-- `Dockerfile`: Python slim image, non-root runtime user, cached dependency
-  install, CLI entrypoint.
+- `Dockerfile`: Python slim image, exact uv binary, frozen production dependency
+  sync, non-root runtime user, and CLI entrypoint.
 - `compose.yaml`: `app` plus Qdrant service, `.env` support, mounted logs, and
   host Google ADC mount for local reviewer use.
 - `.env.example`: generic environment template with no secrets.
-- `requirements.txt`: pinned runtime dependencies for the prototype.
+- `pyproject.toml` and `uv.lock`: single dependency source and complete frozen
+  resolution for Python 3.12.
 - `data/golden_trios.jsonl`: seed analyst trios for Golden Knowledge.
 
 ## Requirement Mapping
@@ -331,31 +360,38 @@ Implemented in prototype:
 
 - `run_sql_query` uses PydanticAI `ModelRetry` for SQL validation/runtime
   failures and empty result sets.
+- `max_sql_retries` configures the actual inherited tool retry budget.
 - BigQuery dry-runs catch cost and syntax issues before execution.
 - Query timeout and max bytes limit protect cost and UX.
 - Qdrant failure does not break `ask` or `chat`; the run continues without
   retrieved precedent and logs `golden_knowledge_unavailable`.
+- Gemini/provider failure returns a typed error without a traceback; if a query
+  already completed, safe rows are returned as a redacted degraded report.
 
 ### 6. Quality Assurance
 
 Implemented in prototype:
 
 - `pytest` covers deterministic behavior and mocked integrations.
-- `python -m retail_agent eval` runs deterministic guardrail evals.
+- `uv run python -m retail_agent eval` runs deterministic guardrail evals.
+- `eval --suite quality --mode replay` runs executable intent, calculation,
+  retrieval, faithfulness, multi-turn, and usefulness gates.
+- `eval --suite quality --mode live` compares generated and canonical BigQuery
+  results, safely retries bounded pre-tool transient failures, and requires
+  analyst usefulness scoring for release.
 - Docker eval verifies the reviewer container path.
 
-Production HLD:
-
-- Add analyst-labeled report quality cases, trajectory review, model/version
-  regression dashboards, and LLM-as-judge only as an auxiliary signal.
+Production extends the same versioned dataset with scheduled credentialed runs,
+analyst scoring, and model/prompt/persona/index regression dashboards.
 
 ### 7. Observability
 
 Implemented in prototype:
 
-- JSONL events include trace ID, user, retrieved trio IDs, SQL validation
-  status, dry-run bytes, BigQuery latency, row count, retry feedback, failure
-  class, redaction count, and completion status.
+- JSONL events include session/turn/trace IDs, user, model, history size,
+  retrieved trio IDs, SQL validation status, dry-run bytes, BigQuery latency,
+  row count, retry feedback/budget, failure code, degraded status, redaction
+  count, and completion status.
 - Final CLI output includes trace ID.
 - Optional Logfire/OpenTelemetry hooks are available.
 
@@ -379,8 +415,9 @@ Production HLD:
 4. Run deterministic checks:
 
    ```bash
-   python -m retail_agent eval
-   pytest
+    uv run python -m retail_agent eval
+    uv run python -m retail_agent eval --suite quality --mode replay
+    uv run pytest
    ```
 
 5. If credentials are available, run the live Docker path:
@@ -397,8 +434,10 @@ Production HLD:
 ## Known Prototype Boundaries
 
 - The saved-report destructive workflow is production HLD only.
+- Production session/preferences/reports/personas remain HLD-only; the prototype
+  intentionally stores only in-memory CLI conversation state.
 - The raw Golden Knowledge promotion workflow is represented by seed JSONL and
-  documentation, not a full analyst review UI.
+  production design, not a full analyst review UI.
 - BigQuery is the only implemented warehouse runner, but the boundary is narrow:
   `BigQueryRunner` can be replaced by another warehouse runner.
 - The CLI is intentionally simple because the assignment does not require a UI.

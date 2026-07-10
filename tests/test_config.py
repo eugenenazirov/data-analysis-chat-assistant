@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from retail_agent.config import load_config
+import pytest
+from pydantic import ValidationError
+
+from retail_agent.config import AgentConfig, ModelConfig, load_config
 
 
 def test_load_config_user_profiles(tmp_path, monkeypatch):
@@ -17,11 +20,28 @@ users:
         encoding="utf-8",
     )
     monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
+    monkeypatch.setenv("MAX_SQL_RETRIES", "0")
+    monkeypatch.setenv("MAX_CHAT_HISTORY_TURNS", "4")
+    monkeypatch.setenv("MAX_CHAT_HISTORY_BYTES", "8192")
     load_config.cache_clear()
 
     config = load_config(str(config_file))
 
     assert config.qdrant.url == "http://qdrant:6333"
+    assert config.model.max_sql_retries == 0
+    assert config.model.max_history_turns == 4
+    assert config.model.max_history_bytes == 8192
     assert config.user_profile("manager_a").preferred_format == "table"
     assert config.user_profile("unknown").tone == "plain"
     assert isinstance(config.observability.log_path, Path)
+
+
+@pytest.mark.parametrize("retry_budget", [-1, 4])
+def test_model_config_rejects_unbounded_retry_budget(retry_budget):
+    with pytest.raises(ValidationError):
+        ModelConfig(max_sql_retries=retry_budget)
+
+
+def test_agent_config_defaults_to_bounded_history():
+    assert AgentConfig().model.max_history_turns == 6
+    assert AgentConfig().model.max_history_bytes == 65536

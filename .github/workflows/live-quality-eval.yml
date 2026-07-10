@@ -1,0 +1,110 @@
+name: Live answer-quality evaluation
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      human_scores:
+        description: "Optional JSON object mapping case IDs to analyst scores (0-5)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.12.4
+        ports:
+          - 6333:6333
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.10.8"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Authenticate to Google APIs with federated identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install Python and frozen dependencies
+        run: |
+          uv python install
+          uv sync --frozen --all-groups
+
+      - name: Index approved Golden Knowledge
+        env:
+          EMBEDDING_PROVIDER: gemini
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
+          QDRANT_URL: http://localhost:6333
+        run: uv run python -m retail_agent index-golden --recreate
+
+      - name: Store supplied analyst scores
+        if: inputs.human_scores != ''
+        env:
+          HUMAN_SCORES: ${{ inputs.human_scores }}
+        run: |
+          mkdir -p artifacts
+          printf '%s' "$HUMAN_SCORES" > artifacts/human-scores.json
+
+      - name: Run live quality evaluation without analyst scores
+        if: inputs.human_scores == ''
+        id: live_eval
+        continue-on-error: true
+        env:
+          EMBEDDING_PROVIDER: gemini
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
+          QDRANT_URL: http://localhost:6333
+        run: >-
+          uv run python -m retail_agent eval
+          --suite quality
+          --mode live
+          --automated-only
+          --output artifacts/quality-eval-live.json
+
+      - name: Run analyst-scored live quality evaluation
+        if: inputs.human_scores != ''
+        id: scored_live_eval
+        continue-on-error: true
+        env:
+          EMBEDDING_PROVIDER: gemini
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
+          QDRANT_URL: http://localhost:6333
+        run: >-
+          uv run python -m retail_agent eval
+          --suite quality
+          --mode live
+          --human-scores artifacts/human-scores.json
+          --output artifacts/quality-eval-live.json
+
+      - name: Upload evaluation report for analyst scoring
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-eval-live
+          path: artifacts/quality-eval-live.json
+          if-no-files-found: error
+
+      - name: Require analyst-scored release rerun
+        if: >-
+          steps.live_eval.outcome == 'failure' ||
+          steps.scored_live_eval.outcome == 'failure'
+        run: |
+          echo "Automated quality gates failed, or the analyst-scored release rerun failed."
+          exit 1

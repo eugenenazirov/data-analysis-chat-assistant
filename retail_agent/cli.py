@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -8,16 +10,33 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
-from retail_agent.agent import run_question
+from retail_agent.agent import ConversationState, run_question
 from retail_agent.bigquery import BigQueryRunner, QueryExecutionError
 from retail_agent.bootstrap import Runtime
 from retail_agent.config import load_config
 from retail_agent.evals import run_guardrail_evals
+from retail_agent.models import AgentFailure
 from retail_agent.observability import EventLogger, new_trace_id
+from retail_agent.quality_evals import (
+    load_human_scores,
+    run_quality_live_evals,
+    run_quality_replay_evals,
+    write_quality_report,
+)
 from retail_agent.rendering import render_report
 
 app = typer.Typer(help="Retail data analysis chat assistant")
 console = Console()
+
+
+class EvalSuite(StrEnum):
+    guardrails = "guardrails"
+    quality = "quality"
+
+
+class QualityEvalMode(StrEnum):
+    replay = "replay"
+    live = "live"
 
 BIGQUERY_SMOKE_SQL = """
 SELECT
@@ -59,7 +78,7 @@ def ask(
     """Ask one analytics question and print a report."""
 
     runtime = _runtime(config_path)
-    report = asyncio.run(
+    turn = asyncio.run(
         run_question(
             " ".join(question),
             config=runtime.config,
@@ -67,9 +86,12 @@ def ask(
             golden_store=runtime.golden_store,
             logger=runtime.logger,
             user_id=user,
+            analysis_agent=runtime.analysis_agent,
         )
     )
-    render_report(console, report)
+    render_report(console, turn.response)
+    if isinstance(turn.response, AgentFailure):
+        raise typer.Exit(code=1)
 
 
 @app.command("bq-smoke")
@@ -116,6 +138,7 @@ def chat(
     """Start an interactive CLI chat session."""
 
     runtime = _runtime(config_path)
+    conversation = ConversationState()
     console.print("[bold]Retail analysis assistant[/bold]. Type 'exit' to stop.")
     while True:
         question = console.input("[bold cyan]you>[/bold cyan] ").strip()
@@ -123,7 +146,7 @@ def chat(
             break
         if not question:
             continue
-        report = asyncio.run(
+        turn = asyncio.run(
             run_question(
                 question,
                 config=runtime.config,
@@ -131,18 +154,90 @@ def chat(
                 golden_store=runtime.golden_store,
                 logger=runtime.logger,
                 user_id=user,
+                conversation=conversation,
+                analysis_agent=runtime.analysis_agent,
             )
         )
-        render_report(console, report)
+        conversation = turn.conversation
+        render_report(console, turn.response)
 
 
 @app.command()
 def eval(
     config_path: Annotated[str, typer.Option("--config")] = "config/agent.yaml",
+    suite: Annotated[EvalSuite, typer.Option()] = EvalSuite.guardrails,
+    mode: Annotated[
+        QualityEvalMode, typer.Option(help="Quality suite execution mode.")
+    ] = QualityEvalMode.replay,
+    cases_path: Annotated[
+        Path, typer.Option("--cases", help="Quality evaluation JSONL dataset.")
+    ] = Path("data/quality_eval_cases.jsonl"),
+    output: Annotated[
+        Path | None, typer.Option(help="Optional machine-readable quality report.")
+    ] = None,
+    human_scores: Annotated[
+        Path | None,
+        typer.Option(help="JSON mapping case IDs to analyst usefulness scores (0-5)."),
+    ] = None,
+    automated_only: Annotated[
+        bool,
+        typer.Option(
+            help="Gate automated quality metrics without requiring analyst scores."
+        ),
+    ] = False,
 ) -> None:
-    """Run deterministic guardrail evals."""
+    """Run deterministic guardrails or replay/live answer-quality evaluations."""
 
     config = load_config(config_path)
+    if suite is EvalSuite.quality:
+        if mode is QualityEvalMode.replay:
+            result = run_quality_replay_evals(config, cases_path)
+        else:
+            runtime = _runtime(config_path)
+            result = asyncio.run(
+                run_quality_live_evals(
+                    config,
+                    cases_path,
+                    bigquery=runtime.bigquery,
+                    golden_store=runtime.golden_store,
+                    logger=runtime.logger,
+                    analysis_agent=runtime.analysis_agent,
+                    human_scores=load_human_scores(human_scores),
+                )
+            )
+            output = output or Path("artifacts/quality-eval-live.json")
+        table = Table(title=f"Answer-quality evals ({result.mode})")
+        table.add_column("Eval")
+        table.add_column("Status")
+        table.add_column("Scores")
+        for case_result in result.results:
+            table.add_row(
+                case_result.name,
+                (
+                    "PASS"
+                    if case_result.passed
+                    else "AUTO PASS"
+                    if case_result.automated_passed
+                    else "FAIL"
+                ),
+                case_result.detail,
+            )
+        console.print(table)
+        if result.needs_human_review:
+            console.print(
+                "[yellow]Human usefulness scores are required before release.[/yellow]"
+            )
+        if output is not None:
+            write_quality_report(result, output)
+            console.print(f"[dim]quality_report={output}[/dim]")
+        gate_passed = result.automated_passed if automated_only else result.passed
+        if not gate_passed:
+            raise typer.Exit(code=1)
+        return
+
+    if automated_only:
+        raise typer.BadParameter("--automated-only applies only to the quality suite.")
+
     results = run_guardrail_evals(config)
     table = Table(title="Guardrail evals")
     table.add_column("Eval")
