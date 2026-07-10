@@ -140,6 +140,8 @@ Owns PydanticAI orchestration:
 - Carries recent PydanticAI messages across chat turns and contextualizes
   retrieval for follow-up questions. Large SQL tool returns are compacted and
   history is bounded by both turns and serialized bytes.
+- Tells follow-up turns to preserve the prior cohort's entity, timestamp column,
+  filters, and time bounds unless the user changes them.
 - Converts top-level failures into typed failures or redacted degraded reports.
 - Sanitizes the final report and always replaces model-supplied SQL with the
   verified statement that actually executed.
@@ -180,7 +182,10 @@ Owns live warehouse access:
 - Describes allowed table schemas for prompt context.
 - Runs SQL validation before BigQuery.
 - Performs dry-runs with `maximum_bytes_billed`.
-- Executes read-only query jobs with timeout and labels.
+- Executes read-only query jobs with timeout, labels, and a stable trace/SQL-derived
+  job ID.
+- Separates retry-safe validation/dry-run failures from post-submission
+  outcome-unknown failures, which never enter `ModelRetry`.
 - Logs validation, dry-run, cost, latency, row count, and failure events.
 
 The public dataset is fixed to the assignment tables by config and guardrails.
@@ -249,11 +254,13 @@ These evals run without live BigQuery or Gemini credentials.
 
 Loads the versioned answer-quality dataset and scores:
 
-- AST-level intent-to-SQL contracts.
-- Candidate/canonical calculation accuracy.
+- AST-level intent-to-SQL contracts with declared join keys and normalized
+  equivalent time offsets such as one quarter and three months.
+- Exact candidate/canonical row-set accuracy: extra rows are penalized while
+  additional verified measures may accompany the required columns.
 - Golden Knowledge Retrieval Recall@3 and mean reciprocal rank.
-- Lineage-aware support for numerical report claims; derivations only compare
-  values from the same measure.
+- Metric-aware support for numerical report claims, including currency/rate
+  cues and same-measure derivations without cross-column value pooling.
 - Multi-turn history use plus structural resolution against contextual canonical SQL.
 - Analyst-scored executive usefulness.
 

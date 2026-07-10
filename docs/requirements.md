@@ -72,8 +72,11 @@ System level:
 
 Prototype:
 
-- SQL validation/runtime/empty-result feedback uses a configurable 0-3 tool retry
-  budget that is applied when the PydanticAI agent is constructed.
+- SQL validation, dry-run, cost, and empty-result feedback uses a configurable
+  0-3 tool retry budget that is applied when the PydanticAI agent is constructed.
+- Every submitted query receives a stable trace/SQL-derived BigQuery job ID.
+  Failures after submission are typed `warehouse_outcome_unknown`, are not
+  retryable, and never return to the model tool loop.
 - Qdrant failure degrades retrieval without failing the answer.
 - A top-level agent boundary catches provider failures and emits
   `agent_run_failed`.
@@ -96,8 +99,9 @@ and tested recovery objectives.
 - `eval --suite quality --mode replay` scores committed answer-quality traces.
 - `eval --suite quality --mode live` runs Gemini and BigQuery, compares generated
   and canonical results from the same data, and writes a versioned JSON report.
-- Quality scores cover structural AST intent, calculation accuracy, Retrieval
-  Recall@3 and mean reciprocal rank, lineage-aware numeric faithfulness,
+- Quality scores cover structural AST intent with declared join keys and
+  normalized time offsets, exact row-set calculation accuracy, Retrieval
+  Recall@3 and mean reciprocal rank, metric-aware numeric faithfulness,
   multi-turn context resolution, and analyst usefulness.
 - A live release cannot pass until analyst usefulness scores are supplied.
 

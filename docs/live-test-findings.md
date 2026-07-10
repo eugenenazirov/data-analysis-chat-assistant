@@ -460,8 +460,8 @@ uv run python -m compileall -q retail_agent: pass
 Test and evaluation verification:
 
 ```text
-98 tests passed
-90.79% branch-aware coverage (85% release gate)
+112 tests passed
+91.04% branch-aware coverage (85% release gate)
 10/10 deterministic guardrail evaluations passed
 4/4 answer-quality replay cases passed
 intent/calculation/Recall@3/MRR/faithfulness/multi-turn replay aggregates: 1.00
@@ -498,6 +498,32 @@ does not substitute an automated or AI-authored score for the required human
 review.
 
 The final cleanup review also verified that displayed SQL is always the exact
-executed statement, tool-exhausted warehouse outages retain their retryable
-classification, chat history is byte-bounded, and live-eval backoff only retries
-when the SQL tool was never invoked.
+executed statement, chat history is byte-bounded, and live-eval backoff only
+retries when the SQL tool was never invoked.
+
+## Adversarial Evaluator And Post-Submission Retry Re-Review
+
+Date: 2026-07-10
+
+The follow-up review probes are now committed as regression tests:
+
+- an additional candidate row reduces calculation accuracy instead of being ignored;
+- a claim such as "Revenue was 50" cannot borrow `orders=50` or `LIMIT 50`;
+- currency and percentage claims resolve only against compatible measures;
+- `order_items.order_id = products.id` is rejected because join keys are declared
+  explicitly in the versioned case;
+- `INTERVAL 3 MONTH` and `INTERVAL 1 QUARTER` share the same normalized duration;
+- additional verified measures are allowed, but the required canonical row set
+  must still match exactly.
+
+BigQuery execution now uses a stable trace/SQL-derived job ID with SDK job retry
+disabled. Validation and dry-run failures may enter bounded `ModelRetry` feedback;
+any failure after submission becomes non-retryable
+`warehouse_outcome_unknown`, emits `sql_terminal_failure`, and cannot resubmit the
+query through the model loop.
+
+The final credentialed live trace used the strengthened follow-up cohort
+instruction and passed all four automated cases at 1.00 for intent, calculation,
+Recall@3, MRR, faithfulness, and multi-turn resolution; the saved trace was also
+rechecked with the final percent-scaling rule. Local and containerized BigQuery
+smoke tests passed with stable job IDs and no SDK retry warning.

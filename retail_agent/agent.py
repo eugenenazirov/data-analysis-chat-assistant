@@ -20,7 +20,12 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from retail_agent.bigquery import QueryCostExceeded, QueryExecutionError
+from retail_agent.bigquery import (
+    QueryCostExceeded,
+    QueryExecutionError,
+    QueryOutcomeUnknownError,
+    QueryPreExecutionError,
+)
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
 from retail_agent.models import (
     AgentFailure,
@@ -126,6 +131,8 @@ Rules:
 - Use the Golden Knowledge examples as analyst precedent, not as fresh data.
 - For data questions, inspect schema context, use Golden Knowledge, call run_sql_query,
   and base the report on returned rows.
+- For follow-ups that refer to the same cohort, preserve the prior entity,
+  timestamp column, filters, and time bounds unless the user explicitly changes them.
 - Prefer concise executive summaries with caveats and follow-up questions.
 - If the user has a preferred report format, follow it.
 """
@@ -171,7 +178,18 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
             ctx, failure_class=exc.__class__.__name__, error=str(exc)
         )
         raise ModelRetry(str(exc)) from exc
-    except QueryExecutionError as exc:
+    except QueryOutcomeUnknownError as exc:
+        _record_tool_failure(ctx, "warehouse_outcome_unknown", retryable=False)
+        ctx.deps.logger.event(
+            ctx.deps.trace_id,
+            "sql_terminal_failure",
+            failure_class=exc.__class__.__name__,
+            failure_code="warehouse_outcome_unknown",
+            job_id=exc.job_id,
+            error=str(exc),
+        )
+        raise
+    except QueryPreExecutionError as exc:
         _record_tool_failure(ctx, "warehouse_unavailable", retryable=True)
         _log_sql_retry_feedback(
             ctx, failure_class=exc.__class__.__name__, error=str(exc)
@@ -265,6 +283,7 @@ async def run_question(
 
     prompt = (
         f"User question: {question}\n"
+        f"{_follow_up_context(state)}"
         f"{_format_golden_context(golden_trios)}\n"
         f"Return a report matching preferred format {user.preferred_format}."
     )
@@ -390,6 +409,17 @@ def _contextual_retrieval_query(question: str, state: ConversationState) -> str:
     return f"Previous question: {state.recent_questions[-1]}\nFollow-up: {question}"
 
 
+def _follow_up_context(state: ConversationState) -> str:
+    if not state.recent_questions:
+        return ""
+    return (
+        f"Previous question: {state.recent_questions[-1]}\n"
+        "Treat this as a follow-up to that analysis and preserve its entity, "
+        "timestamp column, filters, and time bounds unless the user explicitly "
+        "changes them.\n"
+    )
+
+
 def _format_golden_context(trios: list[RetrievedTrio]) -> str:
     if not trios:
         return "Golden Knowledge analyst precedents: none retrieved."
@@ -442,6 +472,8 @@ def _classify_failure(
     tool_failure_code: FailureCode | None = None,
     tool_failure_retryable: bool = False,
 ) -> tuple[FailureCode, bool]:
+    if isinstance(exc, QueryOutcomeUnknownError):
+        return "warehouse_outcome_unknown", False
     if isinstance(exc, QueryExecutionError):
         return "warehouse_unavailable", True
     if isinstance(exc, (ToolRetryError, UnexpectedModelBehavior)):
@@ -462,6 +494,11 @@ def _failure_message(failure_code: FailureCode) -> str:
         ),
         "warehouse_unavailable": (
             "The analytics warehouse is temporarily unavailable. Please retry shortly."
+        ),
+        "warehouse_outcome_unknown": (
+            "The warehouse did not confirm whether the query completed. Do not retry "
+            "immediately; contact support with the trace ID so the original job can be "
+            "checked."
         ),
         "retry_exhausted": (
             "I could not produce a safe, valid analysis within the retry budget. "

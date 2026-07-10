@@ -29,11 +29,28 @@ NUMBER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 MAX_DERIVATION_VALUES_PER_MEASURE = 100
+MAX_MEASURE_MENTION_DISTANCE = 48
 type QualityMode = Literal["replay", "live"]
+
+
+@dataclass(frozen=True)
+class _ContextNumber:
+    value: float
+    aliases: frozenset[str]
+    unqualified: bool = False
+
+
+class JoinKey(BaseModel):
+    left: str
+    right: str
+
+    def normalized(self) -> tuple[str, str]:
+        return tuple(sorted((self.left.lower(), self.right.lower())))
 
 
 class QualityExpectations(BaseModel):
     required_tables: list[str] = Field(default_factory=list)
+    allowed_joins: list[JoinKey] = Field(default_factory=list)
     required_sql_fragments: list[str] = Field(default_factory=list)
     forbidden_sql_fragments: list[str] = Field(default_factory=list)
     expected_retrieval_ids: list[str] = Field(default_factory=list)
@@ -421,7 +438,12 @@ def _intent_score(
         for fragment in expectations.forbidden_sql_fragments
     )
     structure_ok = candidate_signature.satisfies(canonical_signature)
-    return 1.0 if tables_ok and fragments_ok and forbidden_ok and structure_ok else 0.0
+    joins_ok = _joins_are_allowed(validation.safe_sql, expectations.allowed_joins)
+    return (
+        1.0
+        if tables_ok and fragments_ok and forbidden_ok and structure_ok and joins_ok
+        else 0.0
+    )
 
 
 def _row_score(
@@ -445,32 +467,64 @@ def _row_score(
         if match_index is not None:
             matched += 1
             unused.pop(match_index)
-    return matched / len(canonical_rows)
+    return matched / max(len(canonical_rows), len(candidate_rows))
 
 
 def _rows_equal(
     candidate: dict[str, Any], expected: dict[str, Any], tolerance: float
 ) -> bool:
-    if len(candidate) != len(expected):
+    if len(candidate) < len(expected):
         return False
-    if set(candidate) == set(expected):
-        pairs = [(candidate[key], expected[key]) for key in expected]
-    else:
-        pairs = list(zip(candidate.values(), expected.values(), strict=True))
-    for candidate_value, expected_value in pairs:
-        if isinstance(candidate_value, (int, float)) and isinstance(
-            expected_value, (int, float)
-        ):
-            if not math.isclose(
-                float(candidate_value),
-                float(expected_value),
-                rel_tol=tolerance,
-                abs_tol=tolerance,
-            ):
+    unused = list(candidate.items())
+    for expected_key, expected_value in expected.items():
+        exact_index = next(
+            (index for index, (key, _) in enumerate(unused) if key == expected_key),
+            None,
+        )
+        if exact_index is not None:
+            _, candidate_value = unused.pop(exact_index)
+            if not _values_equal(candidate_value, expected_value, tolerance):
                 return False
-        elif candidate_value != expected_value:
+            continue
+
+        value_index = next(
+            (
+                index
+                for index, (candidate_key, candidate_value) in enumerate(unused)
+                if _column_names_compatible(candidate_key, expected_key)
+                if _values_equal(candidate_value, expected_value, tolerance)
+            ),
+            None,
+        )
+        if value_index is None:
             return False
+        unused.pop(value_index)
     return True
+
+
+def _values_equal(candidate: Any, expected: Any, tolerance: float) -> bool:
+    if isinstance(candidate, (int, float)) and isinstance(expected, (int, float)):
+        return math.isclose(
+            float(candidate),
+            float(expected),
+            rel_tol=tolerance,
+            abs_tol=tolerance,
+        )
+    return candidate == expected
+
+
+def _column_names_compatible(candidate: str, expected: str) -> bool:
+    return bool(_field_tokens(candidate) & _field_tokens(expected))
+
+
+def _field_tokens(field_name: str) -> set[str]:
+    synonyms = {"state": "region"}
+    ignored = {"by", "from", "gross", "lost", "to", "total", "value"}
+    return {
+        synonyms.get(word, word)
+        for word in re.split(r"[^a-z0-9]+", field_name.lower())
+        if word and word not in ignored
+    }
 
 
 def _retrieval_scores(retrieved: list[str], expected: list[str]) -> tuple[float, float]:
@@ -503,8 +557,8 @@ def _faithfulness_details(
     tolerance: float,
 ) -> tuple[float, list[float]]:
     text = " ".join([report.answer, *report.highlights])
-    claims = [_parse_number(match.group()) for match in NUMBER_PATTERN.finditer(text)]
-    if not claims:
+    claim_matches = list(NUMBER_PATTERN.finditer(text))
+    if not claim_matches:
         return 1.0, []
     measures: dict[str, list[float]] = defaultdict(list)
     for row in rows:
@@ -513,34 +567,61 @@ def _faithfulness_details(
                 measures[column].append(float(value))
     context_values = _supported_context_numbers(sql)
     if not measures and not context_values:
-        return 0.0, claims
+        return 0.0, [_parse_number(match.group()) for match in claim_matches]
     unsupported = [
-        claim
-        for claim in claims
+        _parse_number(match.group())
+        for match in claim_matches
         if not _claim_supported(
-            claim,
+            _parse_number(match.group()),
             measures,
             context_values,
-            tolerance,
+            max(tolerance, _claim_text_tolerance(text, match)),
+            measure_names=_measure_names_for_claim(text, match, measures),
+            text=text,
+            claim_match=match,
         )
     ]
-    return (len(claims) - len(unsupported)) / len(claims), unsupported
+    return (
+        (len(claim_matches) - len(unsupported)) / len(claim_matches),
+        unsupported,
+    )
 
 
-def _supported_context_numbers(sql: str) -> list[float]:
+def _supported_context_numbers(sql: str) -> list[_ContextNumber]:
     values = [
-        float(raw)
-        for raw in re.findall(r"\b(?:LIMIT|INTERVAL)\s+(\d+)\b", sql, re.IGNORECASE)
+        _ContextNumber(
+            value=float(raw),
+            aliases=frozenset({"top", "limit", "row", "rows", "result", "results"}),
+        )
+        for raw in re.findall(r"\bLIMIT\s+(\d+)\b", sql, re.IGNORECASE)
     ]
+    values.extend(
+        _ContextNumber(
+            value=float(raw),
+            aliases=frozenset(
+                {
+                    unit.lower(),
+                    f"{unit.lower()}s",
+                    "last",
+                    "past",
+                }
+            ),
+        )
+        for raw, unit in re.findall(
+            r"\bINTERVAL\s+(\d+)\s+(DAY|WEEK|MONTH|QUARTER|YEAR)\b",
+            sql,
+            re.IGNORECASE,
+        )
+    )
     if "CURRENT_DATE" in sql.upper():
         today = datetime.now(UTC).date()
         previous_month = today.replace(day=1) - timedelta(days=1)
         values.extend(
             [
-                float(today.year),
-                float(today.month),
-                float(previous_month.year),
-                float(previous_month.month),
+                _ContextNumber(float(today.year), frozenset({"year"}), True),
+                _ContextNumber(float(today.month), frozenset({"month"})),
+                _ContextNumber(float(previous_month.year), frozenset({"year"}), True),
+                _ContextNumber(float(previous_month.month), frozenset({"month"})),
             ]
         )
     return values
@@ -549,18 +630,47 @@ def _supported_context_numbers(sql: str) -> list[float]:
 def _claim_supported(
     claim: float,
     measures: dict[str, list[float]],
-    context_values: list[float],
+    context_values: list[_ContextNumber],
     tolerance: float,
+    *,
+    measure_names: set[str],
+    text: str,
+    claim_match: re.Match[str],
 ) -> bool:
-    raw_values = [value for values in measures.values() for value in values]
-    if any(_numbers_match(claim, value, tolerance) for value in [*raw_values, *context_values]):
+    if _context_claim_supported(
+        claim,
+        text,
+        claim_match,
+        context_values,
+        tolerance,
+    ):
         return True
 
-    for values in measures.values():
+    percentage_claim = "%" in claim_match.group()
+
+    if not measure_names:
+        if len(measures) != 1:
+            return False
+        measure_names = set(measures)
+
+    selected_measures = [measures[name] for name in measure_names]
+    raw_values = [value for values in selected_measures for value in values]
+    if any(
+        _numbers_match(
+            claim,
+            value,
+            tolerance,
+            allow_percentage_scale=percentage_claim,
+        )
+        for value in raw_values
+    ):
+        return True
+
+    for values in selected_measures:
         bounded = values[:MAX_DERIVATION_VALUES_PER_MEASURE]
         for left_index, left in enumerate(bounded):
             for right in bounded[left_index + 1 :]:
-                derived = [left - right, right - left, abs(left - right)]
+                derived = [left + right, left - right, right - left, abs(left - right)]
                 if right:
                     derived.extend(
                         [
@@ -577,19 +687,153 @@ def _claim_supported(
                             (right - left) / left * 100,
                         ]
                     )
-                if any(_numbers_match(claim, value, tolerance) for value in derived):
+                if any(
+                    _numbers_match(
+                        claim,
+                        value,
+                        tolerance,
+                        allow_percentage_scale=percentage_claim,
+                    )
+                    for value in derived
+                ):
                     return True
     return False
 
 
-def _numbers_match(claim: float, value: float, tolerance: float) -> bool:
+def _context_claim_supported(
+    claim: float,
+    text: str,
+    claim_match: re.Match[str],
+    context_values: list[_ContextNumber],
+    tolerance: float,
+) -> bool:
+    normalized_text = text.lower()
+    for context in context_values:
+        if not _numbers_match(claim, context.value, tolerance):
+            continue
+        if context.unqualified:
+            return True
+        if any(
+            _span_distance(claim_match.span(), mention.span())
+            <= MAX_MEASURE_MENTION_DISTANCE
+            for alias in context.aliases
+            for mention in re.finditer(rf"\b{re.escape(alias)}\b", normalized_text)
+        ):
+            return True
+    return False
+
+
+def _measure_names_for_claim(
+    text: str,
+    claim: re.Match[str],
+    measures: dict[str, list[float]],
+) -> set[str]:
+    normalized_text = text.lower()
+    eligible_measures = set(measures)
+    if _is_currency_claim(text, claim):
+        monetary = {
+            name
+            for name in measures
+            if _measure_tokens(name)
+            & {"amount", "cost", "price", "revenue", "sales", "spend"}
+        }
+        if monetary:
+            eligible_measures = monetary
+    elif "%" in claim.group():
+        rates = {
+            name
+            for name in measures
+            if _measure_tokens(name) & {"percentage", "rate", "ratio"}
+        }
+        if rates:
+            eligible_measures = rates
+
+    if len(eligible_measures) == 1:
+        return eligible_measures
+
+    candidates: list[tuple[int, int, str]] = []
+    for measure_name in eligible_measures:
+        for alias in _measure_aliases(measure_name):
+            for mention in re.finditer(rf"\b{re.escape(alias)}\b", normalized_text):
+                distance = _span_distance(claim.span(), mention.span())
+                if distance <= MAX_MEASURE_MENTION_DISTANCE:
+                    candidates.append((distance, -len(alias), measure_name))
+
+    if not candidates:
+        return set()
+    best_distance, best_length, _ = min(candidates)
+    return {
+        measure_name
+        for distance, alias_length, measure_name in candidates
+        if (distance, alias_length) == (best_distance, best_length)
+    }
+
+
+def _measure_aliases(measure_name: str) -> set[str]:
+    words = [word for word in re.split(r"[^a-z0-9]+", measure_name.lower()) if word]
+    aliases = set(words) - {"count", "gross", "id", "number", "total"}
+    if words:
+        aliases.add(" ".join(words))
+    if "orders" in aliases:
+        aliases.add("order")
+    if "items" in aliases:
+        aliases.add("item")
+    if "customer" in aliases:
+        aliases.add("customers")
+    if "spend" in aliases:
+        aliases.add("spent")
+    if "sales" in aliases:
+        aliases.add("sale")
+    if "sold" in aliases:
+        aliases.add("sell")
+    if "return" in aliases:
+        aliases.add("returns")
+    return aliases
+
+
+def _measure_tokens(measure_name: str) -> set[str]:
+    return {
+        word for word in re.split(r"[^a-z0-9]+", measure_name.lower()) if word
+    }
+
+
+def _is_currency_claim(text: str, claim: re.Match[str]) -> bool:
+    prefix = text[max(0, claim.start() - 2) : claim.start()]
+    return any(symbol in prefix for symbol in "$€£¥")
+
+
+def _claim_text_tolerance(text: str, claim: re.Match[str]) -> float:
+    prefix = text[max(0, claim.start() - 24) : claim.start()].lower()
+    if re.search(r"\b(?:about|approximately|around|over|roughly)\s*[$€£¥]?\s*$", prefix):
+        return 0.01
+    return 0.0
+
+
+def _span_distance(left: tuple[int, int], right: tuple[int, int]) -> int:
+    if left[1] <= right[0]:
+        return right[0] - left[1]
+    if right[1] <= left[0]:
+        return left[0] - right[1]
+    return 0
+
+
+def _numbers_match(
+    claim: float,
+    value: float,
+    tolerance: float,
+    *,
+    allow_percentage_scale: bool = False,
+) -> bool:
     relative_tolerance = max(tolerance, 0.005)
-    return math.isclose(
+    direct_match = math.isclose(
         claim,
         value,
         rel_tol=relative_tolerance,
         abs_tol=tolerance,
-    ) or math.isclose(
+    )
+    if direct_match:
+        return True
+    return allow_percentage_scale and math.isclose(
         claim / 100,
         value,
         rel_tol=relative_tolerance,
@@ -646,18 +890,20 @@ class _SQLIntentSignature:
     filter_columns: frozenset[str]
     filter_literals: frozenset[str]
     functions: frozenset[str]
-    joins_well_formed: bool
+    time_offsets: Counter[tuple[str, float]]
+    date_parts: frozenset[str]
     has_group: bool
     has_having: bool
 
     def satisfies(self, expected: _SQLIntentSignature) -> bool:
         return (
-            self.aggregates == expected.aggregates
+            expected.aggregates <= self.aggregates
             and expected.dimensions.issubset(self.dimensions)
             and expected.filter_columns.issubset(self.filter_columns)
             and expected.filter_literals.issubset(self.filter_literals)
             and expected.functions.issubset(self.functions)
-            and self.joins_well_formed
+            and expected.time_offsets <= self.time_offsets
+            and expected.date_parts.issubset(self.date_parts)
             and self.has_group == expected.has_group
             and self.has_having == expected.has_having
         )
@@ -702,6 +948,7 @@ def _intent_signature(sql: str) -> _SQLIntentSignature:
         literal.this.lower() if isinstance(literal.this, str) else str(literal.this)
         for predicate in predicates
         for literal in predicate.find_all(exp.Literal)
+        if not _is_temporal_literal(literal)
     }
     aggregates = Counter(
         _aggregate_signature(aggregate)
@@ -712,25 +959,14 @@ def _intent_signature(sql: str) -> _SQLIntentSignature:
         for function in expression.find_all(exp.Func)
         if not isinstance(function, (exp.AggFunc, exp.Case, exp.If, exp.And))
     )
-    joins = list(expression.find_all(exp.Join))
-    joins_well_formed = all(
-        any(
-            isinstance(equality.this, exp.Column)
-            and isinstance(equality.expression, exp.Column)
-            and equality.this.table
-            and equality.expression.table
-            and equality.this.table.lower() != equality.expression.table.lower()
-            for equality in join.find_all(exp.EQ)
-        )
-        for join in joins
-    )
     return _SQLIntentSignature(
         aggregates=aggregates,
         dimensions=frozenset(dimensions),
         filter_columns=frozenset(filter_columns),
         filter_literals=frozenset(filter_literals),
         functions=functions,
-        joins_well_formed=joins_well_formed,
+        time_offsets=_normalized_time_offsets(expression),
+        date_parts=frozenset(_date_part(node) for node in expression.find_all(exp.DateTrunc)),
         has_group=group is not None,
         has_having=expression.find(exp.Having) is not None,
     )
@@ -769,3 +1005,88 @@ def _is_conditional_predicate_column(
         child = parent
         parent = parent.parent
     return False
+
+
+def _joins_are_allowed(sql: str, allowed_joins: list[JoinKey]) -> bool:
+    expression = sqlglot.parse_one(sql, read="bigquery")
+    joins = list(expression.find_all(exp.Join))
+    if not joins:
+        return True
+
+    aliases = {
+        (table.alias or table.name).lower(): table.name.lower()
+        for table in expression.find_all(exp.Table)
+        if table.name
+    }
+    allowed = {join.normalized() for join in allowed_joins}
+    for join in joins:
+        join_keys = {
+            key
+            for equality in join.find_all(exp.EQ)
+            if (key := _join_key(equality, aliases)) is not None
+        }
+        if not join_keys or not join_keys.issubset(allowed):
+            return False
+    return True
+
+
+def _join_key(
+    equality: exp.EQ, aliases: dict[str, str]
+) -> tuple[str, str] | None:
+    if not isinstance(equality.this, exp.Column) or not isinstance(
+        equality.expression, exp.Column
+    ):
+        return None
+    left = _qualified_join_column(equality.this, aliases)
+    right = _qualified_join_column(equality.expression, aliases)
+    if left is None or right is None or left.split(".", 1)[0] == right.split(".", 1)[0]:
+        return None
+    return tuple(sorted((left, right)))
+
+
+def _qualified_join_column(
+    column: exp.Column, aliases: dict[str, str]
+) -> str | None:
+    if not column.table or not column.name:
+        return None
+    table = aliases.get(column.table.lower())
+    if table is None:
+        return None
+    return f"{table}.{column.name.lower()}"
+
+
+def _normalized_time_offsets(expression: exp.Expression) -> Counter[tuple[str, float]]:
+    offsets: Counter[tuple[str, float]] = Counter()
+    for function_type in (exp.DateAdd, exp.DateSub):
+        for function in expression.find_all(function_type):
+            magnitude = function.args.get("expression")
+            unit = function.args.get("unit")
+            if isinstance(magnitude, exp.Literal) and unit is not None:
+                normalized = _normalize_duration(float(magnitude.this), unit.name)
+                if normalized is not None:
+                    offsets[normalized] += 1
+    return offsets
+
+
+def _normalize_duration(value: float, unit: str) -> tuple[str, float] | None:
+    normalized_unit = unit.lower()
+    month_factors = {"month": 1, "quarter": 3, "year": 12}
+    day_factors = {"day": 1, "week": 7}
+    if normalized_unit in month_factors:
+        return "months", value * month_factors[normalized_unit]
+    if normalized_unit in day_factors:
+        return "days", value * day_factors[normalized_unit]
+    return None
+
+
+def _is_temporal_literal(literal: exp.Literal) -> bool:
+    parent = literal.parent
+    return (
+        isinstance(parent, (exp.DateAdd, exp.DateSub))
+        and literal.arg_key == "expression"
+    ) or (isinstance(parent, exp.DateTrunc) and literal.arg_key == "unit")
+
+
+def _date_part(date_trunc: exp.DateTrunc) -> str:
+    unit = date_trunc.args.get("unit")
+    return unit.name.lower() if unit is not None else ""

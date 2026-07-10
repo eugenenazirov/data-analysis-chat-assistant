@@ -135,6 +135,8 @@ Implemented:
 - Graceful Qdrant degradation and top-level model/warehouse failure boundaries.
 - Redacted degraded reports when a model fails after verified query execution.
 - Effective configurable SQL retry budgets, dry-run byte caps, and timeouts.
+- Stable BigQuery execution job IDs and a terminal outcome-unknown boundary that
+  cannot enter the model retry loop after submission.
 - Turn- and byte-bounded chat history with compacted prior SQL tool results.
 - Structured session/turn-aware JSONL events.
 - Dockerized app and Qdrant services.

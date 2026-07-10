@@ -64,6 +64,7 @@ contains:
 - a single-turn question or multi-turn history and follow-up;
 - canonical SQL;
 - required tables and SQL semantic fragments;
+- allowed table/column join keys;
 - forbidden PII fragments;
 - expected Golden Knowledge IDs;
 - canonical and candidate rows for deterministic replay;
@@ -71,12 +72,17 @@ contains:
 
 The evaluator scores:
 
-- intent-to-SQL correctness using parsed tables, aggregates, dimensions,
-  filters, functions, and join structure plus case-specific semantic fragments;
-- calculation accuracy by normalized candidate/canonical rows;
+- intent-to-SQL correctness using parsed tables, required aggregate subsets,
+  dimensions, filters, functions, declared join keys, normalized equivalent
+  time offsets, and case-specific semantic fragments;
+- calculation accuracy by exact candidate/canonical row sets. Additional rows
+  reduce the score; additional columns are allowed only when every canonical
+  field value still matches;
 - Retrieval Recall@3 and mean reciprocal rank;
-- lineage-aware support for every numeric claim in query results, with derived
-  comparisons restricted to values of the same measure;
+- metric-aware support for every numeric claim in query results. Currency,
+  percentage, and nearby measure language select the relevant column; SQL
+  context values require their own nearby context language; derivations remain
+  restricted to values from the same measure;
 - multi-turn history use and structural resolution of the contextual canonical SQL;
 - analyst usefulness on a five-point rubric.
 

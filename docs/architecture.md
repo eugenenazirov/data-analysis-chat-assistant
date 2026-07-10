@@ -274,7 +274,8 @@ sessions.
 | Gemini unavailable before query | Typed retryable failure; UI remains available | Provider-level bounded retry only | `agent_run_failed:model_unavailable` |
 | Gemini fails after verified query | Return redacted degraded table and SQL | Never repeat completed query blindly | `agent_run_failed` with `degraded=true` |
 | SQL invalid or empty | Return structured `ModelRetry` feedback | Configured 0-3 tool retries | Retry attempt, budget, failure class |
-| BigQuery unavailable | Typed warehouse failure after budget | Retry only idempotent provider calls; no whole-agent replay | Warehouse error rate and latency |
+| BigQuery unavailable during validation/dry-run | Typed warehouse failure after budget | Retry is allowed because no paid execution job was submitted | Warehouse error rate and latency |
+| BigQuery outcome unknown after submission | Non-retryable typed failure with trace ID | Stable job ID; never model-retry or resubmit until the original job is checked | `sql_terminal_failure`, stable job ID, warehouse error rate |
 | Query exceeds byte cap | Reject before execution | No retry until SQL changes | Estimated bytes and cap |
 | PostgreSQL unavailable | Fail turn before model call | No model spend without durable ownership/idempotency state | API error and DB saturation alerts |
 | Outbox worker failure | Keep durable uncompleted event | Exponential backoff and dead-letter status | Queue age, attempts, oldest event |

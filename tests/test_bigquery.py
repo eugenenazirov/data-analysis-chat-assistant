@@ -7,7 +7,12 @@ import pytest
 from google.api_core import exceptions
 from google.cloud import bigquery
 
-from retail_agent.bigquery import BigQueryRunner, QueryCostExceeded, QueryExecutionError
+from retail_agent.bigquery import (
+    BigQueryRunner,
+    QueryCostExceeded,
+    QueryOutcomeUnknownError,
+    QueryPreExecutionError,
+)
 from retail_agent.observability import EventLogger
 
 
@@ -39,8 +44,8 @@ class FakeBigQueryClient:
         self.rows = rows or [{"category": "Jeans", "gross_sales": 123.45}]
         self.calls = []
 
-    def query(self, sql: str, job_config):
-        self.calls.append((sql, job_config))
+    def query(self, sql: str, job_config, **kwargs):
+        self.calls.append((sql, job_config, kwargs))
         if job_config.dry_run:
             return FakeJob(total_bytes_processed=self.dry_run_bytes)
         return FakeJob(total_bytes_billed=self.dry_run_bytes, rows=self.rows)
@@ -70,6 +75,9 @@ def test_bigquery_runner_dry_runs_then_executes_with_limit(test_config, tmp_path
     assert result.sql.endswith("LIMIT 25")
     assert result.rows == [{"category": "Jeans", "gross_sales": 123.45}]
     assert result.dry_run_bytes == 4096
+    assert result.job_id == fake_client.calls[1][2]["job_id"]
+    assert fake_client.calls[1][2]["job_retry"] is None
+    assert result.job_id.startswith("retail_agent_trace_id_")
     events = [
         json.loads(line)
         for line in (tmp_path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
@@ -153,13 +161,13 @@ def test_bigquery_runner_logs_validation_failure(test_config, tmp_path):
 
 def test_bigquery_runner_wraps_dry_run_api_failure(test_config, tmp_path):
     class DryRunFailureClient:
-        def query(self, sql, job_config):
+        def query(self, sql, job_config, **kwargs):
             raise exceptions.ServiceUnavailable("BigQuery unavailable")
 
     runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
     runner._client = DryRunFailureClient()
 
-    with pytest.raises(QueryExecutionError, match="dry run failed"):
+    with pytest.raises(QueryPreExecutionError, match="dry run failed"):
         runner.execute(
             "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
             "trace",
@@ -171,7 +179,7 @@ def test_bigquery_runner_wraps_execution_api_failure(test_config, tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def query(self, sql, job_config):
+        def query(self, sql, job_config, **kwargs):
             self.calls += 1
             if self.calls == 1:
                 return FakeJob(total_bytes_processed=10)
@@ -180,11 +188,13 @@ def test_bigquery_runner_wraps_execution_api_failure(test_config, tmp_path):
     runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
     runner._client = ExecutionFailureClient()
 
-    with pytest.raises(QueryExecutionError, match="query failed"):
+    with pytest.raises(QueryOutcomeUnknownError, match="query outcome is unknown") as exc_info:
         runner.execute(
             "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
             "trace",
         )
+
+    assert exc_info.value.job_id.startswith("retail_agent_trace_")
 
 
 def test_bigquery_runner_cancels_timed_out_job(test_config, tmp_path):
@@ -199,7 +209,7 @@ def test_bigquery_runner_cancels_timed_out_job(test_config, tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def query(self, sql, job_config):
+        def query(self, sql, job_config, **kwargs):
             self.calls += 1
             if self.calls == 1:
                 return FakeJob(total_bytes_processed=10)
@@ -208,10 +218,11 @@ def test_bigquery_runner_cancels_timed_out_job(test_config, tmp_path):
     runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
     runner._client = TimeoutClient()
 
-    with pytest.raises(QueryExecutionError, match="timed out"):
+    with pytest.raises(QueryOutcomeUnknownError, match="outcome is unknown") as exc_info:
         runner.execute(
             "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders` LIMIT 5",
             "trace",
         )
 
     assert timeout_job.cancelled is True
+    assert exc_info.value.job_id.startswith("retail_agent_trace_")

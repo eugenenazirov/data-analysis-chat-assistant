@@ -251,6 +251,37 @@ def test_row_comparison_accepts_semantically_equivalent_aliases():
     assert _row_score(candidate, canonical, tolerance=0.001) == 1
 
 
+def test_row_comparison_penalizes_additional_candidate_rows():
+    candidate = [
+        {"region": "New York", "revenue": 300},
+        {"region": "Bogus", "revenue": 999_999},
+    ]
+    canonical = [{"region": "New York", "revenue": 300}]
+
+    assert _row_score(candidate, canonical, tolerance=0.001) == 0.5
+
+
+def test_row_comparison_allows_additional_candidate_measures():
+    candidate = [
+        {
+            "state": "New York",
+            "lost_revenue_to_returns": 300,
+            "total_sales": 1_000,
+            "return_rate": 0.3,
+        }
+    ]
+    canonical = [{"region": "New York", "lost_revenue": 300}]
+
+    assert _row_score(candidate, canonical, tolerance=0.001) == 1
+
+
+def test_row_comparison_does_not_match_value_from_unrelated_column():
+    candidate = [{"state": "New York", "orders": 300}]
+    canonical = [{"region": "New York", "revenue": 300}]
+
+    assert _row_score(candidate, canonical, tolerance=0.001) == 0
+
+
 def test_faithfulness_accepts_top_n_and_current_date_context():
     current_year = datetime.now(UTC).year
     report = AnalysisReport(
@@ -303,6 +334,102 @@ def test_faithfulness_does_not_combine_unrelated_measures():
     assert score == 0
 
 
+def test_faithfulness_associates_numeric_claim_with_named_measure():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was 50.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"orders": 50, "revenue": 4_000}],
+        "SELECT orders, revenue FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 0
+
+
+def test_faithfulness_does_not_apply_percent_scaling_without_percent_sign():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was 50.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 0.5}],
+        "SELECT revenue FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 0
+
+
+def test_faithfulness_does_not_treat_limit_as_a_measure_value():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was 10.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 4_000}],
+        "SELECT revenue FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 0
+
+
+def test_faithfulness_uses_currency_to_disambiguate_nearby_order_count():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue reached $50 from 12 orders.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 50, "orders": 12}],
+        "SELECT revenue, orders FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_uses_loss_word_for_currency_measure():
+    report = AnalysisReport(
+        question="question",
+        answer="New York lost $300 compared with California.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"lost_revenue": 300, "total_sales": 1_000}],
+        "SELECT lost_revenue, total_sales FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_accepts_explicitly_rounded_derived_total():
+    report = AnalysisReport(
+        question="question",
+        answer="The two categories generated over $97,000 in revenue.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 50_091.67}, {"revenue": 47_518.39}],
+        "SELECT revenue FROM table LIMIT 10",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
 def test_quality_eval_rejects_unverified_report_sql(test_config):
     case = load_quality_cases(CASES_PATH)[0]
     replay = case.replay.model_copy(
@@ -333,6 +460,38 @@ def test_intent_score_rejects_wrong_join_structure(test_config):
     assert score == 0
 
 
+def test_intent_score_rejects_wrong_cross_table_join_key(test_config):
+    case = load_quality_cases(CASES_PATH)[0]
+    wrong_join = case.replay.candidate_sql.replace(
+        "oi.product_id = p.id", "oi.order_id = p.id"
+    )
+
+    score = _intent_score(
+        test_config,
+        wrong_join,
+        case.canonical_sql,
+        case.expectations,
+    )
+
+    assert score == 0
+
+
+def test_intent_score_normalizes_equivalent_quarter_intervals(test_config):
+    case = load_quality_cases(CASES_PATH)[3]
+    equivalent_sql = case.canonical_sql.replace(
+        "INTERVAL 1 QUARTER", "INTERVAL 3 MONTH"
+    )
+
+    score = _intent_score(
+        test_config,
+        equivalent_sql,
+        case.canonical_sql,
+        case.expectations,
+    )
+
+    assert score == 1
+
+
 def test_intent_signature_normalizes_equivalent_date_casts():
     date_function = _intent_signature(
         "SELECT DATE(created_at) AS day FROM dataset.table"
@@ -342,6 +501,18 @@ def test_intent_signature_normalizes_equivalent_date_casts():
     )
 
     assert date_function.functions == date_cast.functions == frozenset({"to_date"})
+
+
+def test_intent_signature_allows_additional_aggregates():
+    canonical = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region"
+    )
+    candidate = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue, COUNT(*) AS orders "
+        "FROM table GROUP BY region"
+    )
+
+    assert candidate.satisfies(canonical)
 
 
 def test_retrieval_scores_include_recall_at_three_and_mrr():

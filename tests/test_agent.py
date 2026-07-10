@@ -18,7 +18,11 @@ from pydantic_ai.messages import (
 )
 
 from retail_agent import agent
-from retail_agent.bigquery import QueryCostExceeded, QueryExecutionError
+from retail_agent.bigquery import (
+    QueryCostExceeded,
+    QueryOutcomeUnknownError,
+    QueryPreExecutionError,
+)
 from retail_agent.models import AgentFailure, AnalysisReport, QueryResult, RetrievedTrio
 from retail_agent.observability import EventLogger
 
@@ -214,8 +218,11 @@ def test_run_question_passes_history_and_contextualizes_follow_up(test_config, t
     )
 
     def second_callback(prompt, *, message_history, conversation_id, **kwargs):
-        assert message_history == [_message("first turn message")]
+        assert len(message_history) == 1
+        assert message_history[0].parts[0].content == "first turn message"
         assert conversation_id == first.conversation.session_id
+        assert "Previous question: Revenue last month?" in prompt
+        assert "preserve its entity, timestamp column, filters, and time bounds" in prompt
         return FakeRunResult(
             output=AnalysisReport(question="Compare that with prior month", answer="It increased."),
             messages=[_message("second turn message")],
@@ -234,6 +241,8 @@ def test_run_question_passes_history_and_contextualizes_follow_up(test_config, t
         )
     )
 
+    assert isinstance(second.response, AnalysisReport)
+    assert second.response.answer == "It increased."
     assert second.conversation.turn_index == 2
     assert second.conversation.session_id == first.conversation.session_id
     assert "Previous question: Revenue last month?" in golden_store.calls[-1]["question"]
@@ -265,6 +274,33 @@ def test_model_failure_returns_typed_failure_and_logs_event(test_config, tmp_pat
     failed = [event for event in _events(log_path) if event["event"] == "agent_run_failed"]
     assert failed[0]["failure_code"] == "model_unavailable"
     assert failed[0]["degraded"] is False
+
+
+def test_unknown_warehouse_outcome_is_non_retryable_and_user_safe(test_config, tmp_path):
+    def callback(prompt, **kwargs):
+        raise QueryOutcomeUnknownError(
+            "provider detail must stay hidden",
+            job_id="retail_agent_trace_deadbeef",
+        )
+
+    log_path = tmp_path / "runs.jsonl"
+    turn = asyncio.run(
+        agent.run_question(
+            "How many orders?",
+            config=test_config,
+            bigquery=FakeBigQueryRunner(),
+            golden_store=FakeGoldenStore(),
+            logger=EventLogger(log_path),
+            user_id="manager_a",
+            analysis_agent=FakeAnalysisAgent(callback),
+        )
+    )
+
+    assert isinstance(turn.response, AgentFailure)
+    assert turn.response.failure_code == "warehouse_outcome_unknown"
+    assert turn.response.retryable is False
+    assert "provider detail" not in turn.response.message
+    assert "Do not retry immediately" in turn.response.message
 
 
 def test_failure_after_query_returns_redacted_degraded_report(test_config, tmp_path):
@@ -326,7 +362,7 @@ def test_exhausted_warehouse_tool_failure_keeps_retryable_classification(
     [
         (QueryResult(sql="SELECT 1", rows=[], total_rows=0), "retry_exhausted", False),
         (QueryCostExceeded("over budget"), "retry_exhausted", False),
-        (QueryExecutionError("unavailable"), "warehouse_unavailable", True),
+        (QueryPreExecutionError("unavailable"), "warehouse_unavailable", True),
         (ValueError("invalid SQL"), "retry_exhausted", False),
     ],
 )
@@ -354,6 +390,32 @@ def test_sql_tool_records_failure_before_model_retry(
     assert deps.last_tool_failure_code == failure_code
     assert deps.last_tool_failure_retryable is retryable
     assert deps.sql_tool_invoked is True
+
+
+def test_sql_tool_does_not_model_retry_unknown_query_outcome(test_config, tmp_path):
+    class OutcomeUnknownWarehouse(FakeBigQueryRunner):
+        def execute(self, sql: str, trace_id: str) -> QueryResult:
+            raise QueryOutcomeUnknownError("outcome unknown", job_id="stable-job")
+
+    log_path = tmp_path / "runs.jsonl"
+    deps = agent.AgentDependencies(
+        config=test_config,
+        bigquery=OutcomeUnknownWarehouse(),
+        logger=EventLogger(log_path),
+        user=test_config.user_profile("manager_a"),
+        trace_id="trace",
+    )
+    context = SimpleNamespace(deps=deps, retry=0, max_retries=2)
+
+    with pytest.raises(QueryOutcomeUnknownError):
+        asyncio.run(agent.run_sql_query(context, "SELECT 1"))
+
+    assert deps.last_tool_failure_code == "warehouse_outcome_unknown"
+    assert deps.last_tool_failure_retryable is False
+    events = _events(log_path)
+    assert not any(event["event"] == "sql_retry_feedback" for event in events)
+    terminal = [event for event in events if event["event"] == "sql_terminal_failure"]
+    assert terminal[0]["job_id"] == "stable-job"
 
 
 def test_sql_tool_clears_prior_failure_after_success(test_config, tmp_path):

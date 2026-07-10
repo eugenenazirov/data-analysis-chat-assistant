@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 type FailureCode = Literal[
     "model_unavailable",
     "warehouse_unavailable",
+    "warehouse_outcome_unknown",
     "retry_exhausted",
     "internal_error",
 ]
