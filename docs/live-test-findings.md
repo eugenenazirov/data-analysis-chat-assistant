@@ -460,8 +460,8 @@ uv run python -m compileall -q retail_agent: pass
 Test and evaluation verification:
 
 ```text
-129 tests passed
-91.08% branch-aware coverage (85% release gate)
+152 tests passed
+91.12% branch-aware coverage (85% release gate)
 10/10 deterministic guardrail evaluations passed
 4/4 answer-quality replay cases passed
 intent/calculation/Recall@3/MRR/faithfulness/multi-turn replay aggregates: 1.00
@@ -557,3 +557,35 @@ The subsequent word-order probes `Revenue this year was 2026 dollars` and
 remain rejected without the word `dollars`, proving that phrase binding rather
 than currency detection closes the bypass. Compact suffix parsing now also
 distinguishes `3 months` from `3M`.
+
+Typed-claim regressions additionally reject `top 10%` and `top 10 percent` when
+the only supporting value is SQL `LIMIT 10`, and reject `2026€` when the only
+support is the current-year context. Currency-code-prefixed amounts such as
+`USD10M` and `USD99999999` are scanned and evaluated instead of being skipped.
+Positive controls verify that `USD10M`, postfix currency symbols, and percentages
+still pass when the corresponding result metric actually supports them.
+
+Unit-safety regressions define rate columns as fractional values: `20%` matches
+`return_rate=0.2`, while `0.2%` does not. Absolute counts cannot support
+percentage claims, absolute differences cannot masquerade as percentage
+changes, and percentage derivations contain ratios only. Currency claims fail
+without a monetary result column and cannot use dimensionless ratios; monetary
+sums and differences remain supported.
+
+The live regional report using `$5,225.15`, `$2,774.17`, and the highlight
+`~1.9x` is covered as a complete quality-case regression. Both `~` and `≈`
+activate the same bounded approximation tolerance as words such as
+`approximately`, so the computed ratio `1.8835` remains faithful when rounded to
+one decimal place.
+
+## Numeric Identifier Faithfulness Re-Review
+
+Date: 2026-07-11
+
+The critical live highlight `Our top spending customer (ID 67493) spent
+$1549.39 across 2 orders` is covered as a complete quality-case regression.
+Numeric `id` and `*_id` fields are removed from the quantitative measure pool
+and validated as identifier dimensions using exact equality plus a structurally
+adjacent `ID` or corresponding entity cue. A generic `ID` cue is rejected when
+multiple numeric identifier columns make it ambiguous; wrong values and typed
+currency/percentage identifier claims remain unsupported.

@@ -262,8 +262,14 @@ Loads the versioned answer-quality dataset and scores:
 - Metric-aware support for numerical report claims, including currency/rate
   cues and same-measure derivations without cross-column value pooling. SQL
   context numbers require number-anchored phrases such as `top 10` or `last 3
-  months`, while numerals inside exact returned alphanumeric dimensions are
-  classified as dimension text.
+  months`; typed percentage, currency, and scaled claims must instead match a
+  compatible result metric. Currency codes and prefix/postfix symbols are
+  recognized. Percentages normalize once to fractional rate columns or
+  same-measure ratios, while currency claims require monetary metrics and
+  additive derivations. Approximation words plus `~` and `≈` enable bounded
+  rounding tolerance. Numeric identifier columns are separated from measures
+  and require exact value plus an adjacent `ID` or entity cue. Numerals inside
+  exact returned alphanumeric dimensions are classified as dimension text.
 - Multi-turn history use plus structural resolution against contextual canonical SQL.
 - Analyst-scored executive usefulness.
 

@@ -67,6 +67,11 @@ def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
         "Revenue for the top result was 10.",
         "Revenue for the top result was 10 dollars.",
         "Revenue was top 10 dollars.",
+        "The returned products represent the top 10% by revenue.",
+        "The returned products represent the top 10 percent by revenue.",
+        f"Revenue was in {datetime.now(UTC).year}€.",
+        "Revenue was USD10M.",
+        "Revenue was USD99999999.",
     ],
 )
 def test_quality_eval_rejects_sql_context_value_as_revenue(test_config, answer):
@@ -79,6 +84,154 @@ def test_quality_eval_rejects_sql_context_value_as_revenue(test_config, answer):
 
     assert result.automated_passed is False
     assert result.scores.faithfulness == 0
+
+
+@pytest.mark.parametrize(
+    "answer,rows",
+    [
+        ("The return rate was 0.2%.", [{"return_rate": 0.2}]),
+        ("Order volume was 1,234%.", [{"orders": 1_234}]),
+        ("Revenue increased 200%.", [{"revenue": 500}, {"revenue": 300}]),
+        ("There were $10 orders.", [{"orders": 10}]),
+        ("Revenue was $2.", [{"revenue": 500}, {"revenue": 250}]),
+    ],
+)
+def test_quality_eval_rejects_unit_incompatible_numeric_claim(
+    test_config, answer, rows
+):
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={
+            "candidate_rows": rows,
+            "canonical_rows": rows,
+            "report": case.replay.report.model_copy(update={"answer": answer}),
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is False
+    assert result.scores.faithfulness == 0
+
+
+@pytest.mark.parametrize(
+    "answer,rows",
+    [
+        ("The return rate was 20%.", [{"return_rate": 0.2}]),
+        ("Revenue increased 66.7%.", [{"revenue": 500}, {"revenue": 300}]),
+        ("Revenue increased by $200.", [{"revenue": 500}, {"revenue": 300}]),
+    ],
+)
+def test_quality_eval_accepts_unit_compatible_numeric_claim(test_config, answer, rows):
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={
+            "candidate_rows": rows,
+            "canonical_rows": rows,
+            "report": case.replay.report.model_copy(update={"answer": answer}),
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is True
+    assert result.scores.faithfulness == 1
+
+
+@pytest.mark.parametrize("marker", ["~", "≈"])
+def test_quality_eval_accepts_symbol_rounded_live_regional_report(
+    test_config, marker
+):
+    case = load_quality_cases(CASES_PATH)[-1]
+    rows = [
+        {"region": "California", "lost_revenue": 5_225.15},
+        {"region": "New York", "lost_revenue": 2_774.17},
+    ]
+    report = case.replay.report.model_copy(
+        update={
+            "answer": "California lost $5,225.15 versus New York's $2,774.17.",
+            "highlights": [
+                f"California's $5,225.15 loss was {marker}1.9x New York's."
+            ],
+        }
+    )
+    replay = case.replay.model_copy(
+        update={
+            "candidate_rows": rows,
+            "canonical_rows": rows,
+            "report": report,
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is True
+    assert result.scores.faithfulness == 1
+
+
+def test_quality_eval_accepts_structurally_bound_live_customer_id(test_config):
+    case = load_quality_cases(CASES_PATH)[1]
+    rows = [{"customer_id": 67_493, "orders": 2, "total_spend": 1_549.39}]
+    report = case.replay.report.model_copy(
+        update={
+            "answer": "Here is our top spending customer:",
+            "highlights": [
+                "Our top spending customer (ID 67493) spent $1549.39 across 2 orders."
+            ],
+        }
+    )
+    replay = case.replay.model_copy(
+        update={
+            "candidate_rows": rows,
+            "canonical_rows": rows,
+            "report": report,
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is True
+    assert result.scores.faithfulness == 1
+
+
+def test_faithfulness_rejects_ambiguous_generic_numeric_id():
+    report = AnalysisReport(question="question", answer="ID 67493.")
+
+    score = _faithfulness_score(
+        report,
+        [{"customer_id": 67_493, "order_id": 123}],
+        "SELECT customer_id, order_id FROM table",
+        tolerance=0.001,
+    )
+
+    assert score == 0
+
+
+def test_faithfulness_uses_entity_cue_to_disambiguate_numeric_id():
+    report = AnalysisReport(question="question", answer="Customer ID 67493.")
+
+    score = _faithfulness_score(
+        report,
+        [{"customer_id": 67_493, "order_id": 123}],
+        "SELECT customer_id, order_id FROM table",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+@pytest.mark.parametrize("answer", ["Customer ID 67494.", "Customer ID $67493."])
+def test_faithfulness_rejects_wrong_or_typed_numeric_id(answer):
+    report = AnalysisReport(question="question", answer=answer)
+
+    score = _faithfulness_score(
+        report,
+        [{"customer_id": 67_493}],
+        "SELECT customer_id FROM table",
+        tolerance=0.001,
+    )
+
+    assert score == 0
 
 
 def test_quality_eval_requires_human_usefulness_score(test_config):
@@ -376,6 +529,54 @@ def test_faithfulness_accepts_structurally_bound_context_numbers(answer, sql):
         report,
         [{"revenue": 100}],
         sql,
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_accepts_supported_currency_code_prefix():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was USD10M.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 10_000_000}],
+        "SELECT revenue FROM table",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_accepts_supported_postfix_currency_symbol():
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was 2026€.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"revenue": 2_026}],
+        "SELECT revenue FROM table WHERE day <= CURRENT_DATE()",
+        tolerance=0.001,
+    )
+
+    assert score == 1
+
+
+def test_faithfulness_validates_percentage_against_metric_not_limit():
+    report = AnalysisReport(
+        question="question",
+        answer="The return rate was in the top 10%.",
+    )
+
+    score = _faithfulness_score(
+        report,
+        [{"return_rate": 0.1}],
+        "SELECT return_rate FROM table LIMIT 10",
         tolerance=0.001,
     )
 

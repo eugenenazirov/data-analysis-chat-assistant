@@ -5,6 +5,7 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,12 +25,17 @@ from retail_agent.ports import AnalysisAgentPort, KnowledgeRetrieverPort, Wareho
 from retail_agent.sql_guard import validate_and_prepare_sql
 
 NUMBER_PATTERN = re.compile(
-    r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?"
+    r"(?<![\w.])(?:(?:EUR|GBP|JPY|USD|[$€£¥])\s*)?"
+    r"[-+]?\d[\d,]*(?:\.\d+)?"
     r"(?:\s*(?:%|[KMBkmb](?![A-Za-z])|thousand|million|billion))?",
     re.IGNORECASE,
 )
 MAX_DERIVATION_VALUES_PER_MEASURE = 100
 MAX_MEASURE_MENTION_DISTANCE = 48
+MONETARY_MEASURE_TOKENS = frozenset(
+    {"amount", "cost", "price", "revenue", "sales", "spend"}
+)
+RATE_MEASURE_TOKENS = frozenset({"percentage", "rate", "ratio"})
 type QualityMode = Literal["replay", "live"]
 type _ContextKind = Literal["interval", "limit", "month", "year"]
 
@@ -563,17 +569,22 @@ def _faithfulness_details(
         return 1.0, []
     dimension_spans = _returned_numeric_dimension_spans(text, rows)
     measures: dict[str, list[float]] = defaultdict(list)
+    numeric_identifiers: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         for column, value in row.items():
             if isinstance(value, (int, float)):
-                measures[column].append(float(value))
+                target = (
+                    numeric_identifiers if _is_identifier_column(column) else measures
+                )
+                target[column].append(float(value))
     context_values = _supported_context_numbers(sql)
-    if not measures and not context_values and not dimension_spans:
+    if not measures and not numeric_identifiers and not context_values and not dimension_spans:
         return 0.0, [_parse_number(match.group()) for match in claim_matches]
     unsupported = [
         _parse_number(match.group())
         for match in claim_matches
         if not _claim_is_returned_dimension(match, dimension_spans)
+        and not _claim_is_numeric_identifier(text, match, numeric_identifiers)
         and not _claim_supported(
             _parse_number(match.group()),
             measures,
@@ -616,6 +627,58 @@ def _claim_is_returned_dimension(
     return any(
         start <= claim.start() and claim.end() <= end
         for start, end in dimension_spans
+    )
+
+
+def _is_identifier_column(column: str) -> bool:
+    normalized = column.lower()
+    return normalized == "id" or normalized.endswith("_id")
+
+
+def _claim_is_numeric_identifier(
+    text: str,
+    claim: re.Match[str],
+    identifiers: dict[str, list[float]],
+) -> bool:
+    if (
+        not identifiers
+        or _is_currency_claim(text, claim)
+        or _is_percentage_claim(text, claim)
+        or _is_scaled_claim(claim)
+    ):
+        return False
+
+    value = _parse_number(claim.group())
+    matching_columns = {
+        column
+        for column, values in identifiers.items()
+        if any(value == identifier for identifier in values)
+    }
+    if not matching_columns:
+        return False
+
+    prefix = text[max(0, claim.start() - 40) : claim.start()].lower()
+    if len(identifiers) == 1 and re.search(r"\bid\s*$", prefix):
+        return True
+    return any(
+        _identifier_entity_prefix_matches(prefix, column)
+        for column in matching_columns
+    )
+
+
+def _identifier_entity_prefix_matches(prefix: str, column: str) -> bool:
+    entity = column.lower().removesuffix("_id").replace("_", " ").strip()
+    if not entity:
+        return False
+    aliases = {entity}
+    if not entity.endswith("s"):
+        aliases.add(f"{entity}s")
+    return any(
+        re.search(
+            rf"\b{re.escape(alias)}(?:\s*(?:\(\s*)?id)?\s*$",
+            prefix,
+        )
+        for alias in aliases
     )
 
 
@@ -672,58 +735,89 @@ def _claim_supported(
     ):
         return True
 
-    percentage_claim = "%" in claim_match.group()
+    currency_claim = _is_currency_claim(text, claim_match)
+    percentage_claim = _is_percentage_claim(text, claim_match)
+    if currency_claim and percentage_claim:
+        return False
+
+    if currency_claim:
+        monetary_measures = _measures_with_tokens(measures, MONETARY_MEASURE_TOKENS)
+        if not monetary_measures:
+            return False
+        measure_names &= monetary_measures
+        if not measure_names:
+            return False
 
     if not measure_names:
         if len(measures) != 1:
             return False
         measure_names = set(measures)
 
+    if percentage_claim:
+        return _percentage_claim_supported(
+            claim,
+            measures,
+            measure_names,
+            tolerance,
+        )
+
     selected_measures = [measures[name] for name in measure_names]
     raw_values = [value for values in selected_measures for value in values]
-    if any(
-        _numbers_match(
-            claim,
-            value,
-            tolerance,
-            allow_percentage_scale=percentage_claim,
-        )
-        for value in raw_values
-    ):
+    if any(_numbers_match(claim, value, tolerance) for value in raw_values):
         return True
 
     for values in selected_measures:
-        bounded = values[:MAX_DERIVATION_VALUES_PER_MEASURE]
-        for left_index, left in enumerate(bounded):
-            for right in bounded[left_index + 1 :]:
-                derived = [left + right, left - right, right - left, abs(left - right)]
-                if right:
-                    derived.extend(
-                        [
-                            left / right,
-                            left / right * 100,
-                            (left - right) / right * 100,
-                        ]
-                    )
-                if left:
-                    derived.extend(
-                        [
-                            right / left,
-                            right / left * 100,
-                            (right - left) / left * 100,
-                        ]
-                    )
-                if any(
-                    _numbers_match(
-                        claim,
-                        value,
-                        tolerance,
-                        allow_percentage_scale=percentage_claim,
-                    )
-                    for value in derived
-                ):
-                    return True
+        derivations = _same_measure_derivations(
+            values,
+            include_additive=True,
+            include_ratios=not currency_claim,
+        )
+        if any(_numbers_match(claim, value, tolerance) for value in derivations):
+            return True
     return False
+
+
+def _percentage_claim_supported(
+    claim: float,
+    measures: dict[str, list[float]],
+    measure_names: set[str],
+    tolerance: float,
+) -> bool:
+    normalized_claim = claim / 100
+    rate_measures = measure_names & _measures_with_tokens(measures, RATE_MEASURE_TOKENS)
+    if any(
+        _numbers_match(normalized_claim, value, tolerance)
+        for name in rate_measures
+        for value in measures[name]
+    ):
+        return True
+
+    return any(
+        _numbers_match(normalized_claim, value, tolerance)
+        for name in measure_names
+        for value in _same_measure_derivations(
+            measures[name],
+            include_additive=False,
+            include_ratios=True,
+        )
+    )
+
+
+def _same_measure_derivations(
+    values: list[float],
+    *,
+    include_additive: bool,
+    include_ratios: bool,
+) -> Iterator[float]:
+    bounded = values[:MAX_DERIVATION_VALUES_PER_MEASURE]
+    for left_index, left in enumerate(bounded):
+        for right in bounded[left_index + 1 :]:
+            if include_additive:
+                yield from (left + right, left - right, right - left, abs(left - right))
+            if include_ratios and right:
+                yield from (left / right, (left - right) / right)
+            if include_ratios and left:
+                yield from (right / left, (right - left) / left)
 
 
 def _context_claim_supported(
@@ -733,7 +827,11 @@ def _context_claim_supported(
     context_values: list[_ContextNumber],
     tolerance: float,
 ) -> bool:
-    if _is_currency_claim(text, claim_match):
+    if (
+        _is_currency_claim(text, claim_match)
+        or _is_percentage_claim(text, claim_match)
+        or _is_scaled_claim(claim_match)
+    ):
         return False
     for context in context_values:
         if _numbers_match(
@@ -783,22 +881,7 @@ def _measure_names_for_claim(
     normalized_text = text.lower()
     eligible_measures = set(measures)
     if _is_currency_claim(text, claim):
-        monetary = {
-            name
-            for name in measures
-            if _measure_tokens(name)
-            & {"amount", "cost", "price", "revenue", "sales", "spend"}
-        }
-        if monetary:
-            eligible_measures = monetary
-    elif "%" in claim.group():
-        rates = {
-            name
-            for name in measures
-            if _measure_tokens(name) & {"percentage", "rate", "ratio"}
-        }
-        if rates:
-            eligible_measures = rates
+        eligible_measures = _measures_with_tokens(measures, MONETARY_MEASURE_TOKENS)
 
     if len(eligible_measures) == 1:
         return eligible_measures
@@ -849,20 +932,52 @@ def _measure_tokens(measure_name: str) -> set[str]:
     }
 
 
+def _measures_with_tokens(
+    measures: dict[str, list[float]], tokens: frozenset[str]
+) -> set[str]:
+    return {name for name in measures if _measure_tokens(name) & tokens}
+
+
 def _is_currency_claim(text: str, claim: re.Match[str]) -> bool:
-    prefix = text[max(0, claim.start() - 2) : claim.start()]
+    raw = claim.group().lower()
+    prefix = text[max(0, claim.start() - 4) : claim.start()].lower()
     suffix = text[claim.end() : min(len(text), claim.end() + 16)].lower()
-    return any(symbol in prefix for symbol in "$€£¥") or bool(
-        re.match(
-            r"^\s*(?:dollars?|eur|euros?|gbp|jpy|pounds?|usd|yen)\b",
+    return bool(
+        re.search(r"(?:[$€£¥]|(?:eur|gbp|jpy|usd))\s*$", prefix)
+        or re.match(r"^(?:[$€£¥]|eur|gbp|jpy|usd)", raw)
+        or re.match(
+            r"^\s*(?:[$€£¥]|(?:dollars?|eur|euros?|gbp|jpy|pounds?|usd|yen)\b)",
             suffix,
+        )
+    )
+
+
+def _is_percentage_claim(text: str, claim: re.Match[str]) -> bool:
+    suffix = text[claim.end() : min(len(text), claim.end() + 20)].lower()
+    return "%" in claim.group() or bool(
+        re.match(
+            r"^\s*(?:percent|percentage\s+points?)\b",
+            suffix,
+        )
+    )
+
+
+def _is_scaled_claim(claim: re.Match[str]) -> bool:
+    return bool(
+        re.search(
+            r"(?:[kmb](?![A-Za-z])|thousand|million|billion)\s*$",
+            claim.group(),
+            re.IGNORECASE,
         )
     )
 
 
 def _claim_text_tolerance(text: str, claim: re.Match[str]) -> float:
     prefix = text[max(0, claim.start() - 24) : claim.start()].lower()
-    if re.search(r"\b(?:about|approximately|around|over|roughly)\s*[$€£¥]?\s*$", prefix):
+    if re.search(
+        r"(?:\b(?:about|approximately|around|over|roughly)|[~≈])\s*[$€£¥]?\s*$",
+        prefix,
+    ):
         return 0.01
     return 0.0
 
@@ -879,20 +994,10 @@ def _numbers_match(
     claim: float,
     value: float,
     tolerance: float,
-    *,
-    allow_percentage_scale: bool = False,
 ) -> bool:
     relative_tolerance = max(tolerance, 0.005)
-    direct_match = math.isclose(
+    return math.isclose(
         claim,
-        value,
-        rel_tol=relative_tolerance,
-        abs_tol=tolerance,
-    )
-    if direct_match:
-        return True
-    return allow_percentage_scale and math.isclose(
-        claim / 100,
         value,
         rel_tol=relative_tolerance,
         abs_tol=tolerance,
@@ -901,6 +1006,7 @@ def _numbers_match(
 
 def _parse_number(raw: str) -> float:
     normalized = raw.strip().lower().replace(",", "")
+    normalized = re.sub(r"^(?:[$€£¥]|eur|gbp|jpy|usd)\s*", "", normalized)
     multipliers = {
         "k": 1_000,
         "thousand": 1_000,

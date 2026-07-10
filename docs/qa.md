@@ -83,8 +83,18 @@ The evaluator scores:
   percentage, and nearby measure language select the relevant column; SQL
   context values require number-anchored phrases such as `top 10`, `10 results`,
   `last 3 months`, or `calendar year 2026`; qualifiers elsewhere in a sentence
-  cannot support the number. Currency symbols and units cannot borrow context
-  values.
+  cannot support the number. Percentage, currency, and scaled claims cannot
+  borrow context values. The scanner recognizes currency-code prefixes such as
+  `USD10M` and currency symbols on either side of the number.
+  Rate/ratio columns use a single fractional representation, so `20%` matches
+  `0.2` but `0.2%` does not. Percentage derivations use ratios only; currency
+  claims require monetary columns and use only unit-preserving additive
+  derivations. Approximation words and the `~`/`≈` markers enable the documented
+  one-percent rounding tolerance for the claim they prefix.
+  Numeric `id`/`*_id` fields are identifier dimensions rather than measures.
+  They require exact returned-value equality plus a structurally adjacent `ID`
+  or matching entity cue; a generic `ID` cue is accepted only when one numeric
+  identifier column was returned.
   Numerals inside an exact returned alphanumeric dimension, such as `501 Jeans`,
   are recognized as dimension text rather than quantitative claims; derivations
   remain restricted to values from the same measure;
