@@ -1,6 +1,6 @@
 from rich.console import Console
 
-from retail_agent.models import AgentFailure, AnalysisReport
+from retail_agent.models import AgentFailure, AnalysisReport, ChartArtifact
 from retail_agent.rendering import render_report
 
 
@@ -37,6 +37,12 @@ def test_render_degraded_report_includes_all_sections():
             assumptions=["One assumption"],
             caveats=["Narrative unavailable"],
             followups=["Retry later"],
+            chart_artifact=ChartArtifact(
+                path="artifacts/charts/orders.png",
+                output_format="png",
+                size_bytes=1_024,
+                code_digest="0" * 64,
+            ),
             degraded=True,
             trace_id="trace-2",
         )
@@ -49,6 +55,7 @@ def test_render_degraded_report_includes_all_sections():
     assert "Narrative unavailable" in output
     assert "Retry later" in output
     assert "SELECT 42 AS value" in output
+    assert "artifacts/charts/orders.png" in output
 
 
 def test_render_refusal_stops_before_report_sections():

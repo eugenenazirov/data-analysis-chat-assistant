@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,9 +31,11 @@ from retail_agent.bigquery import (
     QueryOutcomeUnknownError,
     QueryPreExecutionError,
 )
+from retail_agent.infrastructure.charts import LocalPythonChartExecutor
 from retail_agent.models import (
     AgentFailure,
     AnalysisReport,
+    ChartArtifact,
     DataAnalysisResult,
     ExecutionFailure,
     QueryResult,
@@ -123,7 +126,13 @@ def _events(path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def _agent_dependencies(test_config, tmp_path, *, golden_store=None):
+def _agent_dependencies(
+    test_config,
+    tmp_path,
+    *,
+    golden_store=None,
+    chart_executor=None,
+):
     return agent.AgentDependencies(
         config=test_config,
         bigquery=FakeBigQueryRunner(),
@@ -131,6 +140,7 @@ def _agent_dependencies(test_config, tmp_path, *, golden_store=None):
         user=test_config.user_profile("manager_a"),
         trace_id="native-agent-trace",
         golden_store=golden_store,
+        chart_executor=chart_executor,
     )
 
 
@@ -517,9 +527,14 @@ def test_build_analysis_agent_applies_configured_tool_retry_budget(test_config, 
 
     toolset = agent.build_analysis_toolset(configured)
 
-    assert set(toolset.tools) == {"retrieve_golden_examples", "run_sql_query"}
+    assert set(toolset.tools) == {
+        "generate_chart",
+        "retrieve_golden_examples",
+        "run_sql_query",
+    }
     assert toolset.tools["retrieve_golden_examples"].max_retries == 0
     assert toolset.tools["run_sql_query"].max_retries == retry_budget
+    assert toolset.tools["generate_chart"].max_retries == 0
 
 
 def test_native_agent_can_query_without_retrieval(test_config, tmp_path):
@@ -666,6 +681,129 @@ def test_history_processor_keeps_multiple_complete_recent_turns(test_config, tmp
     assert "middle question" in serialized
     assert "latest question" in serialized
     assert "Explain the schema" in serialized
+
+
+def test_chart_tool_becomes_available_only_after_verified_query(test_config, tmp_path):
+    configured = test_config.model_copy(
+        update={
+            "chart_execution": test_config.chart_execution.model_copy(
+                update={"artifact_directory": tmp_path / "charts"}
+            )
+        }
+    )
+    chart_executor = LocalPythonChartExecutor(configured.chart_execution)
+    deps = _agent_dependencies(
+        configured,
+        tmp_path,
+        chart_executor=chart_executor,
+    )
+    visible_tools: list[set[str]] = []
+    calls = 0
+    chart_code = """
+import json
+from pathlib import Path
+rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
+value = rows[0]["order_count"]
+Path("chart.svg").write_text(
+    f'<svg xmlns="http://www.w3.org/2000/svg"><text>{value}</text></svg>',
+    encoding="utf-8",
+)
+"""
+
+    def model_function(messages, info):
+        nonlocal calls
+        calls += 1
+        tool_names = {tool.name for tool in info.function_tools}
+        visible_tools.append(tool_names)
+        if calls == 1:
+            assert "generate_chart" not in tool_names
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "run_sql_query",
+                        {"sql": "SELECT 42 AS order_count"},
+                    )
+                ]
+            )
+        if calls == 2:
+            assert "generate_chart" in tool_names
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "generate_chart",
+                        {"code": chart_code, "output_format": "svg"},
+                    )
+                ]
+            )
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    output_tool.name,
+                    {"direct_answer": "There were 42 orders."},
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        agent.build_analysis_agent(configured).run(
+            "Plot the order count",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+    response = agent._to_analysis_response(
+        "Plot the order count",
+        result.output,
+        deps,
+        "trace",
+    )
+
+    assert isinstance(response, AnalysisReport)
+    assert response.chart_artifact is not None
+    assert Path(response.chart_artifact.path).is_file()
+    assert deps.tool_sequence == ["run_sql_query", "generate_chart"]
+    assert "generate_chart" not in visible_tools[0]
+    assert "generate_chart" in visible_tools[1]
+
+
+def test_output_validator_rejects_unverified_chart_reference(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path)
+    calls = 0
+
+    def model_function(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("run_sql_query", {"sql": "SELECT 42 AS order_count"})]
+            )
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
+        )
+        output = {"direct_answer": "There were 42 orders."}
+        if calls == 2:
+            output["chart_artifact"] = ChartArtifact(
+                path="unverified.png",
+                output_format="png",
+                size_bytes=100,
+                code_digest="0" * 64,
+            ).model_dump()
+        return ModelResponse(parts=[ToolCallPart(output_tool.name, output)])
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "How many orders?",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert result.output.chart_artifact is None
+    assert deps.output_validation_retries == 1
 
 
 def test_conversation_state_trims_completed_turns():

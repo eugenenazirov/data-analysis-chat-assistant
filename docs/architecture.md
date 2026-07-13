@@ -194,6 +194,20 @@ The prompt uses the rolling summary plus the most recent completed turns within
 a token budget. Failed or partial tool trajectories remain in the encrypted
 audit transcript but are not replayed into future model context.
 
+### Model-generated chart execution
+
+The prototype can execute chart-producing Python automatically after a verified
+query. Its local executor uses a short-lived working directory, a minimal
+environment, fixed input and output filenames, source/output/capture limits, and
+a strict timeout. This subprocess is a reliability boundary, not a security
+sandbox.
+
+Production deployments must execute model-generated code in an isolated
+external worker outside the application container. That worker needs separate
+credentials, filesystem and network policy, plus independent CPU, memory, and
+time limits. Query data should cross that boundary through a narrowly scoped
+job payload; the worker must not receive the application service's credentials.
+
 ## 7. Saved Reports And Destructive Confirmation
 
 ```mermaid

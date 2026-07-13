@@ -34,7 +34,7 @@ COPY retail_agent ./retail_agent
 COPY config ./config
 COPY data ./data
 
-RUN install -d -o appuser -g appuser /app/logs
+RUN install -d -o appuser -g appuser /app/logs /app/artifacts/charts
 
 USER appuser
 

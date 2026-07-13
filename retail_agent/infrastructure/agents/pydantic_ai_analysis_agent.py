@@ -6,6 +6,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, Text
 
 from retail_agent.agent import ConversationState, build_analysis_agent, run_question
 from retail_agent.application.dto import AgentAnalysisResult
+from retail_agent.application.ports import ChartCodeExecutor
 from retail_agent.domain.models import (
     Conversation,
     ConversationRole,
@@ -30,12 +31,14 @@ class PydanticAIAnalysisAgent:
         config: ApplicationSettings,
         analytics: BigQueryAnalyticsAdapter,
         retrieval: QdrantGoldenExampleRepository,
+        chart_executor: ChartCodeExecutor,
         telemetry: EventLogger,
         runner: AnalysisAgentPort | None = None,
     ) -> None:
         self.config = config
         self.analytics = analytics
         self.retrieval = retrieval
+        self.chart_executor = chart_executor
         self.telemetry = telemetry
         self.runner = runner or build_analysis_agent(config)
 
@@ -61,26 +64,39 @@ class PydanticAIAnalysisAgent:
             config=self.config,
             bigquery=self.analytics,
             golden_store=self.retrieval,
+            chart_executor=self.chart_executor,
             logger=self.telemetry,
             user_id=user.user_id,
             conversation=legacy_state,
             analysis_agent=self.runner,
         )
-        tool_results: tuple[ToolResultSummary, ...] = ()
+        tool_results: list[ToolResultSummary] = []
         if turn.query_result is not None:
             query_result = turn.query_result
-            tool_results = (
+            tool_results.append(
                 ToolResultSummary(
                     tool_name="run_sql_query",
                     summary=f"Verified query returned {query_result.total_rows} rows.",
                     sql=query_result.sql,
                     rows=tuple(query_result.rows[:20]),
                     total_rows=query_result.total_rows,
-                ),
+                )
+            )
+        if turn.chart_artifact is not None:
+            artifact = turn.chart_artifact
+            tool_results.append(
+                ToolResultSummary(
+                    tool_name="generate_chart",
+                    summary=(
+                        f"Generated {artifact.output_format.upper()} chart "
+                        f"({artifact.size_bytes} bytes)."
+                    ),
+                    artifact_path=artifact.path,
+                )
             )
         return AgentAnalysisResult(
             response=turn.response,
-            tool_results=tool_results,
+            tool_results=tuple(tool_results),
         )
 
 

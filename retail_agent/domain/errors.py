@@ -1,3 +1,16 @@
+from typing import Literal
+
+type ChartExecutionFailureCode = Literal[
+    "captured_output_limit",
+    "invalid_output",
+    "output_missing",
+    "output_too_large",
+    "process_failed",
+    "source_too_large",
+    "timeout",
+]
+
+
 class RetailAgentError(RuntimeError):
     """Base exception that may cross application boundaries."""
 
@@ -32,3 +45,7 @@ class RetrievalError(RetailAgentError):
 
 class ChartExecutionError(RetailAgentError):
     """Chart code could not produce a valid artifact."""
+
+    def __init__(self, message: str, *, code: ChartExecutionFailureCode):
+        super().__init__(message)
+        self.code = code

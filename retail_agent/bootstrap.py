@@ -17,6 +17,7 @@ from retail_agent.infrastructure.agents.pydantic_ai_analysis_agent import (
 from retail_agent.infrastructure.analytics.bigquery_adapter import (
     BigQueryAnalyticsAdapter,
 )
+from retail_agent.infrastructure.charts import LocalPythonChartExecutor
 from retail_agent.infrastructure.conversations.in_memory_repository import (
     InMemoryConversationRepository,
 )
@@ -63,12 +64,14 @@ class Runtime:
             self.embedder,
             self.logger,
         )
+        self.chart_executor = LocalPythonChartExecutor(config.chart_execution)
         self.analysis_agent = build_analysis_agent(config)
         self.conversations = InMemoryConversationRepository()
         self.agent_adapter = PydanticAIAnalysisAgent(
             config,
             self.bigquery,
             self.golden_store,
+            self.chart_executor,
             self.logger,
             self.analysis_agent,
         )

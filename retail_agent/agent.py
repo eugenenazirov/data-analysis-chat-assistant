@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 import uuid
 from collections.abc import Sequence
@@ -14,6 +15,7 @@ from pydantic_ai import (
     ModelRetry,
     ModelSettings,
     RunContext,
+    ToolDefinition,
     UsageLimits,
 )
 from pydantic_ai.capabilities import ProcessHistory
@@ -31,6 +33,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from retail_agent.application.ports import ChartCodeExecutor
 from retail_agent.bigquery import (
     QueryCostExceeded,
     QueryExecutionError,
@@ -38,6 +41,7 @@ from retail_agent.bigquery import (
     QueryPreExecutionError,
 )
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
+from retail_agent.domain.errors import ChartExecutionError
 from retail_agent.domain.policies.report_evidence import assess_report_evidence
 from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import (
@@ -45,6 +49,9 @@ from retail_agent.models import (
     AnalysisReport,
     AnalysisResponse,
     AnalysisResult,
+    ChartArtifact,
+    ChartFormat,
+    ChartRequest,
     ClarificationRequest,
     DataAnalysisResult,
     ExecutionFailure,
@@ -66,6 +73,12 @@ class GoldenRetrievalResult(BaseModel):
     error_code: str | None = None
 
 
+class ChartToolResult(BaseModel):
+    status: Literal["ok", "error"]
+    artifact: ChartArtifact | None = None
+    error_code: str | None = None
+
+
 @dataclass
 class AgentDependencies:
     config: AgentConfig
@@ -74,6 +87,7 @@ class AgentDependencies:
     user: UserProfile
     trace_id: str
     golden_store: KnowledgeRetrieverPort | None = None
+    chart_executor: ChartCodeExecutor | None = None
     last_query_result: QueryResult | None = None
     last_tool_failure_code: FailureCode | None = None
     last_tool_failure_retryable: bool = False
@@ -84,6 +98,8 @@ class AgentDependencies:
     tool_sequence: list[str] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     output_validation_retries: int = 0
+    chart_tool_invoked: bool = False
+    last_chart_artifact: ChartArtifact | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +165,7 @@ class TurnResult:
     retrieved_trio_ids: tuple[str, ...] = ()
     query_result: QueryResult | None = None
     sql_tool_invoked: bool = False
+    chart_artifact: ChartArtifact | None = None
 
 
 async def add_runtime_context(ctx: RunContext[AgentDependencies]) -> str:
@@ -265,12 +282,74 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         raise ModelRetry(str(exc)) from exc
 
 
+async def prepare_chart_tool(
+    ctx: RunContext[AgentDependencies],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    if ctx.deps.last_query_result is not None and ctx.deps.chart_executor is not None:
+        return tool_definition
+    return None
+
+
+async def generate_chart(
+    ctx: RunContext[AgentDependencies],
+    code: str,
+    output_format: ChartFormat = "png",
+) -> ChartToolResult:
+    """Execute chart Python against input.json and create chart.png or chart.svg.
+
+    Read only the verified rows from input.json in the current working directory.
+    Save exactly one artifact using the fixed filename for the selected format.
+    """
+
+    started = time.perf_counter()
+    ctx.deps.chart_tool_invoked = True
+    ctx.deps.tool_sequence.append("generate_chart")
+    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    if ctx.deps.last_query_result is None:
+        _record_tool_event(ctx, "generate_chart", "rejected", started)
+        return ChartToolResult(status="error", error_code="verified_query_required")
+    if ctx.deps.chart_executor is None:
+        _record_tool_event(ctx, "generate_chart", "unavailable", started)
+        return ChartToolResult(status="error", error_code="executor_unavailable")
+
+    request = ChartRequest(
+        code=code,
+        data=ctx.deps.last_query_result.rows,
+        output_format=output_format,
+    )
+    try:
+        artifact = await ctx.deps.chart_executor.execute(request)
+    except ChartExecutionError as exc:
+        _record_tool_event(ctx, "generate_chart", "failed", started)
+        ctx.deps.logger.event(
+            ctx.deps.trace_id,
+            "chart_execution_failed",
+            code_digest=digest,
+            error_code=exc.code,
+        )
+        return ChartToolResult(status="error", error_code=exc.code)
+
+    ctx.deps.last_chart_artifact = artifact
+    _record_tool_event(ctx, "generate_chart", "succeeded", started)
+    ctx.deps.logger.event(
+        ctx.deps.trace_id,
+        "chart_execution_completed",
+        code_digest=artifact.code_digest,
+        output_format=artifact.output_format,
+        size_bytes=artifact.size_bytes,
+        artifact_path=artifact.path,
+    )
+    return ChartToolResult(status="ok", artifact=artifact)
+
+
 def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependencies]:
     toolset = FunctionToolset[AgentDependencies](
         instructions=(
             "Choose tools based on the question. Retrieval is optional, but when used its "
             "question must be standalone and resolve conversation references. Data answers "
-            "must execute run_sql_query and use only its verified result."
+            "must execute run_sql_query and use only its verified result. Generate charts "
+            "only when the chart tool becomes available after a successful query."
         ),
         sequential=True,
     )
@@ -283,6 +362,12 @@ def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependen
         run_sql_query,
         retries=config.agent_limits.max_sql_retries,
         timeout=config.bigquery.timeout_seconds + 5,
+    )
+    toolset.add_function(
+        generate_chart,
+        retries=0,
+        prepare=prepare_chart_tool,
+        timeout=config.chart_execution.timeout_seconds + 5,
     )
     return toolset
 
@@ -342,6 +427,21 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
                 "Revise the answer so every numeric claim is supported by the verified "
                 "query result."
             )
+        if output.chart_artifact is not None and (
+            ctx.deps.last_chart_artifact is None
+            or output.chart_artifact != ctx.deps.last_chart_artifact
+        ):
+            ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.logger.event(
+                ctx.deps.trace_id,
+                "output_validation_retry",
+                reason="unverified_chart_artifact",
+                retry_attempt=ctx.retry,
+                max_retries=ctx.max_retries,
+            )
+            raise ModelRetry(
+                "A chart reference must exactly match the current generate_chart result."
+            )
         return output
 
     return analysis_agent
@@ -353,6 +453,7 @@ async def run_question(
     config: AgentConfig,
     bigquery: WarehousePort,
     golden_store: KnowledgeRetrieverPort,
+    chart_executor: ChartCodeExecutor | None = None,
     logger: EventLogger,
     user_id: str,
     conversation: ConversationState | None = None,
@@ -388,6 +489,7 @@ async def run_question(
         user=user,
         trace_id=trace_id,
         golden_store=golden_store,
+        chart_executor=chart_executor,
     )
 
     prompt = (
@@ -433,6 +535,11 @@ async def run_question(
             tool_sequence=deps.tool_sequence,
             tool_events=deps.tool_events,
             output_validation_retries=deps.output_validation_retries,
+            chart_artifact=(
+                deps.last_chart_artifact.model_dump()
+                if deps.last_chart_artifact is not None
+                else None
+            ),
             duration_ms=_duration_ms(started),
             error=str(exc),
         )
@@ -443,7 +550,10 @@ async def run_question(
         )
         if deps.last_query_result is not None:
             response: AnalysisResponse = _build_degraded_report(
-                question, deps.last_query_result, trace_id
+                question,
+                deps.last_query_result,
+                trace_id,
+                chart_artifact=deps.last_chart_artifact,
             )
         else:
             response = AgentFailure(
@@ -459,6 +569,7 @@ async def run_question(
             retrieved_trio_ids=tuple(deps.retrieved_trio_ids),
             query_result=deps.last_query_result,
             sql_tool_invoked=deps.sql_tool_invoked,
+            chart_artifact=deps.last_chart_artifact,
         )
 
     response = _to_analysis_response(
@@ -489,6 +600,11 @@ async def run_question(
         tool_events=deps.tool_events,
         usage=_usage(result),
         output_validation_retries=deps.output_validation_retries,
+        chart_artifact=(
+            deps.last_chart_artifact.model_dump()
+            if deps.last_chart_artifact is not None
+            else None
+        ),
         duration_ms=_duration_ms(started),
         prompt_version=build_analysis_prompt().version,
         persona_version=config.persona_version,
@@ -500,6 +616,7 @@ async def run_question(
         retrieved_trio_ids=tuple(deps.retrieved_trio_ids),
         query_result=deps.last_query_result,
         sql_tool_invoked=deps.sql_tool_invoked,
+        chart_artifact=deps.last_chart_artifact,
     )
 
 
@@ -534,9 +651,16 @@ def _to_analysis_response(
     trace_id: str,
 ) -> AnalysisResponse:
     if isinstance(output, AnalysisReport):
-        report = output
-        if deps.last_query_result is not None:
-            report = report.model_copy(update={"sql": deps.last_query_result.sql})
+        report = output.model_copy(
+            update={
+                "sql": (
+                    deps.last_query_result.sql
+                    if deps.last_query_result is not None
+                    else None
+                ),
+                "chart_artifact": deps.last_chart_artifact,
+            }
+        )
         return _sanitize_report(report, trace_id)
     if isinstance(output, DataAnalysisResult):
         if deps.last_query_result is None:
@@ -548,7 +672,12 @@ def _to_analysis_response(
                 retryable=False,
             )
         return _sanitize_report(
-            _data_result_to_report(question, output, deps.last_query_result),
+            _data_result_to_report(
+                question,
+                output,
+                deps.last_query_result,
+                chart_artifact=deps.last_chart_artifact,
+            ),
             trace_id,
         )
     if isinstance(output, SchemaExplanationResult):
@@ -591,6 +720,8 @@ def _data_result_to_report(
     question: str,
     output: DataAnalysisResult,
     query_result: QueryResult,
+    *,
+    chart_artifact: ChartArtifact | None = None,
 ) -> AnalysisReport:
     return AnalysisReport(
         question=question,
@@ -600,6 +731,7 @@ def _data_result_to_report(
         sql=query_result.sql,
         caveats=output.caveats,
         followups=output.followups,
+        chart_artifact=chart_artifact,
     )
 
 
@@ -663,7 +795,11 @@ def _sanitize_report(report: AnalysisReport, trace_id: str) -> AnalysisReport:
 
 
 def _build_degraded_report(
-    question: str, query_result: QueryResult, trace_id: str
+    question: str,
+    query_result: QueryResult,
+    trace_id: str,
+    *,
+    chart_artifact: ChartArtifact | None = None,
 ) -> AnalysisReport:
     return _sanitize_report(
         AnalysisReport(
@@ -676,6 +812,7 @@ def _build_degraded_report(
             sql=query_result.sql,
             caveats=["Narrative interpretation is unavailable; retry for a full report."],
             degraded=True,
+            chart_artifact=chart_artifact,
         ),
         trace_id,
     )

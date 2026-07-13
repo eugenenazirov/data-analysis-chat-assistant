@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from retail_agent.domain.models.chart import ChartArtifact
+
 type FailureCode = Literal[
     "model_unavailable",
     "warehouse_unavailable",
@@ -22,6 +24,7 @@ class AnalysisReport(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
     followups: list[str] = Field(default_factory=list)
+    chart_artifact: ChartArtifact | None = None
     refused: bool = False
     degraded: bool = False
     trace_id: str | None = None
@@ -45,6 +48,7 @@ class DataAnalysisResult(BaseModel):
     supporting_evidence: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
     followups: list[str] = Field(default_factory=list)
+    chart_artifact: ChartArtifact | None = None
 
 
 class SchemaExplanationResult(BaseModel):

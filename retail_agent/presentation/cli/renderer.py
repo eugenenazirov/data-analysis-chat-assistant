@@ -30,6 +30,12 @@ def render_report(console: Console, report: AnalysisResponse) -> None:
     _render_list_section(console, "Follow-ups", report.followups)
     if report.sql:
         console.print(Markdown(f"## SQL\n```sql\n{report.sql}\n```"))
+    if report.chart_artifact is not None:
+        console.print(
+            f"[bold]Chart:[/bold] {report.chart_artifact.path} "
+            f"[dim]({report.chart_artifact.output_format}, "
+            f"{report.chart_artifact.size_bytes} bytes)[/dim]"
+        )
     console.print(f"[dim]trace_id={report.trace_id}[/dim]")
 
 
