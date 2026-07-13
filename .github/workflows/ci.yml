@@ -48,16 +48,28 @@ jobs:
           --cov-fail-under=85
 
       - name: Run guardrail evaluations
-        run: uv run python -m retail_agent eval
+        run: uv run python -m evals.run guardrails
 
       - name: Run answer-quality replay evaluations
-        run: uv run python -m retail_agent eval --suite quality --mode replay
+        run: uv run python -m evals.run quality --mode replay
 
       - name: Compile package
-        run: uv run python -m compileall -q retail_agent
+        run: uv run python -m compileall -q retail_agent evals
 
       - name: Verify dependency files remain unchanged
         run: git diff --exit-code -- pyproject.toml uv.lock
 
       - name: Build frozen Docker image
-        run: docker build --tag retail-agent:ci .
+        run: docker build --target runtime --tag retail-agent:ci .
+
+      - name: Verify runtime image excludes evaluations
+        run: >-
+          docker run --rm --entrypoint python retail-agent:ci -c
+          "import importlib.util, pathlib;
+          assert importlib.util.find_spec('pydantic_evals') is None;
+          assert not pathlib.Path('/app/evals').exists()"
+
+      - name: Build and smoke-test evaluation image
+        run: |
+          docker build --target evaluation --tag retail-agent-eval:ci .
+          docker run --rm retail-agent-eval:ci guardrails

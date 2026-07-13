@@ -1,6 +1,6 @@
 from pydantic_evals import Dataset
 
-from retail_agent.evals import build_guardrail_dataset, run_guardrail_evals
+from evals.guardrails import build_guardrail_dataset, run_guardrail_evals
 
 
 def test_guardrail_evals_pass(test_config):

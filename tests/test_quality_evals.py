@@ -5,10 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from retail_agent.agent import TurnResult
-from retail_agent.models import AgentFailure, AnalysisReport
-from retail_agent.observability import EventLogger
-from retail_agent.quality_evals import (
+from evals.quality import (
     _faithfulness_score,
     _intent_score,
     _intent_signature,
@@ -20,8 +17,11 @@ from retail_agent.quality_evals import (
     run_quality_replay_evals,
     summarize_quality_results,
 )
+from retail_agent.agent import TurnResult
+from retail_agent.models import AgentFailure, AnalysisReport
+from retail_agent.observability import EventLogger
 
-CASES_PATH = Path("data/quality_eval_cases.jsonl")
+CASES_PATH = Path("evals/datasets/quality_eval_cases.jsonl")
 
 
 def test_quality_replay_suite_meets_release_gates(test_config):
@@ -335,7 +335,7 @@ def test_live_quality_eval_compares_agent_and_canonical_results(
             ),
         )
 
-    monkeypatch.setattr("retail_agent.quality_evals.run_question", fake_run_question)
+    monkeypatch.setattr("evals.quality.run_question", fake_run_question)
     result = asyncio.run(
         run_quality_live_evals(
             test_config,
@@ -373,7 +373,7 @@ def test_live_quality_eval_reports_failed_history_turn(test_config, tmp_path, mo
             sql_tool_invoked=True,
         )
 
-    monkeypatch.setattr("retail_agent.quality_evals.run_question", fake_run_question)
+    monkeypatch.setattr("evals.quality.run_question", fake_run_question)
     result = asyncio.run(
         run_quality_live_evals(
             test_config,
@@ -409,7 +409,7 @@ def test_live_quality_eval_reports_canonical_query_failure(
             ),
         )
 
-    monkeypatch.setattr("retail_agent.quality_evals.run_question", fake_run_question)
+    monkeypatch.setattr("evals.quality.run_question", fake_run_question)
     result = asyncio.run(
         run_quality_live_evals(
             test_config,
@@ -427,7 +427,7 @@ def test_live_quality_eval_reports_canonical_query_failure(
 
 
 def test_quality_report_and_human_scores_round_trip(test_config, tmp_path):
-    from retail_agent.quality_evals import load_human_scores, write_quality_report
+    from evals.quality import load_human_scores, write_quality_report
 
     result = run_quality_replay_evals(test_config, CASES_PATH)
     report_path = tmp_path / "artifacts" / "report.json"

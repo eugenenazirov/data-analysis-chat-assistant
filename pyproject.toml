@@ -10,8 +10,7 @@ dependencies = [
     "logfire>=4.37,<5",
     "matplotlib>=3.10,<4",
     "pydantic>=2.12,<3",
-    "pydantic-ai>=2.9,<3",
-    "pydantic-evals>=2.9,<3",
+    "pydantic-ai-slim[google]>=2.9,<3",
     "pydantic-settings>=2.12,<3",
     "pyyaml>=6.0,<7",
     "qdrant-client>=1.18,<2",
@@ -21,6 +20,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+eval = [
+    "pydantic-evals>=2.9,<3",
+]
 dev = [
     "pytest>=9.0,<10",
     "pytest-cov>=7.0,<8",

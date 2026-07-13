@@ -12,7 +12,12 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --no-group eval
+
+FROM builder AS evaluation-builder
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --group eval
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
@@ -40,3 +45,15 @@ USER appuser
 
 ENTRYPOINT ["python", "-m", "retail_agent"]
 CMD ["--help"]
+
+FROM runtime AS evaluation
+
+USER root
+COPY --from=evaluation-builder /app/.venv /app/.venv
+COPY evals ./evals
+USER appuser
+
+ENTRYPOINT ["python", "-m", "evals.run"]
+CMD ["--help"]
+
+FROM runtime AS app

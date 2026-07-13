@@ -71,8 +71,7 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
           QDRANT_URL: http://localhost:6333
         run: >-
-          uv run python -m retail_agent eval
-          --suite quality
+          uv run python -m evals.run quality
           --mode live
           --automated-only
           --output artifacts/quality-eval-live.json
@@ -87,8 +86,7 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
           QDRANT_URL: http://localhost:6333
         run: >-
-          uv run python -m retail_agent eval
-          --suite quality
+          uv run python -m evals.run quality
           --mode live
           --human-scores artifacts/human-scores.json
           --output artifacts/quality-eval-live.json

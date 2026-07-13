@@ -70,62 +70,6 @@ def test_chat_continues_after_model_failure(test_config, tmp_path, monkeypatch):
     assert runtime.calls == 1
 
 
-def test_quality_replay_cli_passes():
-    result = CliRunner().invoke(
-        cli.app,
-        ["eval", "--suite", "quality", "--mode", "replay"],
-    )
-
-    assert result.exit_code == 0, result.output
-
-
-def test_eval_rejects_unknown_suite():
-    result = CliRunner().invoke(cli.app, ["eval", "--suite", "unknown"])
-
-    assert result.exit_code != 0
-    assert "guardrails" in result.output
-
-
-def test_eval_rejects_automated_only_for_guardrails():
-    result = CliRunner().invoke(cli.app, ["eval", "--automated-only"])
-
-    assert result.exit_code != 0
-    assert "applies only to the quality suite" in result.output
-
-
-def test_quality_automated_only_accepts_pending_human_review(
-    test_config, monkeypatch
-):
-    from pathlib import Path
-
-    from retail_agent.quality_evals import (
-        evaluate_quality_case,
-        load_quality_cases,
-        summarize_quality_results,
-    )
-
-    case = load_quality_cases(Path("data/quality_eval_cases.jsonl"))[0]
-    replay = case.replay.model_copy(update={"usefulness_score": None})
-    pending = summarize_quality_results(
-        "replay", [evaluate_quality_case(test_config, case, replay)]
-    )
-    monkeypatch.setattr(cli, "load_settings", lambda path: test_config)
-    monkeypatch.setattr(cli, "run_quality_replay_evals", lambda config, path: pending)
-
-    automated = CliRunner().invoke(
-        cli.app,
-        ["eval", "--suite", "quality", "--mode", "replay", "--automated-only"],
-    )
-    release = CliRunner().invoke(
-        cli.app,
-        ["eval", "--suite", "quality", "--mode", "replay"],
-    )
-
-    assert automated.exit_code == 0
-    assert "AUTO PASS" in automated.output
-    assert release.exit_code == 1
-
-
 def test_bq_smoke_renders_success(test_config, tmp_path, monkeypatch):
     runtime = SimpleNamespace(
         bigquery_smoke=lambda sql: SimpleNamespace(
@@ -172,9 +116,3 @@ def test_index_golden_uses_runtime_store(monkeypatch):
     monkeypatch.setattr(cli, "_runtime", lambda *args, **kwargs: runtime)
 
     cli.index_golden(recreate=True)
-
-
-def test_default_guardrail_eval_cli_passes():
-    result = CliRunner().invoke(cli.app, ["eval"])
-
-    assert result.exit_code == 0, result.output

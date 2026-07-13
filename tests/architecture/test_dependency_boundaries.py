@@ -63,6 +63,29 @@ def test_application_depends_only_on_domain_contracts():
     )
 
 
+def test_production_package_does_not_import_evaluation_code():
+    _assert_no_imports(
+        PACKAGE_ROOT,
+        (
+            "evals",
+            "pydantic_evals",
+        ),
+    )
+
+
+def test_cli_has_no_direct_sdk_or_infrastructure_dependencies():
+    _assert_no_imports(
+        PACKAGE_ROOT / "presentation" / "cli",
+        (
+            "evals",
+            "google.cloud",
+            "pydantic_evals",
+            "qdrant_client",
+            "retail_agent.infrastructure",
+        ),
+    )
+
+
 def test_expected_architecture_packages_exist():
     expected = {
         "application",
