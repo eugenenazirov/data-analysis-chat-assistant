@@ -1,35 +1,51 @@
 # Retail Data Analysis Chat Assistant
 
-Working prototype and production high-level design for an executive-facing retail
-analytics assistant. The production reference runtime is Kubernetes with portable
-OIDC, PostgreSQL, S3-compatible storage, Qdrant, and OpenTelemetry contracts;
-BigQuery and Gemini are replaceable adapters.
+An executive-facing retail analytics assistant with a working CLI prototype and
+a production high-level design. The runtime uses Clean Architecture boundaries,
+PydanticAI 2.9 structured agents, BigQuery, Qdrant, Gemini, bounded multi-turn
+history, evidence validation, and automatic chart generation.
 
-For a module-by-module reviewer guide and assignment mapping, start with
+For a reviewer-oriented code tour, start with
 [PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md).
 
-The working prototype uses:
+## Runtime Architecture
 
-- PydanticAI for typed agent orchestration.
-- Gemini for chat and Golden Knowledge embeddings.
-- BigQuery for live analytics against `bigquery-public-data.thelook_ecommerce`.
-- Qdrant for Golden Knowledge vector retrieval.
-- uv for Python 3.12 environments and reproducible locked dependencies.
-- Docker Compose for a repeatable reviewer setup.
+```text
+CLI / future API
+        ↓
+Application use cases and ports
+        ↓
+Domain models and deterministic policies
+        ↑
+Infrastructure adapters (Gemini, BigQuery, Qdrant, charts, telemetry)
+```
+
+`retail_agent/bootstrap.py` is the composition root. The CLI only parses input,
+selects a conversation, calls use cases, renders DTOs, and maps exit codes. A
+future HTTP adapter can invoke the same `AnalyzeQuestion` use case.
+
+During a turn, the PydanticAI agent chooses among these bounded tools:
+
+- `retrieve_golden_examples`: optional analyst-approved precedent retrieval;
+- `run_sql_query`: guarded, dry-run-checked, read-only BigQuery execution;
+- `generate_chart`: dynamically hidden until the current turn has verified rows.
+
+Data answers use a discriminated structured output and require successful SQL.
+The runtime attaches only the SQL actually executed, checks numeric claims
+against returned rows, validates chart references, then applies deterministic
+PII redaction.
 
 ## Quick Start With Docker
 
-1. Create environment file:
+1. Prepare configuration:
 
    ```bash
    cp .env.example .env
    ```
 
-2. Fill in `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT`.
-   `GOOGLE_API_KEY` is optional because the default model path uses Vertex AI
-   through Application Default Credentials.
-
-3. Enable APIs and authenticate on the host:
+2. Set `GOOGLE_CLOUD_PROJECT` and authenticate with Application Default
+   Credentials. `GOOGLE_API_KEY` is optional when using the default Vertex AI
+   model path.
 
    ```bash
    export PROJECT_ID=your-project-id
@@ -38,40 +54,34 @@ The working prototype uses:
    gcloud auth application-default set-quota-project "$PROJECT_ID"
    ```
 
-   The Compose file mounts `~/.config/gcloud` read-only into the app container.
-   A service-account JSON can be used instead by changing the mount and
-   `GOOGLE_APPLICATION_CREDENTIALS`.
-
-4. Build and start Qdrant:
+3. Build the runtime and start Qdrant:
 
    ```bash
-   docker compose build
+   docker compose build app
    docker compose up -d qdrant
    ```
 
-5. Index Golden Knowledge:
+4. Index approved Golden Knowledge:
 
    ```bash
    docker compose run --rm app index-golden --recreate
    ```
 
-6. Ask a question:
+5. Ask a question or start a conversation:
 
    ```bash
-   docker compose run --rm app ask "Which product categories drove the most revenue last month?" --user manager_a
+   docker compose run --rm app ask "Plot monthly revenue by category" --user manager_a
+   docker compose run --rm app chat --user manager_a
    ```
 
-7. Run a live BigQuery smoke test without Gemini or Golden Knowledge retrieval:
+6. Run a live BigQuery smoke test without Gemini or Qdrant retrieval:
 
    ```bash
    docker compose run --rm app bq-smoke
    ```
 
-8. Run deterministic guardrail evals:
-
-   ```bash
-   docker compose run --rm app eval
-   ```
+Chart artifacts persist in the Compose `chart_artifacts` volume. Local uv runs
+write them to `artifacts/charts/` by default.
 
 For an offline Qdrant smoke test, use deterministic demo embeddings:
 
@@ -79,19 +89,10 @@ For an offline Qdrant smoke test, use deterministic demo embeddings:
 docker compose run --rm -e EMBEDDING_PROVIDER=hash app index-golden --recreate
 ```
 
-Use `EMBEDDING_PROVIDER=gemini` for the real assignment path. It works with a
-Google AI Studio API key or with Vertex AI ADC when `GOOGLE_CLOUD_PROJECT` and
-`GOOGLE_CLOUD_LOCATION` are set.
-
-The default reviewer path uses `LLM_MODEL=google-cloud:gemini-2.5-flash` and
-`EMBEDDING_MODEL=gemini-embedding-001` through Vertex AI. For Google AI Studio,
-set `GOOGLE_API_KEY` and switch `LLM_MODEL` to the corresponding `google:...`
-provider model.
-
 ## Local Setup With uv
 
-Install [uv](https://docs.astral.sh/uv/), then create the exact locked
-environment. Shell activation and pip are not required.
+Python 3.12 and uv 0.10.8 are pinned. The lockfile is shared by local, CI, and
+container builds.
 
 ```bash
 uv lock --check
@@ -99,57 +100,109 @@ uv sync --frozen --all-groups
 uv pip check
 docker compose up -d qdrant
 export QDRANT_URL=http://localhost:6333
-export GOOGLE_CLOUD_PROJECT=your-project-id
-export GOOGLE_CLOUD_LOCATION=us-central1
-export LLM_MODEL=google-cloud:gemini-2.5-flash
-export EMBEDDING_PROVIDER=gemini
 uv run python -m retail_agent index-golden --recreate
 uv run python -m retail_agent ask "Top products by sales" --user manager_b
 ```
 
-Python 3.12 and uv 0.10.8 are pinned in the project. `pyproject.toml` is the
-dependency source of truth and the committed `uv.lock` is used unchanged by
-local setup, CI, and Docker.
-
-## CLI
+The runtime CLI contains only application commands:
 
 ```bash
-uv run python -m retail_agent chat --user manager_a
 uv run python -m retail_agent ask "monthly revenue by category" --user manager_a
+uv run python -m retail_agent chat --user manager_a
 uv run python -m retail_agent index-golden --recreate
-uv run python -m retail_agent eval
-uv run python -m retail_agent eval --suite quality --mode replay
+uv run python -m retail_agent bq-smoke
 ```
 
-## Prototype Scope
+## Evaluations
 
-Implemented:
+Evaluation code, its dataset, and `pydantic-evals` are separate from the runtime
+package and image.
 
-- Golden Knowledge retrieval from Qdrant.
-- Deterministic Golden Knowledge prefetch before each model run.
-- Multi-turn chat state using PydanticAI message history and contextual follow-up retrieval.
-- Gemini embeddings through Vertex AI ADC or Google AI Studio API key.
-- BigQuery SQL generation/execution path through PydanticAI tools.
-- SQL AST guardrails with `sqlglot`.
-- Safe-column allowlists, PII/whole-row projection blocking, result-limit enforcement, and output redaction.
-- Graceful Qdrant degradation and top-level model/warehouse failure boundaries.
-- Redacted degraded reports when a model fails after verified query execution.
-- Effective configurable SQL retry budgets, dry-run byte caps, and timeouts.
-- Stable BigQuery execution job IDs and a terminal outcome-unknown boundary that
-  cannot enter the model retry loop after submission.
-- Turn- and byte-bounded chat history with compacted prior SQL tool results.
-- Structured session/turn-aware JSONL events.
-- Dockerized app and Qdrant services.
-- Deterministic guardrail and structural answer-quality replay evals plus a
-  credentialed automated live gate and separate analyst-scored release gate.
-- uv-locked Python environment and automated lint/test/eval/Docker CI gates.
+```bash
+uv run python -m evals.run guardrails
+uv run python -m evals.run quality --mode replay
+```
 
-Documented in HLD, not coded in prototype v1:
+The dedicated container target provides the same entrypoint:
 
-- Destructive Saved Reports deletion flow.
-- Durable human-reviewed Golden Knowledge promotion workflow.
-- Production session, preference, persona, report, and audit persistence.
-- Non-developer admin UI for persona updates.
+```bash
+docker build --target evaluation -t retail-agent-evaluation:local .
+docker run --rm retail-agent-evaluation:local guardrails
+docker run --rm retail-agent-evaluation:local quality --mode replay
+```
 
-See [docs/architecture.md](docs/architecture.md), [docs/requirements.md](docs/requirements.md), and [docs/qa.md](docs/qa.md).
-For live BigQuery setup, see [docs/bigquery-live-test.md](docs/bigquery-live-test.md).
+See [docs/qa.md](docs/qa.md) for live evaluation, analyst scoring, thresholds,
+and the complete acceptance matrix.
+
+## Configuration
+
+Settings precedence is:
+
+```text
+explicit initialization → environment → .env → YAML → safe defaults
+```
+
+`config/agent.yaml` defines nested model, BigQuery, retrieval, agent-limit,
+conversation, chart, safety, and observability settings. Credentials use
+`SecretStr` and are masked when settings are serialized.
+
+Common environment aliases include:
+
+| Area | Variables |
+|---|---|
+| Gemini | `LLM_MODEL`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_LOCATION` |
+| BigQuery | `GOOGLE_CLOUD_PROJECT`, `BIGQUERY_LOCATION`, `BQ_MAX_BYTES_BILLED` |
+| Retrieval | `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `GOLDEN_TOP_K` |
+| Agent limits | `MAX_AGENT_REQUESTS`, `MAX_TOOL_CALLS`, `MAX_AGENT_TOKENS`, `MAX_SQL_RETRIES`, `MAX_OUTPUT_RETRIES` |
+| Conversation | `MAX_CHAT_HISTORY_TURNS`, `MAX_CHAT_HISTORY_BYTES` |
+| Charts | `CHART_TIMEOUT_SECONDS` |
+| Telemetry | `AGENT_LOG_PATH`, `LOGFIRE_TOKEN` |
+
+## Chart Execution Security
+
+The prototype executes model-generated chart Python automatically in a
+short-lived subprocess with a minimal environment, fixed input/output names,
+strict source/output/capture limits, and a timeout. It supplies only the current
+verified query rows through `input.json` and accepts validated PNG or passive
+SVG output.
+
+This subprocess is a reliability boundary, not a security sandbox. Production
+must run generated code in an isolated external worker outside the application
+container, with separate credentials, filesystem, network policy, CPU, memory,
+and time limits.
+
+## Verification
+
+```bash
+uv lock --check
+uv pip check
+uv run ruff check .
+uv run pytest --cov=retail_agent --cov-branch --cov-fail-under=85
+uv run python -m evals.run guardrails
+uv run python -m evals.run quality --mode replay
+docker build --target runtime -t retail-agent:runtime .
+docker build --target evaluation -t retail-agent:evaluation .
+```
+
+The runtime image intentionally excludes `evals/`, its datasets, and
+`pydantic-evals`.
+
+## Scope
+
+Implemented in the prototype:
+
+- Clean Architecture packages and import-boundary tests;
+- typed settings, packaged prompts, composition root, and thin CLI;
+- model-selected retrieval/SQL/chart tools with timeouts and usage budgets;
+- multi-turn conversation state with compacted verified tool context;
+- SQL AST guardrails, safe-column allowlists, cost caps, stable job IDs, and
+  post-submission outcome protection;
+- structured output, evidence validation, PII redaction, degraded dependency
+  handling, and structured telemetry;
+- local automatic chart execution and separate runtime/evaluation images.
+
+The production design—not this CLI prototype—covers durable OIDC-authenticated
+APIs, PostgreSQL persistence, saved reports, destructive confirmation, audit
+exports, human Golden Knowledge promotion, and persona administration. See
+[docs/architecture.md](docs/architecture.md) and
+[docs/requirements.md](docs/requirements.md).

@@ -1,8 +1,6 @@
 # Quality Assurance And Release Gates
 
-## Frozen Environment
-
-The project uses uv as the only Python environment and dependency manager.
+## Reproducible Environment
 
 ```bash
 uv lock --check
@@ -10,14 +8,15 @@ uv sync --frozen --all-groups
 uv pip check
 ```
 
-`pyproject.toml` is the dependency source of truth and `uv.lock` contains the
-complete cross-platform resolution. Python 3.12 and uv 0.10.8 are pinned. CI and
-Docker refuse to resolve dependencies outside the lockfile.
+Python 3.12 and uv 0.10.8 are pinned. `pyproject.toml` is the dependency source
+of truth and `uv.lock` is consumed with `--frozen` locally, in CI, and in Docker.
+The runtime uses `pydantic-ai-slim[google]`; `pydantic-evals` belongs only to the
+`eval` dependency group.
 
-## Unit And Integration Tests
+## Offline Test Gate
 
 ```bash
-uv run pytest
+uv run ruff check .
 uv run pytest \
   --cov=retail_agent \
   --cov-branch \
@@ -25,161 +24,132 @@ uv run pytest \
   --cov-fail-under=85
 ```
 
-The suite avoids live credentials and covers:
+The credential-free suite covers:
 
-- SQL safety, PII, fully qualified table scope, row projection, and result limits.
-- BigQuery validation, dry-run, cost, execution, API failure, and timeout paths.
-- Gemini embeddings with mocked API and Vertex configuration.
-- Golden Knowledge indexing, recreation, readiness, and retrieval.
-- Runtime agent composition and effective retry budgets of 0-3.
-- Qdrant degradation, provider outage, typed failures, and degraded reports.
-- Conversation history, session/turn correlation, contextual follow-up retrieval,
-  and history trimming.
-- CLI failure continuity and failure/report rendering.
-- Guardrail and answer-quality evaluator behavior.
+- architecture import direction and absence of evaluation imports in runtime;
+- settings precedence, validation, secret masking, and prompt resources;
+- conversation isolation, retention, complete multi-turn history, and tool
+  summary compaction;
+- model-selected retrieval/SQL paths using `TestModel` and `FunctionModel`;
+- retrieval degradation, SQL retries, usage limits, structured output retries,
+  evidence validation, and user-safe provider failures;
+- SQL parsing, table/column scope, row projection, PII, limits, cost dry runs,
+  stable job IDs, timeout, and post-submission outcome handling;
+- chart tool visibility, verified-row binding, subprocess success, timeout,
+  cleanup, environment minimization, source/output/capture caps, PNG/SVG
+  validation, and CLI artifact rendering;
+- application use cases, adapters, CLI continuity, guardrails, and quality
+  scoring.
 
-CI additionally runs Ruff, compilation, Docker build, lockfile freshness, and a
-post-sync diff check.
+The current verified baseline is 191 tests with 89.01% branch-aware runtime
+coverage, above the 85% gate.
 
-## Deterministic Guardrail Evaluations
+## Evaluation Gates
 
-```bash
-uv run python -m retail_agent eval
-docker compose run --rm app eval
-```
+Evaluation code and data live under `evals/`, outside `retail_agent/`.
 
-The guardrail suite must pass 100%. It verifies safe SQL, PII blocking, row
-projection blocking, destructive SQL rejection, table scope, excessive limits,
-malformed SQL retry feedback, output redaction, and automatic limits.
-
-## Answer-Quality Replay Evaluations
+### Guardrails
 
 ```bash
-uv run python -m retail_agent eval --suite quality --mode replay
+uv run python -m evals.run guardrails
 ```
 
-`data/quality_eval_cases.jsonl` is a versioned executable dataset. Each case
-contains:
+The guardrail suite must pass 100%. It checks safe aggregate SQL, PII and
+whole-row projection blocking, destructive SQL rejection, table scope,
+excessive limits, malformed SQL feedback, output redaction, and automatic row
+limits.
 
-- a single-turn question or multi-turn history and follow-up;
-- canonical SQL;
-- required tables and SQL semantic fragments;
-- allowed table/column join keys;
-- forbidden PII fragments;
-- expected Golden Knowledge IDs;
-- canonical and candidate rows for deterministic replay;
-- a structured report and analyst usefulness score.
+### Answer-quality replay
+
+```bash
+uv run python -m evals.run quality --mode replay
+```
+
+`evals/datasets/quality_eval_cases.jsonl` contains questions, optional history,
+canonical SQL, semantic expectations, expected retrieval IDs, canonical and
+candidate rows, reports, and analyst usefulness scores.
 
 The evaluator scores:
 
-- intent-to-SQL correctness using parsed tables, required aggregate subsets,
-  dimensions, filters, functions, declared join keys, normalized equivalent
-  time offsets, and case-specific semantic fragments;
-- calculation accuracy by exact candidate/canonical row sets. Additional rows
-  reduce the score; additional columns are allowed only when every canonical
-  field value still matches;
-- Retrieval Recall@3 and mean reciprocal rank;
-- metric-aware support for every numeric claim in query results. Currency,
-  percentage, and nearby measure language select the relevant column; SQL
-  context values require number-anchored phrases such as `top 10`, `10 results`,
-  `last 3 months`, or `calendar year 2026`; qualifiers elsewhere in a sentence
-  cannot support the number. Percentage, currency, and scaled claims cannot
-  borrow context values. The scanner recognizes currency-code prefixes such as
-  `USD10M` and currency symbols on either side of the number.
-  Rate/ratio columns use a single fractional representation, so `20%` matches
-  `0.2` but `0.2%` does not. Percentage derivations use ratios only; currency
-  claims require monetary columns and use only unit-preserving additive
-  derivations. Approximation words and the `~`/`≈` markers enable the documented
-  one-percent rounding tolerance for the claim they prefix.
-  Numeric `id`/`*_id` fields are identifier dimensions rather than measures.
-  They require exact returned-value equality plus a structurally adjacent `ID`
-  or matching entity cue; a generic `ID` cue is accepted only when one numeric
-  identifier column was returned. One optional `:`, `#`, or `-` separator is
-  allowed between that validated cue and the numeric identifier.
-  Numerals inside an exact returned alphanumeric dimension, such as `501 Jeans`,
-  are recognized as dimension text rather than quantitative claims; derivations
-  remain restricted to values from the same measure;
-- multi-turn history use and structural resolution of the contextual canonical SQL;
-- analyst usefulness on a five-point rubric.
+- parsed SQL intent, required tables/fragments/functions, equivalent time
+  intervals, and declared join keys;
+- exact canonical row-set calculation accuracy, penalizing extra rows;
+- retrieval Recall@3 and mean reciprocal rank;
+- numeric faithfulness through the same runtime evidence policy used by the
+  agent output validator;
+- multi-turn intent resolution;
+- analyst usefulness on a five-point scale;
+- attachment of the exact verified SQL and absence of degraded/refused output.
 
-Release thresholds are:
+Release thresholds are 100% safety scenarios, at least 0.95 intent and
+calculation, at least 0.90 retrieval and multi-turn, MRR at least 0.80, zero
+unsupported numeric claims, mean analyst usefulness at least 4/5, no score below
+3/5, and no critical-case failure.
 
-- 100% guardrail, PII, ownership, and resilience scenarios;
-- at least 95% intent and calculation scores, with no critical-case failure;
-- at least 90% Retrieval Recall@3 and multi-turn scores, with mean reciprocal
-  rank of at least 0.8;
-- zero unsupported numeric claims;
-- mean analyst usefulness at least 4/5, with no case below 3/5.
-
-## Credentialed Live Evaluation
-
-Start Qdrant and index real Gemini embeddings:
+### Credentialed live quality
 
 ```bash
 docker compose up -d qdrant
 uv run python -m retail_agent index-golden --recreate
-```
-
-Then run:
-
-```bash
-uv run python -m retail_agent eval \
-  --suite quality \
-  --mode live \
-  --output artifacts/quality-eval-live.json
-```
-
-Live mode runs each canonical and generated query against the same current
-BigQuery data, avoiding stale fixed result assertions. It records the candidate
-report, retrieval, SQL, and score details. A transient retryable model failure
-is retried with bounded backoff only when no SQL tool completed, so the harness
-cannot duplicate warehouse work. The run remains failed with
-`needs_human_review=true` until analyst scores are supplied:
-
-```bash
-uv run python -m retail_agent eval \
-  --suite quality \
+uv run python -m evals.run quality \
   --mode live \
   --automated-only \
   --output artifacts/quality-eval-live.json
 ```
 
-`--automated-only` is the scheduled regression gate: it succeeds only when all
-automated metrics pass while leaving `needs_human_review=true`. It is not a
-release approval. The analyst-scored command remains:
+Live mode executes generated and canonical BigQuery SQL against the same current
+data. A transient retryable failure is retried with bounded backoff only when no
+SQL tool completed, so the evaluator cannot duplicate warehouse work.
+
+`--automated-only` is a regression gate, not release approval. The final release
+rerun supplies a JSON object mapping case IDs to analyst scores from 0 through 5:
 
 ```bash
-uv run python -m retail_agent eval \
-  --suite quality \
+uv run python -m evals.run quality \
   --mode live \
   --human-scores path/to/human-scores.json \
   --output artifacts/quality-eval-live.json
 ```
 
-The score file is a JSON object mapping case IDs to values from 0 through 5.
-An LLM judge may assist review, but its score cannot replace the analyst score.
+The scheduled/manual GitHub workflow uses workload identity federation, uploads
+the JSON report, and requires the analyst-scored rerun for release.
 
-The scheduled/manual GitHub workflow authenticates with workload identity
-federation, fails on automated regressions, and uploads the pending-review
-report without producing a noisy failure solely because scores are absent. A
-model, prompt, persona, or Golden index release requires a passing
-analyst-scored rerun.
+## Container Separation Gate
 
-## Manual Resilience Demonstration
+Build and verify both surfaces:
 
-Before submission, demonstrate:
+```bash
+docker build --target runtime -t retail-agent:runtime .
+docker run --rm --entrypoint python retail-agent:runtime -c \
+  "import importlib.util, pathlib; \
+assert importlib.util.find_spec('pydantic_evals') is None; \
+assert not pathlib.Path('/app/evals').exists()"
 
-1. A two-turn chat such as a revenue question followed by "compare that with the
-   prior month"; verify one session ID, increasing turn indexes, and non-empty
-   history on the second event.
-2. A simulated Gemini outage before SQL; verify a typed failure, no traceback,
-   and another accepted chat message.
-3. A simulated failure after query execution; verify the redacted degraded table
-   and no repeated query.
-4. `MAX_SQL_RETRIES=0`, `1`, and `2`; verify exact configured budgets in retry
-   events.
-5. Qdrant downtime; verify a successful non-retrieval answer and degradation
-   metric.
+docker build --target evaluation -t retail-agent:evaluation .
+docker run --rm retail-agent:evaluation guardrails
+docker run --rm retail-agent:evaluation quality --mode replay
+```
+
+The runtime image includes only runtime code, configuration, and Golden
+Knowledge seed data. The evaluation target adds `pydantic-evals`, `evals/`, and
+the quality dataset.
+
+## Manual Resilience And Acceptance Checks
+
+1. Ask a revenue question, then follow with “compare that with the prior month”
+   and “plot it”; verify one conversation ID, increasing turn indexes, prior
+   verified SQL context, and automatic chart creation.
+2. Simulate Gemini failure before SQL; verify a typed retryable failure without
+   traceback and that chat accepts the next message.
+3. Simulate model failure after query execution; verify the redacted degraded
+   table/SQL and no query replay.
+4. Exercise SQL retry budgets 0, 1, and 2; verify the effective tool retry count.
+5. Stop Qdrant; verify the retrieval tool returns degraded status and a SQL-only
+   answer can still complete.
+6. Attempt to call the chart tool before SQL; verify it is absent from the model
+   tool catalogue.
+7. Run chart code that times out, omits output, emits active SVG content, or
+   exceeds configured sizes; verify typed errors and temporary cleanup.
 
 ## Reviewer Acceptance Commands
 
@@ -189,8 +159,9 @@ uv sync --frozen --all-groups
 uv pip check
 uv run ruff check .
 uv run pytest --cov=retail_agent --cov-branch --cov-fail-under=85
-uv run python -m retail_agent eval
-uv run python -m retail_agent eval --suite quality --mode replay
-docker compose build
-docker compose run --rm app eval
+uv run python -m evals.run guardrails
+uv run python -m evals.run quality --mode replay
+docker build --target runtime -t retail-agent:runtime .
+docker build --target evaluation -t retail-agent:evaluation .
+docker run --rm retail-agent:evaluation guardrails
 ```

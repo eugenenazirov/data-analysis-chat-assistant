@@ -44,6 +44,7 @@ flowchart LR
         Assistant["Assistant API"]
         AdminApp["Admin API / UI"]
         Worker["Background Worker"]
+        ChartWorker["Isolated Chart Worker"]
         Postgres[("PostgreSQL")]
         Qdrant[("Qdrant")]
         MinIO[("MinIO / S3 API")]
@@ -65,6 +66,8 @@ flowchart LR
     Assistant --> Qdrant
     Assistant --> BigQuery
     Assistant --> Gemini
+    Assistant -->|"bounded chart job"| ChartWorker
+    ChartWorker --> MinIO
     AdminApp --> Postgres
     AdminApp --> MinIO
     Worker --> Postgres
@@ -74,6 +77,7 @@ flowchart LR
     Assistant --> OTel
     AdminApp --> OTel
     Worker --> OTel
+    ChartWorker --> OTel
 ```
 
 The public trust boundary ends at the Gateway. `oauth2-proxy` completes the OIDC
@@ -98,6 +102,7 @@ The data boundary separates:
 | Assistant API | Session turns, retrieval, agent orchestration, SQL safety, reports | HTTPS/JSON, PostgreSQL, Qdrant HTTP/gRPC, BigQuery/Gemini APIs | HPA, minimum two replicas |
 | Admin API/UI | Persona drafts, Golden Knowledge review, audit search | HTTPS/JSON, PostgreSQL, S3 API | HPA, minimum two replicas |
 | Worker | Transactional outbox, embeddings, index builds, retention, audit export | PostgreSQL, S3 API, Qdrant, Gemini | Independently scaled consumers |
+| Isolated Chart Worker | Execute bounded chart jobs without application credentials | Internal job API, S3 API, OTLP | Independently scaled disposable workers |
 | PostgreSQL | Durable ownership, sessions, reports, versions, audit and outbox | TLS PostgreSQL protocol | CloudNativePG three-instance HA reference |
 | MinIO | Versioned Golden artifacts, reports, backups, audit exports | S3-compatible HTTPS | Distributed deployment with erasure coding |
 | Qdrant | Versioned Golden Knowledge vector collections | HTTP/gRPC | Three replicas; snapshots to MinIO |
@@ -111,15 +116,23 @@ measured throughput exceeds the outbox worker's capacity.
 
 ## 4. Ports And Adapters
 
-The domain layer depends on the following narrow contracts:
+The implemented prototype's application layer depends on narrow ports for the
+analysis agent, analytics gateway, Golden Knowledge repository, chart executor,
+conversation repository, and telemetry. Its initial adapters are PydanticAI,
+BigQuery, Qdrant, a bounded local Python subprocess, an in-memory repository,
+and redacted JSONL events.
+
+The production system extends that inward-facing boundary with these durable
+contracts:
 
 | Port | Required behavior | Initial adapter |
 |---|---|---|
-| `WarehousePort` | Describe allowed schema, estimate cost, execute read-only SQL | BigQuery |
-| `KnowledgeRetrieverPort` | Retrieve approved analyst precedents and versions | Qdrant |
-| `ModelPort` | Structured agent generation with bounded usage | Gemini through PydanticAI |
+| `AnalyticsGateway` | Describe allowed schema, estimate cost, execute read-only SQL | BigQuery |
+| `GoldenExampleRepository` | Retrieve approved analyst precedents and versions | Qdrant |
+| `AnalysisAgent` | Structured, tool-using analysis with bounded usage | Gemini through PydanticAI |
 | `EmbeddingPort` | Embed Golden Knowledge using a named model version | Gemini embeddings |
-| `SessionRepository` | Ordered, owner-scoped session and turn persistence | PostgreSQL |
+| `ConversationRepository` | Ordered, owner-scoped conversation and turn persistence | PostgreSQL |
+| `ChartCodeExecutor` | Execute chart jobs over verified rows | Isolated chart worker |
 | `ReportRepository` | Owner-scoped saved reports and transactional deletion | PostgreSQL |
 | `PersonaRepository` | Draft/published versions and rollback pointer | PostgreSQL |
 | `BlobStorePort` | Versioned artifacts, retention, and object lock | MinIO S3 API |
@@ -159,26 +172,33 @@ sequenceDiagram
     participant U as Manager
     participant API as Assistant API
     participant DB as PostgreSQL
+    participant A as PydanticAI Agent
     participant Q as Qdrant
-    participant M as Gemini Adapter
     participant G as SQL Guard
     participant W as BigQuery Adapter
+    participant C as Isolated Chart Worker
     participant O as OpenTelemetry
 
     U->>API: POST /v1/sessions/{id}/turns + idempotency key
     API->>API: Verify OIDC identity and ownership
     API->>DB: Lock session version and load summary and recent turns
     DB-->>API: Pinned versions + bounded history
-    API->>Q: Retrieve top-k from active index version
-    Q-->>API: Approved trios or unavailable
-    API->>M: Question + history + profile + precedents
-    M->>G: Proposed SQL tool call
+    API->>A: Question + bounded complete history + pinned versions
+    opt Model selects approved-precedent retrieval
+        A->>Q: Retrieve top-k from active index version
+        Q-->>A: Approved trios or typed degraded result
+    end
+    A->>G: Proposed SQL tool call
     G->>G: Parse, allowlist, PII, row and cost controls
-    G->>W: Dry-run and execute
-    W-->>G: Verified QueryResult
-    G-->>M: Safe rows or bounded retry feedback
-    M-->>API: Structured AnalysisReport
-    API->>API: Recursive PII redaction
+    G->>W: Dry-run and execute with stable job ID
+    W-->>G: Verified QueryResult or typed outcome
+    G-->>A: Safe rows or bounded retry feedback
+    opt Model requests a chart after verified SQL
+        A->>C: Bounded code + verified rows
+        C-->>A: Validated artifact reference or typed failure
+    end
+    A-->>API: Discriminated structured output
+    API->>API: Evidence validation + artifact binding + recursive PII redaction
     API->>DB: Persist turn and increment session version
     API->>O: Completion/failure metrics and trace
     API-->>U: Report or typed failure + trace ID
@@ -190,9 +210,10 @@ idempotency key. Concurrent turns use the session's optimistic version and
 ordered sequence; conflicts return a retryable 409 rather than silently
 reordering context.
 
-The prompt uses the rolling summary plus the most recent completed turns within
-a token budget. Failed or partial tool trajectories remain in the encrypted
-audit transcript but are not replayed into future model context.
+The prompt uses complete recent turn groups within configured turn and byte
+budgets. Large verified tool results are compacted before reuse. Failed or
+partial tool trajectories remain in the encrypted audit transcript but are not
+replayed into future model context.
 
 ### Model-generated chart execution
 
@@ -294,6 +315,7 @@ sessions.
 | BigQuery unavailable during validation/dry-run | Typed warehouse failure after budget | Retry is allowed because no paid execution job was submitted | Warehouse error rate and latency |
 | BigQuery outcome unknown after submission | Non-retryable typed failure with trace ID | Stable job ID; never model-retry or resubmit until the original job is checked | `sql_terminal_failure`, stable job ID, warehouse error rate |
 | Query exceeds byte cap | Reject before execution | No retry until SQL changes | Estimated bytes and cap |
+| Chart generation fails | Return the verified analysis without an artifact and a typed chart warning | Never repeat SQL; chart retry stays within the chart job budget | Tool timing, code digest, failure class, output format/size |
 | PostgreSQL unavailable | Fail turn before model call | No model spend without durable ownership/idempotency state | API error and DB saturation alerts |
 | Outbox worker failure | Keep durable uncompleted event | Exponential backoff and dead-letter status | Queue age, attempts, oldest event |
 
@@ -317,6 +339,10 @@ after a tool may have executed because they can duplicate warehouse cost.
   saved reports remain until user deletion or organizational retention policy.
 - Preserve deterministic SQL validation, safe-column allowlists, result caps,
   and final recursive redaction even when warehouse-side masking is enabled.
+- Treat generated chart code as untrusted. Execute it only in disposable workers
+  with no application or warehouse credentials, read-only input, isolated
+  scratch storage, explicit network denial, resource quotas, and validated
+  passive output.
 - Record administrative, persona, Golden promotion, and destructive actions in
   the append-only audit stream.
 
@@ -344,7 +370,9 @@ after a tool may have executed because they can duplicate warehouse cost.
 Each turn carries `session_id`, `turn_index`, `trace_id`, authenticated subject,
 model version, prompt version, persona version, Golden index version, retrieved
 trio IDs, SQL validation outcome, dry-run bytes, warehouse latency/rows, retry
-attempts, token usage, redaction count, terminal status, and failure code.
+attempts, selected tool sequence and timings, output-validation retries, usage
+limits, token usage, chart digest/format/size, redaction count, terminal status,
+and failure code.
 
 OpenTelemetry exports to the reference stack:
 
@@ -370,10 +398,11 @@ PII/ownership invariant violation.
 
 ## 14. Deployment And Rollback
 
-Build one immutable OCI image per application component. Supply configuration by
-versioned ConfigMaps and secrets through External Secrets Operator. Deploy with
-rolling updates, minimum availability, readiness gates, and a small canary before
-full rollout.
+Build one immutable OCI image per runtime component and keep evaluation tooling,
+datasets, and dependencies in a separate non-production image. Supply
+configuration by versioned ConfigMaps and secrets through External Secrets
+Operator. Deploy with rolling updates, minimum availability, readiness gates,
+and a small canary before full rollout.
 
 Code image, model, prompt, persona, and Golden index versions are independent and
 recorded on every turn. A release is promoted only after unit/integration tests,
