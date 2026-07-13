@@ -1,29 +1,26 @@
-"""Compatibility exports for domain models.
-
-New application code imports from ``retail_agent.domain.models`` directly.
-"""
-
-from retail_agent.domain.models import (
+from retail_agent.domain.models.analysis import (
     AgentFailure,
     AnalysisReport,
     AnalysisResponse,
-    ChartArtifact,
-    ChartFormat,
-    ChartRequest,
+    FailureCode,
+)
+from retail_agent.domain.models.chart import ChartArtifact, ChartFormat, ChartRequest
+from retail_agent.domain.models.conversation import (
     ContextualizedQuestion,
     Conversation,
     ConversationId,
     ConversationRole,
     ConversationTurn,
-    FailureCode,
+    UserPreferences,
+    UserProfile,
+    UserQuestion,
+)
+from retail_agent.domain.models.query import (
     GoldenExample,
     GoldenTrio,
     QueryResult,
     RetrievedTrio,
     SafeSql,
-    UserPreferences,
-    UserProfile,
-    UserQuestion,
 )
 
 __all__ = [
