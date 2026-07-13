@@ -45,10 +45,12 @@ run --rm` containers.
 
 ## Credentialed Live Path
 
-The BigQuery smoke command and a four-case Gemini/BigQuery quality suite have
-previously passed against `bigquery-public-data.thelook_ecommerce`. That result
-is historical evidence, not a substitute for a release-time rerun because
-warehouse data and model behavior can change.
+The BigQuery smoke command passed on 2026-07-14 against
+`bigquery-public-data.thelook_ecommerce`: the dry run processed 4,348,656 bytes
+and the bounded aggregate returned one row. A four-case Gemini/BigQuery quality
+suite has also passed previously. The quality result is historical evidence,
+not a substitute for a release-time rerun because warehouse data and model
+behavior can change.
 
 Current smoke command:
 
