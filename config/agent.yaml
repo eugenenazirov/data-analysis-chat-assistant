@@ -15,7 +15,7 @@ bigquery:
   max_result_rows: 100
   job_label_app: "retail-agent"
 
-qdrant:
+retrieval:
   url: "http://localhost:6333"
   collection: "golden_trios"
   timeout_seconds: 30
@@ -25,10 +25,27 @@ model:
   llm_model: "google-cloud:gemini-2.5-flash"
   embedding_provider: "gemini"
   embedding_model: "gemini-embedding-001"
+  google_cloud_location: "us-central1"
+  temperature: 0.1
+
+agent_limits:
+  request_limit: 8
+  tool_calls_limit: 6
+  total_tokens_limit: 32000
   max_sql_retries: 2
+  output_retries: 2
+
+conversation:
   max_history_turns: 6
   max_history_bytes: 65536
-  temperature: 0.1
+  max_retained_turns: 20
+
+chart_execution:
+  timeout_seconds: 10
+  max_source_bytes: 20000
+  max_output_bytes: 5000000
+  max_captured_output_bytes: 16384
+  artifact_directory: "artifacts/charts"
 
 safety:
   pii_columns:

@@ -1,0 +1,1 @@
+"""Packaged analysis prompt resources."""

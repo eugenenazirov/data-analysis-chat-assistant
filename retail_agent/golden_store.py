@@ -18,10 +18,11 @@ class GoldenStore:
         self.config = config
         self.embedder = embedder
         self.logger = logger
+        api_key = config.retrieval.api_key
         self.client = QdrantClient(
-            url=config.qdrant.url,
-            api_key=config.qdrant.api_key,
-            timeout=config.qdrant.timeout_seconds,
+            url=config.retrieval.url,
+            api_key=api_key.get_secret_value() if api_key is not None else None,
+            timeout=config.retrieval.timeout_seconds,
             check_compatibility=False,
         )
 
@@ -49,7 +50,7 @@ class GoldenStore:
         if not trios:
             return 0
         first_vector = self.embedder.embed(trios[0].embedding_text())
-        collection = self.config.qdrant.collection
+        collection = self.config.retrieval.collection
 
         exists = self.client.collection_exists(collection)
         if recreate and exists:
@@ -80,7 +81,7 @@ class GoldenStore:
     def search(self, question: str, trace_id: str, limit: int = 3) -> list[RetrievedTrio]:
         vector = self.embedder.embed(question)
         response = self.client.query_points(
-            collection_name=self.config.qdrant.collection,
+            collection_name=self.config.retrieval.collection,
             query=vector,
             limit=limit,
             with_payload=True,

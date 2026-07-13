@@ -155,7 +155,7 @@ def test_run_question_prefetches_golden_knowledge_before_model(test_config, tmp_
     assert prepared[0]["ids"] == ["trio_monthly_revenue_category"]
     assert prepared[0]["session_id"] == turn.conversation.session_id
     started = [event for event in _events(log_path) if event["event"] == "agent_run_started"]
-    assert started[0]["prompt_version"] == "analysis-v2"
+    assert started[0]["prompt_version"] == "analysis-v1"
     assert started[0]["persona_version"] == "prototype-config-v1"
     assert started[0]["golden_index_version"] == "test_trios"
 
@@ -456,7 +456,11 @@ def test_runtime_context_includes_identity_preferences_and_schema(test_config, t
 @pytest.mark.parametrize("retry_budget", [0, 1, 2, 3])
 def test_build_analysis_agent_applies_configured_tool_retry_budget(test_config, retry_budget):
     configured = test_config.model_copy(
-        update={"model": test_config.model.model_copy(update={"max_sql_retries": retry_budget})}
+        update={
+            "agent_limits": test_config.agent_limits.model_copy(
+                update={"max_sql_retries": retry_budget}
+            )
+        }
     )
 
     built = agent.build_analysis_agent(configured)

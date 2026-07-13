@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 from typing import Protocol
 
 from retail_agent.config import AgentConfig
@@ -25,12 +24,11 @@ class GeminiEmbedder:
                 from google import genai
             except ImportError as exc:
                 raise RuntimeError("google-genai is not installed.") from exc
-            api_key = os.getenv("GOOGLE_API_KEY")
-            if api_key:
-                self._client = genai.Client(api_key=api_key)
+            api_key = self.config.model.google_api_key
+            if api_key is not None:
+                self._client = genai.Client(api_key=api_key.get_secret_value())
             else:
-                project = self.config.bigquery.project or os.getenv("GOOGLE_CLOUD_PROJECT")
-                location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+                project = self.config.bigquery.project
                 if not project:
                     raise RuntimeError(
                         "GOOGLE_CLOUD_PROJECT is required for Vertex AI embeddings "
@@ -39,7 +37,7 @@ class GeminiEmbedder:
                 self._client = genai.Client(
                     vertexai=True,
                     project=project,
-                    location=location,
+                    location=self.config.model.google_cloud_location,
                 )
         return self._client
 

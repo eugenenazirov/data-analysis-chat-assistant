@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from google import genai
+from pydantic import SecretStr
 
 from retail_agent.embeddings import GeminiEmbedder
 
@@ -49,12 +50,22 @@ def test_gemini_embedder_uses_vertex_ai_when_api_key_is_absent(
         calls.append(kwargs)
         return FakeGeminiClient()
 
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
-    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west4")
     monkeypatch.setattr(genai, "Client", fake_client)
+    configured = test_config.model_copy(
+        update={
+            "bigquery": test_config.bigquery.model_copy(
+                update={"project": "test-project"}
+            ),
+            "model": test_config.model.model_copy(
+                update={
+                    "google_api_key": None,
+                    "google_cloud_location": "europe-west4",
+                }
+            ),
+        }
+    )
 
-    embedder = GeminiEmbedder(test_config)
+    embedder = GeminiEmbedder(configured)
 
     assert embedder.client.models
     assert calls == [
@@ -66,11 +77,35 @@ def test_gemini_embedder_uses_vertex_ai_when_api_key_is_absent(
     ]
 
 
-def test_gemini_embedder_requires_project_for_vertex_ai(test_config, monkeypatch):
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
-
-    embedder = GeminiEmbedder(test_config)
+def test_gemini_embedder_requires_project_for_vertex_ai(test_config):
+    configured = test_config.model_copy(
+        update={
+            "bigquery": test_config.bigquery.model_copy(update={"project": None}),
+            "model": test_config.model.model_copy(update={"google_api_key": None}),
+        }
+    )
+    embedder = GeminiEmbedder(configured)
 
     with pytest.raises(RuntimeError, match="GOOGLE_CLOUD_PROJECT"):
         _ = embedder.client
+
+
+def test_gemini_embedder_uses_configured_api_key(test_config, monkeypatch):
+    calls = []
+
+    def fake_client(**kwargs):
+        calls.append(kwargs)
+        return FakeGeminiClient()
+
+    monkeypatch.setattr(genai, "Client", fake_client)
+    configured = test_config.model_copy(
+        update={
+            "model": test_config.model.model_copy(
+                update={"google_api_key": SecretStr("api-secret")}
+            )
+        }
+    )
+    embedder = GeminiEmbedder(configured)
+
+    assert embedder.client.models
+    assert calls == [{"api_key": "api-secret"}]
