@@ -188,7 +188,8 @@ def test_run_question_defers_golden_retrieval_to_the_model(test_config, tmp_path
     assert "Golden Knowledge analyst precedents" not in fake_agent.calls[0]["prompt"]
     assert "Call only the tools needed" in fake_agent.calls[0]["prompt"]
     started = [event for event in _events(log_path) if event["event"] == "agent_run_started"]
-    assert started[0]["prompt_version"] == "analysis-v1"
+    assert started[0]["prompt_version"] == "analysis-v3"
+    assert started[0]["reference_date"] == turn.reference_date.isoformat()
     assert started[0]["persona_version"] == "prototype-config-v1"
     assert started[0]["golden_index_version"] == "test_trios"
 
@@ -511,8 +512,23 @@ def test_runtime_context_includes_identity_preferences_and_schema(test_config, t
     context = asyncio.run(agent.add_runtime_context(SimpleNamespace(deps=deps)))
 
     assert "Trace ID: trace" in context
+    assert "Current UTC date:" in context
+    assert context.count("Current UTC date:") == 1
     assert "Allowed BigQuery tables" in context
     assert "Preferred report format" in context
+
+
+def test_sql_tool_waits_for_required_retrieval_attempt(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path)
+    deps.retrieval_required = True
+    definition = SimpleNamespace(name="run_sql_query")
+
+    hidden = asyncio.run(agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition))
+    deps.retrieval_attempted = True
+    visible = asyncio.run(agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition))
+
+    assert hidden is None
+    assert visible is definition
 
 
 @pytest.mark.parametrize("retry_budget", [0, 1, 2, 3])
@@ -579,6 +595,55 @@ def test_native_agent_continues_after_retrieval_degrades(test_config, tmp_path):
     assert deps.last_query_result is not None
 
 
+def test_required_retrieval_unlocks_sql_without_spending_retry_budget(
+    test_config, tmp_path
+):
+    deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
+    deps.retrieval_required = True
+    calls = 0
+
+    def model_function(messages, info):
+        nonlocal calls
+        calls += 1
+        tools = {tool.name for tool in info.function_tools}
+        if calls == 1:
+            assert "retrieve_golden_examples" in tools
+            assert "run_sql_query" not in tools
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "retrieve_golden_examples",
+                        {"question": "top customers by spend"},
+                    )
+                ]
+            )
+        if calls == 2:
+            assert "run_sql_query" in tools
+            return ModelResponse(
+                parts=[ToolCallPart("run_sql_query", {"sql": "SELECT 42 AS order_count"})]
+            )
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(output_tool.name, {"direct_answer": "There were 42 orders."})
+            ]
+        )
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "Who are our top customers by spend?",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert deps.tool_sequence == ["retrieve_golden_examples", "run_sql_query"]
+    assert deps.output_validation_retries == 0
+
+
 def test_output_validator_retries_unsupported_claim_then_accepts_evidence(test_config, tmp_path):
     deps = _agent_dependencies(test_config, tmp_path)
     calls = 0
@@ -599,6 +664,46 @@ def test_output_validator_retries_unsupported_claim_then_accepts_evidence(test_c
             tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
         )
         answer = "There were 99 orders." if calls == 2 else "There were 42 orders."
+        return ModelResponse(parts=[ToolCallPart(output_tool.name, {"direct_answer": answer})])
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "How many orders?",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert result.output.direct_answer == "There were 42 orders."
+    assert deps.output_validation_retries == 1
+    assert calls == 3
+
+
+def test_output_validator_retries_markdown_table_then_accepts_summary(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path)
+    calls = 0
+
+    def model_function(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "run_sql_query",
+                        {"sql": "SELECT 42 AS order_count"},
+                    )
+                ]
+            )
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
+        )
+        answer = (
+            "| Metric | Value |\n| --- | ---: |\n| Orders | 42 |"
+            if calls == 2
+            else "There were 42 orders."
+        )
         return ModelResponse(parts=[ToolCallPart(output_tool.name, {"direct_answer": answer})])
 
     result = asyncio.run(

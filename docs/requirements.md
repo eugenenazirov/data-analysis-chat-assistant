@@ -9,8 +9,10 @@ operations without presenting those components as already built.
 Implemented:
 
 - Approved Question -> SQL -> Analyst Report trios are embedded into Qdrant.
-- `retrieve_golden_examples` is a model-selected tool, so retrieval is used only
-  when it helps the current question.
+- The versioned routing prompt and deterministic tool-visibility policy require
+  `retrieve_golden_examples` before SQL for rankings, time windows, customer
+  behavior, returns, comparisons, and follow-up cohorts. Schema, clarification,
+  unsupported, and simple unambiguous requests may skip retrieval.
 - Retrieval receives bounded multi-turn context and reports matched IDs and
   degraded dependency state through typed results and telemetry.
 - A Qdrant outage does not prevent a SQL-backed answer.
@@ -82,8 +84,9 @@ Implemented:
   single previous-question string.
 - PydanticAI receives compacted verified tool context and uses configured
   request, tool-call, token, SQL-retry, and output-retry budgets.
-- Retrieval and SQL are model-selected tools. `generate_chart` is dynamically
-  unavailable until SQL succeeds in the current run.
+- Retrieval follows the conditional policy above and degrades without blocking
+  SQL. SQL remains model-selected; `generate_chart` is dynamically unavailable
+  until SQL succeeds in the current run.
 - Chart code receives only verified rows through a fixed input file and must
   produce a validated PNG or passive SVG through a fixed output path.
 - The local subprocess has source, output, captured-output, and time limits, a

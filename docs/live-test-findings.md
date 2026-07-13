@@ -13,10 +13,11 @@ Verified on 2026-07-14 with Python 3.12 and uv 0.10.8:
 |---|---|
 | Lockfile and environment consistency | Pass |
 | Ruff | Pass |
-| Pytest | 195 passed |
-| Branch-aware runtime coverage | 89.30% (85% gate) |
+| Pytest | 229 passed |
+| Branch-aware runtime coverage | 89.81% (85% gate) |
 | Guardrail evaluation | 10/10 passed |
 | Answer-quality replay | 4/4 cases passed |
+| Credentialed live automated quality | 4/4 cases passed |
 | Runtime image excludes `evals/` and `pydantic-evals` | Pass |
 | Evaluation image guardrails and replay | Pass |
 
@@ -47,10 +48,13 @@ run --rm` containers.
 
 The BigQuery smoke command passed on 2026-07-14 against
 `bigquery-public-data.thelook_ecommerce`: the dry run processed 4,348,656 bytes
-and the bounded aggregate returned one row. A four-case Gemini/BigQuery quality
-suite has also passed previously. The quality result is historical evidence,
-not a substitute for a release-time rerun because warehouse data and model
-behavior can change.
+and the bounded aggregate returned one row.
+
+The four-case Gemini/BigQuery automated quality gate also passed on 2026-07-14.
+Every case scored 1.0 for SQL intent, canonical calculation, Retrieval Recall@3,
+MRR, numeric faithfulness, and multi-turn resolution; every report was complete
+and attached the verified SQL. Analyst usefulness remains pending, so this is a
+current regression pass rather than release approval.
 
 Current smoke command:
 
@@ -63,7 +67,7 @@ Current live-quality procedure:
 ```bash
 docker compose up -d qdrant
 docker compose run --rm app index-golden --recreate
-uv run python -m evals.run quality \
+QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
   --mode live \
   --automated-only \
   --output artifacts/quality-eval-live.json
@@ -72,7 +76,7 @@ uv run python -m evals.run quality \
 For release approval, rerun with analyst scores:
 
 ```bash
-uv run python -m evals.run quality \
+QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
   --mode live \
   --human-scores path/to/human-scores.json \
   --output artifacts/quality-eval-live.json

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from retail_agent.domain.models import AnalysisReport
@@ -58,8 +58,16 @@ def assess_report_evidence(
     rows: list[dict[str, Any]],
     sql: str,
     tolerance: float = 0.001,
+    *,
+    reference_date: date | None = None,
 ) -> ReportEvidenceAssessment:
-    score, unsupported = _faithfulness_details(report, rows, sql, tolerance)
+    score, unsupported = _faithfulness_details(
+        report,
+        rows,
+        sql,
+        tolerance,
+        reference_date or datetime.now(UTC).date(),
+    )
     return ReportEvidenceAssessment(score, tuple(unsupported))
 
 
@@ -76,12 +84,15 @@ def _faithfulness_details(
     rows: list[dict[str, Any]],
     sql: str,
     tolerance: float,
+    reference_date: date,
 ) -> tuple[float, list[float]]:
     text = " ".join([report.answer, *report.highlights])
     claim_matches = list(NUMBER_PATTERN.finditer(text))
     if not claim_matches:
         return 1.0, []
     dimension_spans = _returned_numeric_dimension_spans(text, rows)
+    dimension_counts = _returned_dimension_counts(rows)
+    count_nouns = _returned_count_nouns(rows)
     measures: dict[str, list[float]] = defaultdict(list)
     numeric_identifiers: dict[str, list[float]] = defaultdict(list)
     for row in rows:
@@ -90,14 +101,26 @@ def _faithfulness_details(
                 target = numeric_identifiers if _is_identifier_column(column) else measures
                 target[column].append(float(value))
     claims = [_build_numeric_claim(text, match, measures, tolerance) for match in claim_matches]
-    context_values = _supported_context_numbers(sql)
+    context_values = _supported_context_numbers(sql, reference_date)
     derivation_cache: _DerivationCache = {}
-    if not measures and not numeric_identifiers and not context_values and not dimension_spans:
+    if (
+        not measures
+        and not numeric_identifiers
+        and not context_values
+        and not dimension_counts
+    ):
         return 0.0, [claim.value for claim in claims]
     unsupported = [
         claim.value
         for claim in claims
         if not _claim_is_returned_dimension(claim.match, dimension_spans)
+        and not _claim_is_derived_count(
+            text,
+            claim,
+            row_count=len(rows),
+            dimension_counts=dimension_counts,
+            count_nouns=count_nouns,
+        )
         and not _claim_is_numeric_identifier(text, claim, numeric_identifiers)
         and not _claim_supported(
             claim,
@@ -164,6 +187,67 @@ def _claim_is_returned_dimension(
     return any(start <= claim.start() and claim.end() <= end for start, end in dimension_spans)
 
 
+def _returned_dimension_counts(rows: list[dict[str, Any]]) -> Counter[tuple[str, str]]:
+    return Counter(
+        (column.casefold(), value.strip().casefold())
+        for row in rows
+        for column, value in row.items()
+        if isinstance(value, str) and value.strip()
+    )
+
+
+def _returned_count_nouns(rows: list[dict[str, Any]]) -> frozenset[str]:
+    nouns = {"entries", "results", "rows"}
+    column_words = {
+        word
+        for row in rows
+        for column in row
+        for word in _name_words(column)
+    }
+    entity_nouns = {
+        "category": "categories",
+        "customer": "customers",
+        "item": "items",
+        "product": "products",
+    }
+    nouns.update(plural for entity, plural in entity_nouns.items() if entity in column_words)
+    return frozenset(nouns)
+
+
+def _claim_is_derived_count(
+    text: str,
+    claim: _NumericClaim,
+    *,
+    row_count: int,
+    dimension_counts: Counter[tuple[str, str]],
+    count_nouns: frozenset[str],
+) -> bool:
+    if claim.currency or claim.percentage or claim.scaled or not claim.value.is_integer():
+        return False
+    claimed_count = int(claim.value)
+    prefix = text[max(0, claim.match.start() - 120) : claim.match.start()].casefold()
+    suffix = text[claim.match.end() : min(len(text), claim.match.end() + 80)].casefold()
+    noun_pattern = "|".join(sorted(map(re.escape, count_nouns)))
+    if claimed_count == row_count and re.match(
+        rf"^\s*(?:returned\s+|listed\s+|matching\s+)?(?:{noun_pattern})\b",
+        suffix,
+    ):
+        return True
+
+    denominator = re.match(
+        rf"^\s+out\s+of\s+{row_count}\s+"
+        rf"(?:returned\s+|listed\s+|matching\s+)?(?:{noun_pattern})\b",
+        suffix,
+    )
+    if denominator is None:
+        return False
+    return any(
+        count == claimed_count
+        and re.search(rf"(?<!\w){re.escape(dimension)}(?!\w)", prefix)
+        for (_, dimension), count in dimension_counts.items()
+    )
+
+
 def _is_identifier_column(column: str) -> bool:
     normalized = column.lower()
     return normalized == "id" or normalized.endswith("_id")
@@ -208,7 +292,7 @@ def _identifier_entity_prefix_matches(prefix: str, column: str) -> bool:
     )
 
 
-def _supported_context_numbers(sql: str) -> list[_ContextNumber]:
+def _supported_context_numbers(sql: str, reference_date: date) -> list[_ContextNumber]:
     values = [
         _ContextNumber(
             value=float(raw),
@@ -229,12 +313,11 @@ def _supported_context_numbers(sql: str) -> list[_ContextNumber]:
         )
     )
     if "CURRENT_DATE" in sql.upper():
-        today = datetime.now(UTC).date()
-        previous_month = today.replace(day=1) - timedelta(days=1)
+        previous_month = reference_date.replace(day=1) - timedelta(days=1)
         values.extend(
             [
-                _ContextNumber(float(today.year), "year"),
-                _ContextNumber(float(today.month), "month"),
+                _ContextNumber(float(reference_date.year), "year"),
+                _ContextNumber(float(reference_date.month), "month"),
                 _ContextNumber(float(previous_month.year), "year"),
                 _ContextNumber(float(previous_month.month), "month"),
             ]

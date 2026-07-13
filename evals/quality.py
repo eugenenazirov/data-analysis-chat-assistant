@@ -6,6 +6,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from statistics import mean
 from typing import Any, Literal
@@ -55,6 +56,7 @@ class QualityReplay(BaseModel):
     report: AnalysisReport
     history_used: bool = False
     usefulness_score: float | None = Field(default=None, ge=0, le=5)
+    reference_date: date | None = None
 
 
 class QualityEvalCase(BaseModel):
@@ -89,6 +91,7 @@ class QualityDiagnostics(BaseModel):
     history_used: bool = False
     report_degraded: bool = False
     report_refused: bool = False
+    reference_date: date | None = None
 
 
 class QualityEvalResult(BaseModel):
@@ -204,6 +207,7 @@ async def run_quality_live_evals(
             report=turn.response,
             history_used=not case.history or bool(conversation.completed_turns),
             usefulness_score=(human_scores or {}).get(case.id),
+            reference_date=turn.reference_date,
         )
         results.append(evaluate_quality_case(config, case, replay))
 
@@ -270,6 +274,7 @@ def evaluate_quality_case(
         replay.candidate_rows,
         replay.candidate_sql,
         case.expectations.numeric_tolerance,
+        reference_date=replay.reference_date,
     )
     faithfulness = evidence.score
     unsupported_claims = list(evidence.unsupported_numeric_claims)
@@ -332,6 +337,7 @@ def evaluate_quality_case(
             history_used=replay.history_used,
             report_degraded=replay.report.degraded,
             report_refused=replay.report.refused,
+            reference_date=replay.reference_date,
         ),
     )
 
@@ -616,6 +622,7 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
         _function_signature(function)
         for function in expression.find_all(exp.Func)
         if not isinstance(function, (exp.AggFunc, exp.Case, exp.If, exp.And))
+        and not _is_cosmetic_round(function)
     )
     return _SQLIntentSignature(
         aggregates=aggregates,
@@ -649,7 +656,36 @@ def _function_signature(function: exp.Func) -> str:
         target = function.args.get("to")
         if isinstance(target, exp.DataType) and target.this == exp.DType.DATE:
             return "to_date"
+    if isinstance(function, exp.Round):
+        decimals = function.args.get("decimals")
+        precision = decimals.sql(dialect="bigquery") if decimals is not None else "0"
+        return f"round:{precision.lower()}"
     return function.sql_name().lower()
+
+
+def _is_cosmetic_round(function: exp.Func) -> bool:
+    if not isinstance(function, exp.Round) or function.find(exp.AggFunc) is None:
+        return False
+    parent = function.parent
+    if isinstance(parent, exp.Alias):
+        alias = parent.alias
+        parent = parent.parent
+        if isinstance(parent, exp.Select):
+            clauses = [
+                parent.args.get(name)
+                for name in ("group", "having", "order", "qualify", "where")
+            ]
+            clauses.extend(parent.args.get("joins") or [])
+            if any(
+                isinstance(clause, exp.Expression)
+                and any(
+                    column.name.lower() == alias.lower()
+                    for column in clause.find_all(exp.Column)
+                )
+                for clause in clauses
+            ):
+                return False
+    return isinstance(parent, exp.Select)
 
 
 def _is_conditional_predicate_column(column: exp.Column, aggregate: exp.AggFunc) -> bool:

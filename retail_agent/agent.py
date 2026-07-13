@@ -6,6 +6,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
@@ -47,7 +48,15 @@ from retail_agent.bigquery import (
 )
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
 from retail_agent.domain.errors import ChartExecutionError
+from retail_agent.domain.policies.analysis_output import (
+    NARRATIVE_OUTPUT_RULE,
+    narrative_output_violation,
+)
 from retail_agent.domain.policies.report_evidence import assess_report_evidence
+from retail_agent.domain.policies.retrieval import (
+    RETRIEVAL_ROUTING_RULE,
+    requires_golden_precedent,
+)
 from retail_agent.infrastructure.agents.runner import AnalysisAgentRunner
 from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import (
@@ -91,6 +100,7 @@ class AgentDependencies:
     logger: Telemetry
     user: UserProfile
     trace_id: str
+    reference_date: date = field(default_factory=lambda: datetime.now(UTC).date())
     golden_store: GoldenExampleRepository | None = None
     chart_executor: ChartCodeExecutor | None = None
     last_query_result: QueryResult | None = None
@@ -98,6 +108,7 @@ class AgentDependencies:
     last_tool_failure_retryable: bool = False
     sql_tool_invoked: bool = False
     retrieval_attempted: bool = False
+    retrieval_required: bool = False
     retrieval_degraded: bool = False
     retrieved_trio_ids: list[str] = field(default_factory=list)
     tool_sequence: list[str] = field(default_factory=list)
@@ -165,12 +176,14 @@ class TurnResult:
     query_result: QueryResult | None = None
     sql_tool_invoked: bool = False
     chart_artifact: ChartArtifact | None = None
+    reference_date: date | None = None
 
 
 async def add_runtime_context(ctx: RunContext[AgentDependencies]) -> str:
     schema = await asyncio.to_thread(ctx.deps.bigquery.describe_allowed_tables)
     return (
         f"Trace ID: {ctx.deps.trace_id}\n"
+        f"Current UTC date: {ctx.deps.reference_date.isoformat()}\n"
         f"User: {ctx.deps.user.display_name}\n"
         f"Preferred report format: {ctx.deps.user.preferred_format}\n"
         f"Tone: {ctx.deps.user.tone}\n"
@@ -184,7 +197,7 @@ async def retrieve_golden_examples(
     question: str,
     limit: Annotated[int | None, Field(ge=1, le=20)] = None,
 ) -> GoldenRetrievalResult:
-    """Retrieve analyst-approved examples for a standalone, context-resolved question."""
+    """Retrieve approved metric, cohort, join, filter, and time-window precedent."""
 
     started = time.perf_counter()
     ctx.deps.retrieval_attempted = True
@@ -290,6 +303,15 @@ async def prepare_chart_tool(
     return None
 
 
+async def prepare_sql_tool(
+    ctx: RunContext[AgentDependencies],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    if ctx.deps.retrieval_required and not ctx.deps.retrieval_attempted:
+        return None
+    return tool_definition
+
+
 async def generate_chart(
     ctx: RunContext[AgentDependencies],
     code: str,
@@ -344,10 +366,9 @@ async def generate_chart(
 def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependencies]:
     toolset = FunctionToolset[AgentDependencies](
         instructions=(
-            "Choose tools based on the question. Retrieval is optional, but when used its "
-            "question must be standalone and resolve conversation references. Data answers "
-            "must execute run_sql_query and use only its verified result. Generate charts "
-            "only when the chart tool becomes available after a successful query."
+            f"{RETRIEVAL_ROUTING_RULE}\n\n"
+            "Tool mechanics: run_sql_query returns the only verified current rows. "
+            "generate_chart appears only after a successful query and must use those rows."
         ),
         sequential=True,
     )
@@ -359,6 +380,7 @@ def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependen
     toolset.add_function(
         run_sql_query,
         retries=config.agent_limits.max_sql_retries,
+        prepare=prepare_sql_tool,
         timeout=config.bigquery.timeout_seconds + 5,
     )
     toolset.add_function(
@@ -410,6 +432,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
             report,
             query_result.rows,
             query_result.sql,
+            reference_date=ctx.deps.reference_date,
         )
         if not evidence.is_supported:
             ctx.deps.output_validation_retries = ctx.retry + 1
@@ -422,9 +445,24 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
                 unsupported_claim_count=len(evidence.unsupported_numeric_claims),
             )
             raise ModelRetry(
-                "Revise the answer so every numeric claim is supported by the verified "
-                "query result."
+                "Revise the answer so every numeric claim is supported by the verified query "
+                f"result. Remove or correct these unsupported values: "
+                f"{list(evidence.unsupported_numeric_claims[:10])}. {NARRATIVE_OUTPUT_RULE}"
             )
+        narrative_violation = narrative_output_violation(
+            [output.direct_answer, *output.highlights, *output.supporting_evidence],
+            query_result.rows,
+        )
+        if narrative_violation is not None:
+            ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.logger.event(
+                ctx.deps.trace_id,
+                "output_validation_retry",
+                reason=narrative_violation,
+                retry_attempt=ctx.retry,
+                max_retries=ctx.max_retries,
+            )
+            raise ModelRetry(NARRATIVE_OUTPUT_RULE)
         if output.chart_artifact is not None and (
             ctx.deps.last_chart_artifact is None
             or output.chart_artifact != ctx.deps.last_chart_artifact
@@ -460,11 +498,16 @@ async def run_question(
     state = conversation or ConversationState()
     turn_index = state.turn_index + 1
     trace_id = new_trace_id()
+    reference_date = datetime.now(UTC).date()
     started = time.perf_counter()
     user = config.user_profile(user_id)
     history = state.message_history(
         config.conversation.max_history_turns,
         config.conversation.max_history_bytes,
+    )
+    retrieval_required = requires_golden_precedent(
+        question,
+        has_history=bool(history),
     )
     logger.event(
         trace_id,
@@ -474,6 +517,8 @@ async def run_question(
         session_id=state.session_id,
         turn_index=turn_index,
         history_messages=len(history),
+        retrieval_required=retrieval_required,
+        reference_date=reference_date.isoformat(),
         model=config.model.llm_model,
         prompt_version=build_analysis_prompt().version,
         persona_version=config.persona_version,
@@ -486,8 +531,10 @@ async def run_question(
         logger=logger,
         user=user,
         trace_id=trace_id,
+        reference_date=reference_date,
         golden_store=golden_store,
         chart_executor=chart_executor,
+        retrieval_required=retrieval_required,
     )
 
     prompt = (
@@ -567,6 +614,7 @@ async def run_question(
             query_result=deps.last_query_result,
             sql_tool_invoked=deps.sql_tool_invoked,
             chart_artifact=deps.last_chart_artifact,
+            reference_date=reference_date,
         )
 
     response = _to_analysis_response(
@@ -613,6 +661,7 @@ async def run_question(
         query_result=deps.last_query_result,
         sql_tool_invoked=deps.sql_tool_invoked,
         chart_artifact=deps.last_chart_artifact,
+        reference_date=reference_date,
     )
 
 

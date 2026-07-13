@@ -41,7 +41,7 @@ The credential-free suite covers:
 - application use cases, adapters, CLI continuity, guardrails, and quality
   scoring.
 
-The current verified baseline is 195 tests with 89.30% branch-aware runtime
+The current verified baseline is 229 tests with 89.81% branch-aware runtime
 coverage, above the 85% gate.
 
 ## Evaluation Gates
@@ -90,8 +90,8 @@ unsupported numeric claims, mean analyst usefulness at least 4/5, no score below
 
 ```bash
 docker compose up -d qdrant
-uv run python -m retail_agent index-golden --recreate
-uv run python -m evals.run quality \
+QDRANT_URL=http://localhost:6333 uv run python -m retail_agent index-golden --recreate
+QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
   --mode live \
   --automated-only \
   --output artifacts/quality-eval-live.json
@@ -105,7 +105,7 @@ SQL tool completed, so the evaluator cannot duplicate warehouse work.
 rerun supplies a JSON object mapping case IDs to analyst scores from 0 through 5:
 
 ```bash
-uv run python -m evals.run quality \
+QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
   --mode live \
   --human-scores path/to/human-scores.json \
   --output artifacts/quality-eval-live.json

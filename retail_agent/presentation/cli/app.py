@@ -9,6 +9,7 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from retail_agent.bootstrap import Runtime, RuntimeOperationError
+from retail_agent.domain.errors import RetrievalError
 from retail_agent.presentation.cli.renderer import render_report
 
 app = typer.Typer(help="Retail data analysis chat assistant")
@@ -38,9 +39,13 @@ def index_golden(
 ) -> None:
     """Index seed Golden Knowledge trios into Qdrant."""
 
-    count = _runtime(config_path, require_retrieval=True).index_golden(
-        recreate=recreate
-    )
+    try:
+        count = _runtime(config_path, require_retrieval=True).index_golden(
+            recreate=recreate
+        )
+    except RetrievalError as exc:
+        console.print(f"[bold red]Golden Knowledge indexing failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
     console.print(f"Indexed [bold]{count}[/bold] Golden Knowledge trios.")
 
 

@@ -6,6 +6,11 @@ from pydantic import BaseModel, Field
 
 from retail_agent.domain.models.chart import ChartArtifact
 
+NARRATIVE_OUTPUT_RULE = (
+    "Keep narrative fields concise and do not reproduce verified query rows as a "
+    "Markdown table or row-by-row dump; the runtime attaches the verified table."
+)
+
 type FailureCode = Literal[
     "model_unavailable",
     "warehouse_unavailable",
@@ -44,8 +49,14 @@ type AnalysisResponse = AnalysisReport | AgentFailure
 class DataAnalysisResult(BaseModel):
     kind: Literal["data_analysis"] = "data_analysis"
     direct_answer: str
-    highlights: list[str] = Field(default_factory=list)
-    supporting_evidence: list[str] = Field(default_factory=list)
+    highlights: list[str] = Field(
+        default_factory=list,
+        description=f"Concise evidence-backed findings. {NARRATIVE_OUTPUT_RULE}",
+    )
+    supporting_evidence: list[str] = Field(
+        default_factory=list,
+        description=f"Short prose evidence only. {NARRATIVE_OUTPUT_RULE}",
+    )
     caveats: list[str] = Field(default_factory=list)
     followups: list[str] = Field(default_factory=list)
     chart_artifact: ChartArtifact | None = None

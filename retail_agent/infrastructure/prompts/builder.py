@@ -4,8 +4,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
 
-PROMPT_RESOURCE = "analysis-v1.md"
-PROMPT_VERSION = "analysis-v1"
+from retail_agent.domain.policies.analysis_output import NARRATIVE_OUTPUT_RULE
+from retail_agent.domain.policies.retrieval import RETRIEVAL_ROUTING_RULE
+
+PROMPT_VERSION = "analysis-v3"
+PROMPT_RESOURCE = f"{PROMPT_VERSION}.md"
 
 SAFETY_RULES = (
     "Never expose personally identifiable information or request it in SQL.",
@@ -44,5 +47,12 @@ def load_prompt_template(resource_name: str = PROMPT_RESOURCE) -> str:
 
 def build_analysis_prompt() -> AnalysisPrompt:
     safety = "\n".join(f"- {rule}" for rule in SAFETY_RULES)
-    instructions = f"{load_prompt_template()}\n\nSafety rules:\n{safety}"
-    return AnalysisPrompt(instructions=instructions, version=PROMPT_VERSION)
+    instructions = (
+        f"{load_prompt_template()}\n\nRetrieval routing rule:\n"
+        f"- {RETRIEVAL_ROUTING_RULE}\n\nNarrative output rule:\n"
+        f"- {NARRATIVE_OUTPUT_RULE}\n\nSafety rules:\n{safety}"
+    )
+    return AnalysisPrompt(
+        instructions=instructions,
+        version=PROMPT_VERSION,
+    )

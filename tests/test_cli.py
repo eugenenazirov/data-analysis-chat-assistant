@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from retail_agent.application.dto import AnalyzeQuestionResponse
 from retail_agent.bootstrap import RuntimeOperationError
+from retail_agent.domain.errors import RetrievalError
 from retail_agent.domain.models import AgentFailure, QueryResult
 from retail_agent.presentation.cli import app as cli
 from retail_agent.presentation.cli.app import BIGQUERY_SMOKE_SQL
@@ -116,3 +117,16 @@ def test_index_golden_uses_runtime_store(monkeypatch):
     monkeypatch.setattr(cli, "_runtime", lambda *args, **kwargs: runtime)
 
     cli.index_golden(recreate=True)
+
+
+def test_index_golden_converts_retrieval_failure_to_clean_exit(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RetrievalError("Qdrant unavailable")
+
+    monkeypatch.setattr(cli, "_runtime", fail)
+
+    result = CliRunner().invoke(cli.app, ["index-golden"])
+
+    assert result.exit_code == 1
+    assert "Golden Knowledge indexing failed: Qdrant unavailable" in result.output
+    assert "Traceback" not in result.output

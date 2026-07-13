@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -221,6 +221,65 @@ def test_faithfulness_rejects_ambiguous_generic_numeric_id():
     )
 
     assert score == 0
+
+
+def test_faithfulness_accepts_counts_derived_from_returned_dimensions():
+    rows = [
+        {"product_name": f"Jeans product {index}", "category": "Jeans"}
+        for index in range(9)
+    ]
+    rows.extend(
+        {"product_name": f"Socks product {index}", "category": "Socks"}
+        for index in range(6)
+    )
+    report = AnalysisReport(
+        question="question",
+        answer="Jeans appears in 9 out of 15 returned products.",
+    )
+
+    assert _faithfulness_score(report, rows, "SELECT category FROM table", 0.001) == 1
+
+    unsupported = report.model_copy(
+        update={"answer": "Jeans appears in 8 out of 15 returned products."}
+    )
+    assert _faithfulness_score(unsupported, rows, "SELECT category FROM table", 0.001) < 1
+
+
+def test_faithfulness_rejects_dimension_count_without_matching_count_structure():
+    rows = [
+        {"product_name": f"Product {index}", "category": "Jeans", "revenue": 100}
+        for index in range(9)
+    ]
+    rows.extend(
+        {"product_name": f"Product {index}", "category": "Socks", "revenue": 100}
+        for index in range(9, 15)
+    )
+
+    wrong_entity = AnalysisReport(
+        question="question",
+        answer="Jeans generated 9 customers.",
+    )
+    wrong_measure = AnalysisReport(
+        question="question",
+        answer="Revenue was 15 across the returned products.",
+    )
+
+    assert _faithfulness_score(wrong_entity, rows, "SELECT * FROM table", 0.001) < 1
+    assert _faithfulness_score(wrong_measure, rows, "SELECT * FROM table", 0.001) < 1
+
+
+def test_faithfulness_does_not_flatten_matching_dimensions_across_columns():
+    rows = [
+        {"product_name": "Jeans", "category": "Jeans"},
+        {"product_name": "Jeans", "category": "Jeans"},
+        {"product_name": "Boots", "category": "Shoes"},
+    ]
+    report = AnalysisReport(
+        question="question",
+        answer="Jeans appears in 4 out of 3 returned products.",
+    )
+
+    assert _faithfulness_score(report, rows, "SELECT * FROM table", 0.001) < 1
 
 
 def test_faithfulness_uses_entity_cue_to_disambiguate_numeric_id():
@@ -503,6 +562,23 @@ def test_faithfulness_accepts_top_n_and_current_date_context():
     assert score == 1
 
 
+def test_faithfulness_uses_explicit_reference_date_for_current_date_context():
+    reference_date = date(2031, 4, 10)
+    report = AnalysisReport(
+        question="question",
+        answer="Revenue was 100 in calendar year 2031.",
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"revenue": 100}],
+        "SELECT revenue FROM table WHERE day <= CURRENT_DATE()",
+        reference_date=reference_date,
+    )
+
+    assert assessment.is_supported
+
+
 def test_faithfulness_accepts_top_n_before_numeric_identifier_dimension():
     report = AnalysisReport(
         question="question",
@@ -742,6 +818,45 @@ def test_intent_signature_allows_additional_aggregates():
     )
 
     assert candidate.satisfies(canonical)
+
+
+def test_intent_signature_ignores_cosmetic_rounding():
+    canonical = _intent_signature(
+        "SELECT region, ROUND(SUM(revenue), 2) AS revenue FROM table GROUP BY region"
+    )
+    candidate = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region"
+    )
+
+    assert candidate.satisfies(canonical)
+
+
+def test_intent_signature_preserves_grouped_rounding_semantics():
+    canonical = _intent_signature(
+        "SELECT ROUND(price, 2) AS bucket, COUNT(*) FROM table GROUP BY bucket"
+    )
+    raw_candidate = _intent_signature(
+        "SELECT price AS bucket, COUNT(*) FROM table GROUP BY bucket"
+    )
+    wrong_precision = _intent_signature(
+        "SELECT ROUND(price, 1) AS bucket, COUNT(*) FROM table GROUP BY bucket"
+    )
+
+    assert not raw_candidate.satisfies(canonical)
+    assert not wrong_precision.satisfies(canonical)
+
+
+def test_intent_signature_preserves_rounding_used_by_having():
+    canonical = _intent_signature(
+        "SELECT region, ROUND(SUM(revenue), 2) AS revenue FROM table "
+        "GROUP BY region HAVING revenue > 10"
+    )
+    candidate = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table "
+        "GROUP BY region HAVING revenue > 10"
+    )
+
+    assert not candidate.satisfies(canonical)
 
 
 def test_retrieval_scores_include_recall_at_three_and_mrr():

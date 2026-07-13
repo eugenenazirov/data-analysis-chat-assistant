@@ -64,10 +64,16 @@ docker compose run --rm app chat --user manager_a
    redacts and persists the completed turn.
 4. `PydanticAIAnalysisAgent` translates domain turns into PydanticAI messages.
    Verified SQL rows and chart references from earlier turns remain structured,
-   bounded context rather than a single previous-question string.
-5. The PydanticAI `FunctionToolset` initially exposes retrieval and SQL. The
-   model may skip retrieval. `generate_chart` is dynamically hidden until
-   `run_sql_query` succeeds in the current run.
+   bounded context rather than a single previous-question string. The turn also
+   receives one captured UTC reference date so relative SQL periods and numeric
+   evidence validation use the same clock value.
+5. The PydanticAI `FunctionToolset` registers retrieval and SQL. For classified
+   ranking, time-window, customer-behavior, return, comparison, and follow-up
+   questions, tool preparation exposes retrieval but hides SQL until retrieval
+   has been attempted, including a typed degraded attempt. Schema,
+   clarification, unsupported, and simple unambiguous requests may expose SQL
+   immediately. `generate_chart` remains hidden until `run_sql_query` succeeds
+   in the current run.
 6. Retrieval returns approved precedents or a typed degraded result. It never
    presents an outage as an ordinary empty match set.
 7. SQL passes `sqlglot` validation, table/column allowlists, row limits, BigQuery
@@ -96,8 +102,12 @@ imports no PydanticAI, CLI, SDK, logging-vendor, or settings code.
   outputs.
 - `models/query.py`: safe SQL, query result, and Golden Knowledge types.
 - `models/chart.py`: fixed chart request/artifact contracts.
+- `policies/analysis_output.py`: deterministic Markdown-table and row-dump
+  rejection shared by structured-output validation.
 - `policies/report_evidence.py`: runtime and evaluation numeric-evidence checks.
 - `policies/privacy.py`: recursive text/value redaction.
+- `policies/retrieval.py`: shared routing instructions and deterministic
+  precedent-required question classification.
 - `errors.py`: application-safe analytics, retrieval, and chart errors.
 
 ### Application
@@ -174,6 +184,8 @@ dataset, while the Docker `evaluation` target adds both.
 - successful data output requires verified rows;
 - final SQL comes from the query tool, not model prose;
 - numeric claims are checked against compatible returned measures;
+- Markdown tables and row-by-row narrative copies of verified results are
+  rejected within the bounded output-retry budget;
 - chart references must match the current chart tool result;
 - final DTOs, tool summaries, and telemetry are recursively redacted;
 - provider and SDK detail is translated into typed user-safe failures.
@@ -190,13 +202,13 @@ dataset, while the Docker `evaluation` target adds both.
 
 | Requirement | Prototype evidence | Production extension |
 |---|---|---|
-| Hybrid intelligence | Optional approved-example retrieval tool with observable degradation | Human candidate review, versioned index promotion, rollback |
+| Hybrid intelligence | Conditionally required approved-example retrieval with observable, non-blocking degradation | Human candidate review, versioned index promotion, rollback |
 | Safe analytics | AST guard, safe columns, byte/row/time limits, evidence checks | Warehouse policy, workload identity, network controls |
 | Multi-turn analysis | Conversation aggregate and complete bounded PydanticAI history | Durable PostgreSQL sessions and summaries |
 | Automatic charts | Dynamic post-query tool and local bounded executor | Isolated chart worker with separate credentials/resources |
 | Resilience | Typed failures, safe retry boundary, degraded verified-row report | Circuit breakers, HA storage, recovery objectives |
 | Observability | Trace/session IDs, versions, tool timings, usage, retries, degradation | OpenTelemetry metrics/logs/traces and alerts |
-| Quality assurance | 195 offline tests, guardrail suite, four-case replay suite, runtime/evaluation image checks | Credentialed live suite and analyst-scored release gate |
+| Quality assurance | 229 offline tests, guardrail suite, four-case replay suite, runtime/evaluation image checks | Credentialed live suite and analyst-scored release gate |
 | Saved reports/personas | HLD only | OIDC, PostgreSQL, confirmations, audit, admin UI |
 
 ## Configuration And Versions
@@ -204,7 +216,7 @@ dataset, while the Docker `evaluation` target adds both.
 `config/agent.yaml` is the readable baseline. Environment and `.env` aliases
 override it; explicit initialization has highest priority. Credentials use
 `SecretStr`. Prompt content is packaged at
-`retail_agent/infrastructure/prompts/templates/analysis-v1.md`, and its version
+`retail_agent/infrastructure/prompts/templates/analysis-v3.md`, and its version
 is recorded in telemetry.
 
 The locked stack uses Python 3.12, uv 0.10.8, PydanticAI 2.9, Pydantic Settings,

@@ -26,14 +26,18 @@ future HTTP adapter can invoke the same `AnalyzeQuestion` use case.
 
 During a turn, the PydanticAI agent chooses among these bounded tools:
 
-- `retrieve_golden_examples`: optional analyst-approved precedent retrieval;
+- `retrieve_golden_examples`: the versioned routing prompt and deterministic
+  tool-visibility policy require analyst-approved precedent for rankings, time
+  windows, customer behavior, returns, comparisons, and follow-up cohorts;
+  schema, clarification, unsupported, and simple unambiguous requests may skip
+  it;
 - `run_sql_query`: guarded, dry-run-checked, read-only BigQuery execution;
 - `generate_chart`: dynamically hidden until the current turn has verified rows.
 
 Data answers use a discriminated structured output and require successful SQL.
 The runtime attaches only the SQL actually executed, checks numeric claims
-against returned rows, validates chart references, then applies deterministic
-PII redaction.
+against returned rows, rejects narrative tables/row dumps, validates chart
+references, then applies deterministic PII redaction.
 
 ## Quick Start With Docker
 
@@ -193,7 +197,9 @@ Implemented in the prototype:
 
 - Clean Architecture packages and import-boundary tests;
 - typed settings, packaged prompts, composition root, and thin CLI;
-- model-selected retrieval/SQL/chart tools with timeouts and usage budgets;
+- versioned conditional-retrieval instructions backed by deterministic SQL-tool
+  visibility, plus model-selected SQL/chart tools with timeouts and usage
+  budgets; retrieval outages degrade without blocking SQL;
 - multi-turn conversation state with compacted verified tool context;
 - SQL AST guardrails, safe-column allowlists, cost caps, stable job IDs, and
   post-submission outcome protection;

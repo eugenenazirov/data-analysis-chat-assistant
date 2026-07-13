@@ -184,9 +184,11 @@ sequenceDiagram
     API->>DB: Lock session version and load summary and recent turns
     DB-->>API: Pinned versions + bounded history
     API->>A: Question + bounded complete history + pinned versions
-    opt Model selects approved-precedent retrieval
+    alt Precedent required by the versioned routing policy
         A->>Q: Retrieve top-k from active index version
         Q-->>A: Approved trios or typed degraded result
+    else Schema, clarification, unsupported, or simple unambiguous request
+        A->>A: Continue without retrieval
     end
     A->>G: Proposed SQL tool call
     G->>G: Parse, allowlist, PII, row and cost controls
