@@ -73,3 +73,4 @@ jobs:
         run: |
           docker build --target evaluation --tag retail-agent-eval:ci .
           docker run --rm retail-agent-eval:ci guardrails
+          docker run --rm retail-agent-eval:ci quality --mode replay

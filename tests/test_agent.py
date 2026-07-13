@@ -810,13 +810,11 @@ def test_conversation_state_trims_completed_turns():
     state = agent.ConversationState()
     for index in range(4):
         state = state.complete_turn(
-            question=f"q{index}",
             messages=[_message(f"m{index}")],
             max_turns=2,
         )
 
     assert state.turn_index == 4
-    assert state.recent_questions == ("q2", "q3")
     history = state.message_history(2)
     assert [message.parts[0].content for message in history] == ["m2", "m3"]
 
@@ -834,7 +832,6 @@ def test_conversation_state_compacts_large_tool_results():
     )
 
     state = agent.ConversationState().complete_turn(
-        question="question",
         messages=[message],
         max_turns=6,
         max_bytes=2_048,

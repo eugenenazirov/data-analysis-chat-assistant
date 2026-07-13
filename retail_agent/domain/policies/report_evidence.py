@@ -22,6 +22,7 @@ MONETARY_MEASURE_TOKENS = frozenset({"amount", "cost", "price", "revenue", "sale
 RATE_MEASURE_TOKENS = frozenset({"percentage", "rate", "ratio"})
 IDENTIFIER_SEPARATOR_PATTERN = r"\s*(?:[:#-]\s*)?"
 type _ContextKind = Literal["interval", "limit", "month", "year"]
+type _DerivationCache = dict[tuple[str, bool, bool], tuple[float, ...]]
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ def _faithfulness_details(
                 target[column].append(float(value))
     claims = [_build_numeric_claim(text, match, measures, tolerance) for match in claim_matches]
     context_values = _supported_context_numbers(sql)
+    derivation_cache: _DerivationCache = {}
     if not measures and not numeric_identifiers and not context_values and not dimension_spans:
         return 0.0, [claim.value for claim in claims]
     unsupported = [
@@ -97,7 +99,13 @@ def _faithfulness_details(
         for claim in claims
         if not _claim_is_returned_dimension(claim.match, dimension_spans)
         and not _claim_is_numeric_identifier(text, claim, numeric_identifiers)
-        and not _claim_supported(claim, measures, context_values, text)
+        and not _claim_supported(
+            claim,
+            measures,
+            context_values,
+            text,
+            derivation_cache,
+        )
     ]
     return (
         (len(claim_matches) - len(unsupported)) / len(claim_matches),
@@ -239,6 +247,7 @@ def _claim_supported(
     measures: dict[str, list[float]],
     context_values: list[_ContextNumber],
     text: str,
+    derivation_cache: _DerivationCache,
 ) -> bool:
     if _context_claim_supported(claim, text, context_values):
         return True
@@ -266,18 +275,20 @@ def _claim_supported(
             measures,
             measure_names,
             claim.tolerance,
+            derivation_cache,
         )
 
-    selected_measures = [measures[name] for name in measure_names]
-    raw_values = [value for values in selected_measures for value in values]
+    raw_values = [value for name in measure_names for value in measures[name]]
     if any(_numbers_match(claim.value, value, claim.tolerance) for value in raw_values):
         return True
 
-    for values in selected_measures:
-        derivations = _same_measure_derivations(
-            values,
+    for name in measure_names:
+        derivations = _cached_measure_derivations(
+            measures,
+            name,
             include_additive=True,
             include_ratios=not claim.currency,
+            cache=derivation_cache,
         )
         if any(_numbers_match(claim.value, value, claim.tolerance) for value in derivations):
             return True
@@ -289,6 +300,7 @@ def _percentage_claim_supported(
     measures: dict[str, list[float]],
     measure_names: set[str],
     tolerance: float,
+    derivation_cache: _DerivationCache,
 ) -> bool:
     normalized_claim = claim / 100
     rate_measures = measure_names & _measures_with_tokens(measures, RATE_MEASURE_TOKENS)
@@ -302,12 +314,34 @@ def _percentage_claim_supported(
     return any(
         _numbers_match(normalized_claim, value, tolerance)
         for name in measure_names
-        for value in _same_measure_derivations(
-            measures[name],
+        for value in _cached_measure_derivations(
+            measures,
+            name,
             include_additive=False,
             include_ratios=True,
+            cache=derivation_cache,
         )
     )
+
+
+def _cached_measure_derivations(
+    measures: dict[str, list[float]],
+    name: str,
+    *,
+    include_additive: bool,
+    include_ratios: bool,
+    cache: _DerivationCache,
+) -> tuple[float, ...]:
+    key = (name, include_additive, include_ratios)
+    if key not in cache:
+        cache[key] = tuple(
+            _same_measure_derivations(
+                measures[name],
+                include_additive=include_additive,
+                include_ratios=include_ratios,
+            )
+        )
+    return cache[key]
 
 
 def _same_measure_derivations(

@@ -40,3 +40,16 @@ def test_conversation_history_preserves_all_recent_turns_and_tool_evidence():
     assert "There were 42 orders." in first_answer
     assert "SELECT 42 AS order_count" in first_answer
     assert '"order_count":42' in first_answer
+
+
+def test_conversation_history_converts_only_requested_trailing_groups():
+    conversation = Conversation(max_retained_turns=6)
+    for index in range(3):
+        conversation = conversation.append(ConversationRole.user, f"question {index}")
+        conversation = conversation.append(ConversationRole.assistant, f"answer {index}")
+
+    history = _conversation_history(conversation, max_groups=1)
+
+    assert len(history) == 1
+    assert history[0][0].parts[0].content == "question 2"
+    assert history[0][1].parts[0].content == "answer 2"

@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from evals.quality import (
-    _faithfulness_score,
     _intent_score,
     _intent_signature,
     _retrieval_scores,
@@ -18,10 +17,15 @@ from evals.quality import (
     summarize_quality_results,
 )
 from retail_agent.agent import TurnResult
+from retail_agent.domain.policies.report_evidence import assess_report_evidence
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger
 
 CASES_PATH = Path("evals/datasets/quality_eval_cases.jsonl")
+
+
+def _faithfulness_score(report, rows, sql, tolerance):
+    return assess_report_evidence(report, rows, sql, tolerance).score
 
 
 def test_quality_replay_suite_meets_release_gates(test_config):
@@ -322,12 +326,12 @@ def test_live_quality_eval_compares_agent_and_canonical_results(
                     failure_code="model_unavailable",
                     retryable=True,
                 ),
-                conversation=conversation.fail_turn(question=question, max_turns=6),
+                conversation=conversation.fail_turn(max_turns=6),
             )
         return TurnResult(
             response=case.replay.report,
             conversation=conversation.complete_turn(
-                question=question, messages=[], max_turns=6
+                messages=[], max_turns=6
             ),
             retrieved_trio_ids=tuple(case.replay.retrieved_ids),
             query_result=CanonicalWarehouse(case.replay.candidate_rows).execute(
@@ -369,7 +373,7 @@ def test_live_quality_eval_reports_failed_history_turn(test_config, tmp_path, mo
                 failure_code="model_unavailable",
                 retryable=True,
             ),
-            conversation=conversation.fail_turn(question=question, max_turns=6),
+            conversation=conversation.fail_turn(max_turns=6),
             sql_tool_invoked=True,
         )
 

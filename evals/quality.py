@@ -16,6 +16,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from retail_agent.agent import ConversationState, TurnResult, run_question
+from retail_agent.application.ports import AnalyticsGateway, GoldenExampleRepository
 from retail_agent.config import AgentConfig
 from retail_agent.domain.policies.report_evidence import (
     assess_report_evidence,
@@ -23,7 +24,7 @@ from retail_agent.domain.policies.report_evidence import (
 )
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger, new_trace_id
-from retail_agent.ports import AnalysisAgentPort, KnowledgeRetrieverPort, WarehousePort
+from retail_agent.ports import AnalysisAgentPort
 from retail_agent.sql_guard import normalized_table_aliases, validate_and_prepare_sql
 
 type QualityMode = Literal["replay", "live"]
@@ -129,8 +130,8 @@ async def run_quality_live_evals(
     config: AgentConfig,
     path: Path,
     *,
-    bigquery: WarehousePort,
-    golden_store: KnowledgeRetrieverPort,
+    bigquery: AnalyticsGateway,
+    golden_store: GoldenExampleRepository,
     logger: EventLogger,
     analysis_agent: AnalysisAgentPort,
     human_scores: dict[str, float] | None = None,
@@ -213,8 +214,8 @@ async def _run_live_turn(
     question: str,
     *,
     config: AgentConfig,
-    bigquery: WarehousePort,
-    golden_store: KnowledgeRetrieverPort,
+    bigquery: AnalyticsGateway,
+    golden_store: GoldenExampleRepository,
     logger: EventLogger,
     conversation: ConversationState,
     analysis_agent: AnalysisAgentPort,
@@ -264,12 +265,14 @@ def evaluate_quality_case(
     retrieval, retrieval_mrr = _retrieval_scores(
         replay.retrieved_ids, case.expectations.expected_retrieval_ids
     )
-    faithfulness, unsupported_claims = _faithfulness_details(
+    evidence = assess_report_evidence(
         replay.report,
         replay.candidate_rows,
         replay.candidate_sql,
         case.expectations.numeric_tolerance,
     )
+    faithfulness = evidence.score
+    unsupported_claims = list(evidence.unsupported_numeric_claims)
     multi_turn = 1.0 if not case.history else 1.0 if replay.history_used and intent == 1.0 else 0.0
     usefulness = replay.usefulness_score / 5 if replay.usefulness_score is not None else None
     needs_human_review = usefulness is None
@@ -517,25 +520,6 @@ def _retrieval_scores(retrieved: list[str], expected: list[str]) -> tuple[float,
     )
     mrr = 1 / first_relevant_rank if first_relevant_rank is not None else 0.0
     return recall, mrr
-
-
-def _faithfulness_score(
-    report: AnalysisReport,
-    rows: list[dict[str, Any]],
-    sql: str,
-    tolerance: float,
-) -> float:
-    return _faithfulness_details(report, rows, sql, tolerance)[0]
-
-
-def _faithfulness_details(
-    report: AnalysisReport,
-    rows: list[dict[str, Any]],
-    sql: str,
-    tolerance: float,
-) -> tuple[float, list[float]]:
-    assessment = assess_report_evidence(report, rows, sql, tolerance)
-    return assessment.score, list(assessment.unsupported_numeric_claims)
 
 
 def _failed_live_result(name: str, detail: str, *, critical: bool = False) -> QualityEvalResult:

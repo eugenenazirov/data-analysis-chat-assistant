@@ -33,7 +33,12 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from retail_agent.application.ports import ChartCodeExecutor
+from retail_agent.application.ports import (
+    AnalyticsGateway,
+    ChartCodeExecutor,
+    GoldenExampleRepository,
+    Telemetry,
+)
 from retail_agent.bigquery import (
     QueryCostExceeded,
     QueryExecutionError,
@@ -43,6 +48,7 @@ from retail_agent.bigquery import (
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
 from retail_agent.domain.errors import ChartExecutionError
 from retail_agent.domain.policies.report_evidence import assess_report_evidence
+from retail_agent.infrastructure.agents.runner import AnalysisAgentRunner
 from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import (
     AgentFailure,
@@ -62,9 +68,8 @@ from retail_agent.models import (
     UnsupportedRequest,
     UserProfile,
 )
-from retail_agent.observability import EventLogger, new_trace_id
+from retail_agent.observability import new_trace_id
 from retail_agent.pii import redact_value
-from retail_agent.ports import AnalysisAgentPort, KnowledgeRetrieverPort, WarehousePort
 
 
 class GoldenRetrievalResult(BaseModel):
@@ -82,11 +87,11 @@ class ChartToolResult(BaseModel):
 @dataclass
 class AgentDependencies:
     config: AgentConfig
-    bigquery: WarehousePort
-    logger: EventLogger
+    bigquery: AnalyticsGateway
+    logger: Telemetry
     user: UserProfile
     trace_id: str
-    golden_store: KnowledgeRetrieverPort | None = None
+    golden_store: GoldenExampleRepository | None = None
     chart_executor: ChartCodeExecutor | None = None
     last_query_result: QueryResult | None = None
     last_tool_failure_code: FailureCode | None = None
@@ -98,7 +103,6 @@ class AgentDependencies:
     tool_sequence: list[str] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     output_validation_retries: int = 0
-    chart_tool_invoked: bool = False
     last_chart_artifact: ChartArtifact | None = None
 
 
@@ -108,7 +112,6 @@ class ConversationState:
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     completed_turns: tuple[tuple[ModelMessage, ...], ...] = ()
-    recent_questions: tuple[str, ...] = ()
     turn_index: int = 0
 
     def message_history(
@@ -127,7 +130,6 @@ class ConversationState:
     def complete_turn(
         self,
         *,
-        question: str,
         messages: Sequence[ModelMessage],
         max_turns: int,
         max_bytes: int = DEFAULT_HISTORY_BYTES,
@@ -139,19 +141,16 @@ class ConversationState:
         return ConversationState(
             session_id=self.session_id,
             completed_turns=turns,
-            recent_questions=(*self.recent_questions, question)[-max_turns:],
             turn_index=self.turn_index + 1,
         )
 
     def fail_turn(
         self,
         *,
-        question: str,
         max_turns: int,
         max_bytes: int = DEFAULT_HISTORY_BYTES,
     ) -> ConversationState:
         return self.complete_turn(
-            question=question,
             messages=(),
             max_turns=max_turns,
             max_bytes=max_bytes,
@@ -303,7 +302,6 @@ async def generate_chart(
     """
 
     started = time.perf_counter()
-    ctx.deps.chart_tool_invoked = True
     ctx.deps.tool_sequence.append("generate_chart")
     digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
     if ctx.deps.last_query_result is None:
@@ -451,13 +449,13 @@ async def run_question(
     question: str,
     *,
     config: AgentConfig,
-    bigquery: WarehousePort,
-    golden_store: KnowledgeRetrieverPort,
+    bigquery: AnalyticsGateway,
+    golden_store: GoldenExampleRepository,
     chart_executor: ChartCodeExecutor | None = None,
-    logger: EventLogger,
+    logger: Telemetry,
     user_id: str,
     conversation: ConversationState | None = None,
-    analysis_agent: AnalysisAgentPort | None = None,
+    analysis_agent: AnalysisAgentRunner | None = None,
 ) -> TurnResult:
     state = conversation or ConversationState()
     turn_index = state.turn_index + 1
@@ -544,7 +542,6 @@ async def run_question(
             error=str(exc),
         )
         next_state = state.fail_turn(
-            question=question,
             max_turns=config.conversation.max_history_turns,
             max_bytes=config.conversation.max_history_bytes,
         )
@@ -580,7 +577,6 @@ async def run_question(
     )
     new_messages = _new_messages(result)
     next_state = state.complete_turn(
-        question=question,
         messages=new_messages,
         max_turns=config.conversation.max_history_turns,
         max_bytes=config.conversation.max_history_bytes,

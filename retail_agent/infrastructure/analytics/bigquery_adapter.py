@@ -5,6 +5,7 @@ import re
 import time
 from typing import Any
 
+from retail_agent.application.ports import Telemetry
 from retail_agent.domain.errors import (
     QueryCostExceeded,
     QueryExecutionError,
@@ -12,16 +13,19 @@ from retail_agent.domain.errors import (
     QueryPreExecutionError,
 )
 from retail_agent.domain.models import QueryResult
-from retail_agent.infrastructure.observability import EventLogger
 from retail_agent.infrastructure.settings import ApplicationSettings
 from retail_agent.sql_guard import validate_and_prepare_sql
 
+SCHEMA_CACHE_TTL_SECONDS = 300.0
+
 
 class BigQueryAnalyticsAdapter:
-    def __init__(self, config: ApplicationSettings, logger: EventLogger):
+    def __init__(self, config: ApplicationSettings, logger: Telemetry):
         self.config = config
         self.logger = logger
         self._client = None
+        self._schema_description: str | None = None
+        self._schema_cached_at = 0.0
 
     @property
     def client(self):
@@ -41,6 +45,12 @@ class BigQueryAnalyticsAdapter:
         return self._client
 
     def describe_allowed_tables(self) -> str:
+        now = time.monotonic()
+        if (
+            self._schema_description is not None
+            and now - self._schema_cached_at < SCHEMA_CACHE_TTL_SECONDS
+        ):
+            return self._schema_description
         lines: list[str] = []
         for table_name in self.config.bigquery.allowed_tables:
             full_name = f"{self.config.bigquery.dataset}.{table_name}"
@@ -52,7 +62,9 @@ class BigQueryAnalyticsAdapter:
                 lines.append(f"- `{full_name}`: {columns}")
             except Exception:
                 lines.append(f"- `{full_name}`: schema unavailable at startup")
-        return "\n".join(lines)
+        self._schema_description = "\n".join(lines)
+        self._schema_cached_at = now
+        return self._schema_description
 
     def execute(self, sql: str, trace_id: str) -> QueryResult:
         start = time.perf_counter()

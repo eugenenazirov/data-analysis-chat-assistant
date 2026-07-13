@@ -123,12 +123,41 @@ def test_executor_times_out_and_cleans_temporary_directory(tmp_path):
     assert list(temporary_root.iterdir()) == []
 
 
+def test_executor_cancellation_reaps_process_and_reader_tasks(tmp_path):
+    executor, temporary_root = _executor(tmp_path, timeout_seconds=5)
+
+    async def cancel_execution():
+        task = asyncio.create_task(
+            executor.execute(
+                ChartRequest(
+                    code="import time\ntime.sleep(5)",
+                    data=[{"order_count": 42}],
+                    output_format="svg",
+                )
+            )
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_execution())
+
+    assert list(temporary_root.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     ("code", "expected_code"),
     [
         ("print('no artifact')", "output_missing"),
         (
             "from pathlib import Path\nPath('chart.svg').write_text('<svg><script/></svg>')",
+            "invalid_output",
+        ),
+        (
+            "from pathlib import Path\n"
+            "Path('chart.svg').write_text("
+            "'<svg><style>@import url(https://example.com/x.css);</style></svg>')",
             "invalid_output",
         ),
         (

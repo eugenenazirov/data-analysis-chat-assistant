@@ -19,7 +19,18 @@ from retail_agent.infrastructure.settings import ChartExecutionSettings
 
 _OUTPUT_BASENAME = "chart"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_FORBIDDEN_SVG_ELEMENTS = {"embed", "foreignobject", "iframe", "object", "script"}
+_FORBIDDEN_SVG_ELEMENTS = {
+    "animate",
+    "animatemotion",
+    "animatetransform",
+    "embed",
+    "foreignobject",
+    "iframe",
+    "object",
+    "script",
+    "set",
+    "style",
+}
 
 
 @dataclass
@@ -139,6 +150,11 @@ class LocalPythonChartExecutor:
                 process.wait(),
                 timeout=self.settings.timeout_seconds,
             )
+        except asyncio.CancelledError:
+            _kill_process_group(process)
+            await process.wait()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            raise
         except TimeoutError as exc:
             _kill_process_group(process)
             await process.wait()

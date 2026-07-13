@@ -9,9 +9,13 @@ def test_redact_text_masks_email_and_phone():
     assert count == 2
 
 
-def test_redact_value_recurses_through_dicts_and_lists():
+def test_redact_value_recurses_through_nested_collections():
     redacted, count = redact_value(
-        {"rows": [{"email": "user@example.com", "notes": ["call 415-555-0123"]}]}
+        {
+            "rows": (
+                {"email": "user@example.com", "notes": ["call 415-555-0123"]},
+            )
+        }
     )
 
     assert redacted["rows"][0]["email"] == "[REDACTED_EMAIL]"

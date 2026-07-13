@@ -74,7 +74,8 @@ class Conversation(BaseModel):
 
     id: ConversationId = Field(default_factory=ConversationId.new)
     turns: tuple[ConversationTurn, ...] = ()
-    max_retained_turns: int = Field(default=20, ge=1, le=200)
+    max_retained_turns: int = Field(default=20, ge=2, le=200)
+    completed_turn_count: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -85,14 +86,30 @@ class Conversation(BaseModel):
         *,
         tool_result_summaries: tuple[ToolResultSummary, ...] = (),
     ) -> Self:
+        expected_role = (
+            ConversationRole.assistant
+            if self.turns and self.turns[-1].role is ConversationRole.user
+            else ConversationRole.user
+        )
+        if role is not expected_role:
+            raise ValueError(f"Expected the next conversation role to be {expected_role}.")
         turn = ConversationTurn(
             role=role,
             content=content,
             tool_result_summaries=tool_result_summaries,
         )
         bounded = (*self.turns, turn)[-self.max_retained_turns :]
+        if bounded and bounded[0].role is ConversationRole.assistant:
+            bounded = bounded[1:]
+        completed_turn_count = self.completed_turn_count + (
+            1 if role is ConversationRole.assistant else 0
+        )
         return self.model_copy(
-            update={"turns": bounded, "updated_at": turn.occurred_at}
+            update={
+                "turns": bounded,
+                "completed_turn_count": completed_turn_count,
+                "updated_at": turn.occurred_at,
+            }
         )
 
     def clear(self) -> Self:

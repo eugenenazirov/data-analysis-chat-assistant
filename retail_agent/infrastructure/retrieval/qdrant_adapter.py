@@ -7,9 +7,9 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
+from retail_agent.application.ports import Telemetry
 from retail_agent.domain.errors import RetrievalError
 from retail_agent.domain.models import GoldenTrio, RetrievedTrio
-from retail_agent.infrastructure.observability import EventLogger
 from retail_agent.infrastructure.retrieval.gemini_embeddings import Embedder
 from retail_agent.infrastructure.settings import ApplicationSettings
 
@@ -19,7 +19,7 @@ class QdrantGoldenExampleRepository:
         self,
         config: ApplicationSettings,
         embedder: Embedder,
-        logger: EventLogger,
+        logger: Telemetry,
     ):
         self.config = config
         self.embedder = embedder

@@ -76,7 +76,7 @@ class ConversationSettings(BaseModel):
         ge=4_096,
         le=1_048_576,
     )
-    max_retained_turns: int = Field(default=20, ge=1, le=200)
+    max_retained_turns: int = Field(default=20, ge=2, le=200)
 
 
 SAFE_COLUMNS_BY_TABLE: dict[str, list[str]] = {

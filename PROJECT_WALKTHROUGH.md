@@ -196,7 +196,7 @@ dataset, while the Docker `evaluation` target adds both.
 | Automatic charts | Dynamic post-query tool and local bounded executor | Isolated chart worker with separate credentials/resources |
 | Resilience | Typed failures, safe retry boundary, degraded verified-row report | Circuit breakers, HA storage, recovery objectives |
 | Observability | Trace/session IDs, versions, tool timings, usage, retries, degradation | OpenTelemetry metrics/logs/traces and alerts |
-| Quality assurance | 191 offline tests, guardrail suite, four-case replay suite, runtime/evaluation image checks | Credentialed live suite and analyst-scored release gate |
+| Quality assurance | 195 offline tests, guardrail suite, four-case replay suite, runtime/evaluation image checks | Credentialed live suite and analyst-scored release gate |
 | Saved reports/personas | HLD only | OIDC, PostgreSQL, confirmations, audit, admin UI |
 
 ## Configuration And Versions

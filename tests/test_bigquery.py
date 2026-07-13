@@ -129,7 +129,11 @@ def test_bigquery_runner_lazily_builds_configured_client(test_config, tmp_path, 
 
 def test_describe_allowed_tables_tolerates_per_table_schema_failure(test_config, tmp_path):
     class SchemaClient:
+        def __init__(self):
+            self.calls = 0
+
         def get_table(self, full_name):
+            self.calls += 1
             if full_name.endswith("users"):
                 raise RuntimeError("metadata unavailable")
             return SimpleNamespace(
@@ -137,12 +141,16 @@ def test_describe_allowed_tables_tolerates_per_table_schema_failure(test_config,
             )
 
     runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
-    runner._client = SchemaClient()
+    client = SchemaClient()
+    runner._client = client
 
     description = runner.describe_allowed_tables()
+    cached_description = runner.describe_allowed_tables()
 
     assert "order_id INTEGER" in description
     assert "users`: schema unavailable" in description
+    assert cached_description == description
+    assert client.calls == len(test_config.bigquery.allowed_tables)
 
 
 def test_bigquery_runner_logs_validation_failure(test_config, tmp_path):

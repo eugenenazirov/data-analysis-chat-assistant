@@ -38,6 +38,14 @@ def redact_value(value: Any) -> tuple[Any, int]:
             redacted.append(new_item)
             count += item_count
         return redacted, count
+    if isinstance(value, tuple):
+        redacted = []
+        count = 0
+        for item in value:
+            new_item, item_count = redact_value(item)
+            redacted.append(new_item)
+            count += item_count
+        return tuple(redacted), count
     if isinstance(value, dict):
         redacted_dict = {}
         count = 0

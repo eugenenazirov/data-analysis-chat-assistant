@@ -4,9 +4,14 @@ import json
 
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-from retail_agent.agent import ConversationState, build_analysis_agent, run_question
+from retail_agent.agent import ConversationState, run_question
 from retail_agent.application.dto import AgentAnalysisResult
-from retail_agent.application.ports import ChartCodeExecutor
+from retail_agent.application.ports import (
+    AnalyticsGateway,
+    ChartCodeExecutor,
+    GoldenExampleRepository,
+    Telemetry,
+)
 from retail_agent.domain.models import (
     Conversation,
     ConversationRole,
@@ -14,33 +19,26 @@ from retail_agent.domain.models import (
     UserProfile,
     UserQuestion,
 )
-from retail_agent.infrastructure.analytics.bigquery_adapter import (
-    BigQueryAnalyticsAdapter,
-)
-from retail_agent.infrastructure.observability import EventLogger
-from retail_agent.infrastructure.retrieval.qdrant_adapter import (
-    QdrantGoldenExampleRepository,
-)
+from retail_agent.infrastructure.agents.runner import AnalysisAgentRunner
 from retail_agent.infrastructure.settings import ApplicationSettings
-from retail_agent.ports import AnalysisAgentPort
 
 
 class PydanticAIAnalysisAgent:
     def __init__(
         self,
         config: ApplicationSettings,
-        analytics: BigQueryAnalyticsAdapter,
-        retrieval: QdrantGoldenExampleRepository,
+        analytics: AnalyticsGateway,
+        retrieval: GoldenExampleRepository,
         chart_executor: ChartCodeExecutor,
-        telemetry: EventLogger,
-        runner: AnalysisAgentPort | None = None,
+        telemetry: Telemetry,
+        runner: AnalysisAgentRunner,
     ) -> None:
         self.config = config
         self.analytics = analytics
         self.retrieval = retrieval
         self.chart_executor = chart_executor
         self.telemetry = telemetry
-        self.runner = runner or build_analysis_agent(config)
+        self.runner = runner
 
     async def analyze(
         self,
@@ -48,16 +46,13 @@ class PydanticAIAnalysisAgent:
         conversation: Conversation,
         user: UserProfile,
     ) -> AgentAnalysisResult:
-        previous_questions = tuple(
-            turn.content for turn in conversation.turns if turn.role is ConversationRole.user
-        )
         legacy_state = ConversationState(
             session_id=str(conversation.id),
-            completed_turns=_conversation_history(conversation)[
-                -self.config.conversation.max_history_turns :
-            ],
-            recent_questions=previous_questions[-self.config.conversation.max_history_turns :],
-            turn_index=len(previous_questions),
+            completed_turns=_conversation_history(
+                conversation,
+                max_groups=self.config.conversation.max_history_turns,
+            ),
+            turn_index=conversation.completed_turn_count,
         )
         turn = await run_question(
             question.root,
@@ -102,12 +97,17 @@ class PydanticAIAnalysisAgent:
 
 def _conversation_history(
     conversation: Conversation,
+    *,
+    max_groups: int | None = None,
 ) -> tuple[tuple[ModelMessage, ...], ...]:
     """Translate persisted domain turns into complete PydanticAI history groups."""
 
     completed: list[tuple[ModelMessage, ...]] = []
     pending: list[ModelMessage] = []
-    for turn in conversation.turns:
+    turns = conversation.turns
+    if max_groups is not None:
+        turns = turns[-(max_groups * 2) :]
+    for turn in turns:
         if turn.role is ConversationRole.user:
             if pending:
                 completed.append(tuple(pending))

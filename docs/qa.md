@@ -41,7 +41,7 @@ The credential-free suite covers:
 - application use cases, adapters, CLI continuity, guardrails, and quality
   scoring.
 
-The current verified baseline is 191 tests with 89.01% branch-aware runtime
+The current verified baseline is 195 tests with 89.30% branch-aware runtime
 coverage, above the 85% gate.
 
 ## Evaluation Gates

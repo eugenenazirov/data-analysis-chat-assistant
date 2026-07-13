@@ -13,8 +13,8 @@ Verified on 2026-07-14 with Python 3.12 and uv 0.10.8:
 |---|---|
 | Lockfile and environment consistency | Pass |
 | Ruff | Pass |
-| Pytest | 191 passed |
-| Branch-aware runtime coverage | 89.01% (85% gate) |
+| Pytest | 195 passed |
+| Branch-aware runtime coverage | 89.30% (85% gate) |
 | Guardrail evaluation | 10/10 passed |
 | Answer-quality replay | 4/4 cases passed |
 | Runtime image excludes `evals/` and `pydantic-evals` | Pass |

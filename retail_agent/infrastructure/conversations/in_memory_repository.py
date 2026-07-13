@@ -18,7 +18,3 @@ class InMemoryConversationRepository:
     async def save(self, conversation: Conversation) -> None:
         async with self._lock:
             self._conversations[str(conversation.id)] = conversation.model_copy(deep=True)
-
-    async def clear(self, conversation_id: ConversationId) -> None:
-        async with self._lock:
-            self._conversations.pop(str(conversation_id), None)
