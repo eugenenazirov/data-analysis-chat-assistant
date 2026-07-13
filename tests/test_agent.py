@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic_ai import ModelRetry
-from pydantic_ai.exceptions import ToolRetryError
+from pydantic_ai import ModelRetry, UsageLimits
+from pydantic_ai.exceptions import ToolRetryError, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelMessagesTypeAdapter,
     ModelRequest,
+    ModelResponse,
     RetryPromptPart,
+    TextPart,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from retail_agent import agent
 from retail_agent.bigquery import (
@@ -23,7 +30,15 @@ from retail_agent.bigquery import (
     QueryOutcomeUnknownError,
     QueryPreExecutionError,
 )
-from retail_agent.models import AgentFailure, AnalysisReport, QueryResult, RetrievedTrio
+from retail_agent.models import (
+    AgentFailure,
+    AnalysisReport,
+    DataAnalysisResult,
+    ExecutionFailure,
+    QueryResult,
+    RetrievedTrio,
+    SchemaExplanationResult,
+)
 from retail_agent.observability import EventLogger
 
 
@@ -61,7 +76,7 @@ class FakeBigQueryRunner:
 
 @dataclass
 class FakeRunResult:
-    output: AnalysisReport
+    output: Any
     messages: list[ModelMessage]
 
     def new_messages(self) -> list[ModelMessage]:
@@ -84,15 +99,20 @@ class FakeAnalysisAgent:
         model,
         message_history=None,
         conversation_id=None,
+        model_settings=None,
+        usage_limits=None,
     ):
         kwargs = {
             "deps": deps,
             "model": model,
             "message_history": message_history,
             "conversation_id": conversation_id,
+            "model_settings": model_settings,
+            "usage_limits": usage_limits,
         }
         self.calls.append({"prompt": prompt, **kwargs})
-        return self.callback(prompt, **kwargs)
+        result = self.callback(prompt, **kwargs)
+        return await result if inspect.isawaitable(result) else result
 
 
 def _message(content: str) -> ModelMessage:
@@ -103,7 +123,18 @@ def _events(path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_run_question_prefetches_golden_knowledge_before_model(test_config, tmp_path):
+def _agent_dependencies(test_config, tmp_path, *, golden_store=None):
+    return agent.AgentDependencies(
+        config=test_config,
+        bigquery=FakeBigQueryRunner(),
+        logger=EventLogger(tmp_path / "native-agent.jsonl"),
+        user=test_config.user_profile("manager_a"),
+        trace_id="native-agent-trace",
+        golden_store=golden_store,
+    )
+
+
+def test_run_question_defers_golden_retrieval_to_the_model(test_config, tmp_path):
     golden_store = FakeGoldenStore()
 
     def callback(prompt, *, deps, **kwargs):
@@ -142,18 +173,10 @@ def test_run_question_prefetches_golden_knowledge_before_model(test_config, tmp_
     assert turn.sql_tool_invoked is True
     assert turn.conversation.turn_index == 1
     assert len(turn.conversation.completed_turns) == 1
-    assert turn.retrieved_trio_ids == ("trio_monthly_revenue_category",)
-    assert golden_store.calls[0]["limit"] == 3
-    assert "Golden Knowledge analyst precedents" in fake_agent.calls[0]["prompt"]
-    assert "trio_monthly_revenue_category" in fake_agent.calls[0]["prompt"]
-
-    prepared = [
-        event
-        for event in _events(log_path)
-        if event["event"] == "agent_golden_context_prepared"
-    ]
-    assert prepared[0]["ids"] == ["trio_monthly_revenue_category"]
-    assert prepared[0]["session_id"] == turn.conversation.session_id
+    assert turn.retrieved_trio_ids == ()
+    assert golden_store.calls == []
+    assert "Golden Knowledge analyst precedents" not in fake_agent.calls[0]["prompt"]
+    assert "Call only the tools needed" in fake_agent.calls[0]["prompt"]
     started = [event for event in _events(log_path) if event["event"] == "agent_run_started"]
     assert started[0]["prompt_version"] == "analysis-v1"
     assert started[0]["persona_version"] == "prototype-config-v1"
@@ -161,8 +184,13 @@ def test_run_question_prefetches_golden_knowledge_before_model(test_config, tmp_
 
 
 def test_run_question_continues_when_golden_knowledge_is_unavailable(test_config, tmp_path):
-    def callback(prompt, *, deps, **kwargs):
-        assert "none retrieved" in prompt
+    async def callback(prompt, *, deps, **kwargs):
+        result = await agent.retrieve_golden_examples(
+            SimpleNamespace(deps=deps),
+            "How many orders?",
+        )
+        assert result.status == "degraded"
+        assert result.error_code == "retrieval_unavailable"
         deps.last_query_result = QueryResult(
             sql="SELECT COUNT(*) AS order_count FROM safe_table LIMIT 10",
             rows=[{"order_count": 42}],
@@ -189,9 +217,7 @@ def test_run_question_continues_when_golden_knowledge_is_unavailable(test_config
     assert isinstance(turn.response, AnalysisReport)
     assert turn.response.answer == "There were 42 orders."
     unavailable = [
-        event
-        for event in _events(log_path)
-        if event["event"] == "golden_knowledge_unavailable"
+        event for event in _events(log_path) if event["event"] == "golden_knowledge_unavailable"
     ]
     assert unavailable[0]["failure_class"] == "RuntimeError"
 
@@ -221,8 +247,8 @@ def test_run_question_passes_history_and_contextualizes_follow_up(test_config, t
         assert len(message_history) == 1
         assert message_history[0].parts[0].content == "first turn message"
         assert conversation_id == first.conversation.session_id
-        assert "Previous question: Revenue last month?" in prompt
-        assert "preserve its entity, timestamp column, filters, and time bounds" in prompt
+        assert "Previous question:" not in prompt
+        assert "bounded conversation history" in prompt
         return FakeRunResult(
             output=AnalysisReport(question="Compare that with prior month", answer="It increased."),
             messages=[_message("second turn message")],
@@ -245,8 +271,7 @@ def test_run_question_passes_history_and_contextualizes_follow_up(test_config, t
     assert second.response.answer == "It increased."
     assert second.conversation.turn_index == 2
     assert second.conversation.session_id == first.conversation.session_id
-    assert "Previous question: Revenue last month?" in golden_store.calls[-1]["question"]
-    assert "Follow-up: Compare that with the prior month" in golden_store.calls[-1]["question"]
+    assert golden_store.calls == []
 
 
 def test_model_failure_returns_typed_failure_and_logs_event(test_config, tmp_path):
@@ -274,6 +299,35 @@ def test_model_failure_returns_typed_failure_and_logs_event(test_config, tmp_pat
     failed = [event for event in _events(log_path) if event["event"] == "agent_run_failed"]
     assert failed[0]["failure_code"] == "model_unavailable"
     assert failed[0]["degraded"] is False
+
+
+def test_structured_execution_failure_is_user_safe(test_config, tmp_path):
+    fake_agent = FakeAnalysisAgent(
+        lambda prompt, **kwargs: FakeRunResult(
+            output=ExecutionFailure(
+                message="provider-secret-detail",
+                retryable=True,
+            ),
+            messages=[_message("failed turn")],
+        )
+    )
+
+    turn = asyncio.run(
+        agent.run_question(
+            "How many orders?",
+            config=test_config,
+            bigquery=FakeBigQueryRunner(),
+            golden_store=FakeGoldenStore(),
+            logger=EventLogger(tmp_path / "runs.jsonl"),
+            user_id="manager_a",
+            analysis_agent=fake_agent,
+        )
+    )
+
+    assert isinstance(turn.response, AgentFailure)
+    assert turn.response.failure_code == "model_unavailable"
+    assert turn.response.retryable is True
+    assert "provider-secret-detail" not in turn.response.message
 
 
 def test_unknown_warehouse_outcome_is_non_retryable_and_user_safe(test_config, tmp_path):
@@ -332,9 +386,7 @@ def test_failure_after_query_returns_redacted_degraded_report(test_config, tmp_p
     assert turn.sql_tool_invoked is True
 
 
-def test_exhausted_warehouse_tool_failure_keeps_retryable_classification(
-    test_config, tmp_path
-):
+def test_exhausted_warehouse_tool_failure_keeps_retryable_classification(test_config, tmp_path):
     def callback(prompt, *, deps, **kwargs):
         deps.last_tool_failure_code = "warehouse_unavailable"
         deps.last_tool_failure_retryable = True
@@ -463,10 +515,157 @@ def test_build_analysis_agent_applies_configured_tool_retry_budget(test_config, 
         }
     )
 
-    built = agent.build_analysis_agent(configured)
+    toolset = agent.build_analysis_toolset(configured)
 
-    assert set(built._function_toolset.tools) == {"run_sql_query"}
-    assert built._function_toolset.tools["run_sql_query"].max_retries == retry_budget
+    assert set(toolset.tools) == {"retrieve_golden_examples", "run_sql_query"}
+    assert toolset.tools["retrieve_golden_examples"].max_retries == 0
+    assert toolset.tools["run_sql_query"].max_retries == retry_budget
+
+
+def test_native_agent_can_query_without_retrieval(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
+    model = TestModel(
+        call_tools=["run_sql_query"],
+        custom_output_args={"direct_answer": "There were 42 orders."},
+    )
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "How many orders?",
+            deps=deps,
+            model=model,
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert result.output.direct_answer == "There were 42 orders."
+    assert deps.tool_sequence == ["run_sql_query"]
+    assert deps.retrieval_attempted is False
+
+
+def test_native_agent_continues_after_retrieval_degrades(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path, golden_store=FailingGoldenStore())
+    model = TestModel(
+        call_tools=["retrieve_golden_examples", "run_sql_query"],
+        custom_output_args={"direct_answer": "There were 42 orders."},
+    )
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "How many orders?",
+            deps=deps,
+            model=model,
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert deps.tool_sequence == ["retrieve_golden_examples", "run_sql_query"]
+    assert deps.retrieval_degraded is True
+    assert deps.last_query_result is not None
+
+
+def test_output_validator_retries_unsupported_claim_then_accepts_evidence(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path)
+    calls = 0
+
+    def model_function(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "run_sql_query",
+                        {"sql": "SELECT 42 AS order_count"},
+                    )
+                ]
+            )
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
+        )
+        answer = "There were 99 orders." if calls == 2 else "There were 42 orders."
+        return ModelResponse(parts=[ToolCallPart(output_tool.name, {"direct_answer": answer})])
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "How many orders?",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert result.output.direct_answer == "There were 42 orders."
+    assert deps.output_validation_retries == 1
+    assert calls == 3
+
+
+def test_usage_limit_rejects_tool_batch_before_execution(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
+    model = TestModel(
+        call_tools=["retrieve_golden_examples", "run_sql_query"],
+        custom_output_args={"direct_answer": "There were 42 orders."},
+    )
+
+    with pytest.raises(UsageLimitExceeded):
+        asyncio.run(
+            agent.build_analysis_agent(test_config).run(
+                "How many orders?",
+                deps=deps,
+                model=model,
+                usage_limits=UsageLimits(tool_calls_limit=1),
+            )
+        )
+
+    assert deps.tool_sequence == []
+
+
+def test_history_processor_keeps_multiple_complete_recent_turns(test_config, tmp_path):
+    configured = test_config.model_copy(
+        update={
+            "conversation": test_config.conversation.model_copy(update={"max_history_turns": 2})
+        }
+    )
+    deps = _agent_dependencies(configured, tmp_path)
+    seen_messages: list[ModelMessage] = []
+
+    def model_function(messages, info):
+        seen_messages.extend(messages)
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("SchemaExplanationResult")
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    output_tool.name,
+                    {"explanation": "The dataset contains retail orders."},
+                )
+            ]
+        )
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="oldest question")]),
+        ModelResponse(parts=[TextPart(content="oldest answer")]),
+        ModelRequest(parts=[UserPromptPart(content="middle question")]),
+        ModelResponse(parts=[TextPart(content="middle answer")]),
+        ModelRequest(parts=[UserPromptPart(content="latest question")]),
+        ModelResponse(parts=[TextPart(content="latest answer")]),
+    ]
+    result = asyncio.run(
+        agent.build_analysis_agent(configured).run(
+            "Explain the schema",
+            deps=deps,
+            model=FunctionModel(model_function),
+            message_history=history,
+        )
+    )
+
+    serialized = ModelMessagesTypeAdapter.dump_json(seen_messages).decode()
+    assert isinstance(result.output, SchemaExplanationResult)
+    assert "oldest question" not in serialized
+    assert "middle question" in serialized
+    assert "latest question" in serialized
+    assert "Explain the schema" in serialized
 
 
 def test_conversation_state_trims_completed_turns():

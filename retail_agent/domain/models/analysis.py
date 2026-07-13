@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,3 +36,45 @@ class AgentFailure(BaseModel):
 
 
 type AnalysisResponse = AnalysisReport | AgentFailure
+
+
+class DataAnalysisResult(BaseModel):
+    kind: Literal["data_analysis"] = "data_analysis"
+    direct_answer: str
+    highlights: list[str] = Field(default_factory=list)
+    supporting_evidence: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+    followups: list[str] = Field(default_factory=list)
+
+
+class SchemaExplanationResult(BaseModel):
+    kind: Literal["schema_explanation"] = "schema_explanation"
+    explanation: str
+    caveats: list[str] = Field(default_factory=list)
+    followups: list[str] = Field(default_factory=list)
+
+
+class ClarificationRequest(BaseModel):
+    kind: Literal["clarification"] = "clarification"
+    question: str
+
+
+class UnsupportedRequest(BaseModel):
+    kind: Literal["unsupported"] = "unsupported"
+    reason: str
+
+
+class ExecutionFailure(BaseModel):
+    kind: Literal["execution_failure"] = "execution_failure"
+    message: str
+    retryable: bool = False
+
+
+type AnalysisResult = Annotated[
+    DataAnalysisResult
+    | SchemaExplanationResult
+    | ClarificationRequest
+    | UnsupportedRequest
+    | ExecutionFailure,
+    Field(discriminator="kind"),
+]

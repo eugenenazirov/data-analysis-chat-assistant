@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
+
 from retail_agent.agent import ConversationState, build_analysis_agent, run_question
 from retail_agent.application.dto import AgentAnalysisResult
 from retail_agent.domain.models import (
@@ -42,15 +46,14 @@ class PydanticAIAnalysisAgent:
         user: UserProfile,
     ) -> AgentAnalysisResult:
         previous_questions = tuple(
-            turn.content
-            for turn in conversation.turns
-            if turn.role is ConversationRole.user
+            turn.content for turn in conversation.turns if turn.role is ConversationRole.user
         )
         legacy_state = ConversationState(
             session_id=str(conversation.id),
-            recent_questions=previous_questions[
+            completed_turns=_conversation_history(conversation)[
                 -self.config.conversation.max_history_turns :
             ],
+            recent_questions=previous_questions[-self.config.conversation.max_history_turns :],
             turn_index=len(previous_questions),
         )
         turn = await run_question(
@@ -79,3 +82,50 @@ class PydanticAIAnalysisAgent:
             response=turn.response,
             tool_results=tool_results,
         )
+
+
+def _conversation_history(
+    conversation: Conversation,
+) -> tuple[tuple[ModelMessage, ...], ...]:
+    """Translate persisted domain turns into complete PydanticAI history groups."""
+
+    completed: list[tuple[ModelMessage, ...]] = []
+    pending: list[ModelMessage] = []
+    for turn in conversation.turns:
+        if turn.role is ConversationRole.user:
+            if pending:
+                completed.append(tuple(pending))
+            pending = [ModelRequest(parts=[UserPromptPart(content=turn.content)])]
+            continue
+
+        assistant_content = _assistant_history_content(
+            turn.content,
+            turn.tool_result_summaries,
+        )
+        pending.append(ModelResponse(parts=[TextPart(content=assistant_content)]))
+        completed.append(tuple(pending))
+        pending = []
+
+    if pending:
+        completed.append(tuple(pending))
+    return tuple(completed)
+
+
+def _assistant_history_content(
+    response_text: str,
+    tool_results: tuple[ToolResultSummary, ...],
+) -> str:
+    if not tool_results:
+        return response_text
+    evidence = [response_text, "Verified tool context:"]
+    for result in tool_results:
+        detail = {
+            "tool": result.tool_name,
+            "summary": result.summary,
+            "sql": result.sql,
+            "rows": result.rows,
+            "total_rows": result.total_rows,
+            "artifact_path": result.artifact_path,
+        }
+        evidence.append(json.dumps(detail, default=str, separators=(",", ":")))
+    return "\n".join(evidence)

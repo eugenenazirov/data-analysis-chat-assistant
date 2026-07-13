@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from pydantic_ai import ModelSettings, UsageLimits
 from pydantic_ai.messages import ModelMessage
 
 from retail_agent.models import QueryResult, RetrievedTrio
@@ -35,4 +36,6 @@ class AnalysisAgentPort(Protocol):
         model: str,
         message_history: Sequence[ModelMessage] | None = None,
         conversation_id: str | None = None,
+        model_settings: ModelSettings | None = None,
+        usage_limits: UsageLimits | None = None,
     ) -> Any: ...

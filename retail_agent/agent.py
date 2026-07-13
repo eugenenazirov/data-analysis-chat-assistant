@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic import BaseModel, Field
+from pydantic_ai import (
+    Agent,
+    FunctionToolset,
+    ModelRetry,
+    ModelSettings,
+    RunContext,
+    UsageLimits,
+)
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (
     ModelAPIError,
     ToolRetryError,
@@ -18,6 +28,7 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ToolReturnPart,
+    UserPromptPart,
 )
 
 from retail_agent.bigquery import (
@@ -27,19 +38,32 @@ from retail_agent.bigquery import (
     QueryPreExecutionError,
 )
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
+from retail_agent.domain.policies.report_evidence import assess_report_evidence
 from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import (
     AgentFailure,
     AnalysisReport,
     AnalysisResponse,
+    AnalysisResult,
+    ClarificationRequest,
+    DataAnalysisResult,
+    ExecutionFailure,
     FailureCode,
     QueryResult,
     RetrievedTrio,
+    SchemaExplanationResult,
+    UnsupportedRequest,
     UserProfile,
 )
 from retail_agent.observability import EventLogger, new_trace_id
 from retail_agent.pii import redact_value
 from retail_agent.ports import AnalysisAgentPort, KnowledgeRetrieverPort, WarehousePort
+
+
+class GoldenRetrievalResult(BaseModel):
+    status: Literal["ok", "degraded"]
+    examples: list[RetrievedTrio] = Field(default_factory=list)
+    error_code: str | None = None
 
 
 @dataclass
@@ -49,10 +73,17 @@ class AgentDependencies:
     logger: EventLogger
     user: UserProfile
     trace_id: str
+    golden_store: KnowledgeRetrieverPort | None = None
     last_query_result: QueryResult | None = None
     last_tool_failure_code: FailureCode | None = None
     last_tool_failure_retryable: bool = False
     sql_tool_invoked: bool = False
+    retrieval_attempted: bool = False
+    retrieval_degraded: bool = False
+    retrieved_trio_ids: list[str] = field(default_factory=list)
+    tool_sequence: list[str] = field(default_factory=list)
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
+    output_validation_retries: int = 0
 
 
 @dataclass(frozen=True)
@@ -121,7 +152,7 @@ class TurnResult:
 
 
 async def add_runtime_context(ctx: RunContext[AgentDependencies]) -> str:
-    schema = ctx.deps.bigquery.describe_allowed_tables()
+    schema = await asyncio.to_thread(ctx.deps.bigquery.describe_allowed_tables)
     return (
         f"Trace ID: {ctx.deps.trace_id}\n"
         f"User: {ctx.deps.user.display_name}\n"
@@ -132,13 +163,64 @@ async def add_runtime_context(ctx: RunContext[AgentDependencies]) -> str:
     )
 
 
+async def retrieve_golden_examples(
+    ctx: RunContext[AgentDependencies],
+    question: str,
+    limit: Annotated[int | None, Field(ge=1, le=20)] = None,
+) -> GoldenRetrievalResult:
+    """Retrieve analyst-approved examples for a standalone, context-resolved question."""
+
+    started = time.perf_counter()
+    ctx.deps.retrieval_attempted = True
+    ctx.deps.tool_sequence.append("retrieve_golden_examples")
+    selected_limit = min(limit or ctx.deps.config.retrieval.top_k, 20)
+    if ctx.deps.golden_store is None:
+        ctx.deps.retrieval_degraded = True
+        _record_tool_event(ctx, "retrieve_golden_examples", "degraded", started)
+        return GoldenRetrievalResult(
+            status="degraded",
+            error_code="retrieval_not_configured",
+        )
+    try:
+        examples = await asyncio.to_thread(
+            ctx.deps.golden_store.search,
+            question.strip(),
+            ctx.deps.trace_id,
+            selected_limit,
+        )
+    except Exception as exc:
+        ctx.deps.retrieval_degraded = True
+        ctx.deps.logger.event(
+            ctx.deps.trace_id,
+            "golden_knowledge_unavailable",
+            failure_class=exc.__class__.__name__,
+            error=str(exc),
+        )
+        _record_tool_event(ctx, "retrieve_golden_examples", "degraded", started)
+        return GoldenRetrievalResult(
+            status="degraded",
+            error_code="retrieval_unavailable",
+        )
+
+    ctx.deps.retrieved_trio_ids = [example.id for example in examples]
+    _record_tool_event(ctx, "retrieve_golden_examples", "succeeded", started)
+    return GoldenRetrievalResult(status="ok", examples=examples)
+
+
 async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryResult:
     """Validate and run a read-only BigQuery SQL query."""
 
+    started = time.perf_counter()
     ctx.deps.sql_tool_invoked = True
+    ctx.deps.tool_sequence.append("run_sql_query")
     try:
-        result = ctx.deps.bigquery.execute(sql, ctx.deps.trace_id)
+        result = await asyncio.to_thread(
+            ctx.deps.bigquery.execute,
+            sql,
+            ctx.deps.trace_id,
+        )
         if result.total_rows == 0:
+            _record_tool_event(ctx, "run_sql_query", "empty", started)
             _record_tool_failure(ctx, "retry_exhausted", retryable=False)
             _log_sql_retry_feedback(
                 ctx,
@@ -152,14 +234,15 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         ctx.deps.last_query_result = result
         ctx.deps.last_tool_failure_code = None
         ctx.deps.last_tool_failure_retryable = False
+        _record_tool_event(ctx, "run_sql_query", "succeeded", started)
         return result
     except QueryCostExceeded as exc:
+        _record_tool_event(ctx, "run_sql_query", "rejected", started)
         _record_tool_failure(ctx, "retry_exhausted", retryable=False)
-        _log_sql_retry_feedback(
-            ctx, failure_class=exc.__class__.__name__, error=str(exc)
-        )
+        _log_sql_retry_feedback(ctx, failure_class=exc.__class__.__name__, error=str(exc))
         raise ModelRetry(str(exc)) from exc
     except QueryOutcomeUnknownError as exc:
+        _record_tool_event(ctx, "run_sql_query", "failed", started)
         _record_tool_failure(ctx, "warehouse_outcome_unknown", retryable=False)
         ctx.deps.logger.event(
             ctx.deps.trace_id,
@@ -171,33 +254,96 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         )
         raise
     except QueryPreExecutionError as exc:
+        _record_tool_event(ctx, "run_sql_query", "failed", started)
         _record_tool_failure(ctx, "warehouse_unavailable", retryable=True)
-        _log_sql_retry_feedback(
-            ctx, failure_class=exc.__class__.__name__, error=str(exc)
-        )
+        _log_sql_retry_feedback(ctx, failure_class=exc.__class__.__name__, error=str(exc))
         raise ModelRetry(str(exc)) from exc
     except ValueError as exc:
+        _record_tool_event(ctx, "run_sql_query", "rejected", started)
         _record_tool_failure(ctx, "retry_exhausted", retryable=False)
-        _log_sql_retry_feedback(
-            ctx, failure_class=exc.__class__.__name__, error=str(exc)
-        )
+        _log_sql_retry_feedback(ctx, failure_class=exc.__class__.__name__, error=str(exc))
         raise ModelRetry(str(exc)) from exc
+
+
+def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependencies]:
+    toolset = FunctionToolset[AgentDependencies](
+        instructions=(
+            "Choose tools based on the question. Retrieval is optional, but when used its "
+            "question must be standalone and resolve conversation references. Data answers "
+            "must execute run_sql_query and use only its verified result."
+        ),
+        sequential=True,
+    )
+    toolset.add_function(
+        retrieve_golden_examples,
+        retries=0,
+        timeout=config.retrieval.timeout_seconds,
+    )
+    toolset.add_function(
+        run_sql_query,
+        retries=config.agent_limits.max_sql_retries,
+        timeout=config.bigquery.timeout_seconds + 5,
+    )
+    return toolset
 
 
 def build_analysis_agent(config: AgentConfig) -> Agent:
-    """Build one agent whose inherited tool budget matches runtime configuration."""
+    """Build the bounded PydanticAI analysis agent and analytics toolset."""
 
     prompt = build_analysis_prompt()
     analysis_agent = Agent(
         model=None,
         deps_type=AgentDependencies,
-        output_type=AnalysisReport,
+        output_type=AnalysisResult,
         instructions=prompt.instructions,
-        retries={"tools": config.agent_limits.max_sql_retries},
+        retries={"output": config.agent_limits.output_retries},
+        toolsets=[build_analysis_toolset(config)],
+        model_settings=ModelSettings(temperature=config.model.temperature),
+        capabilities=[ProcessHistory(_process_message_history)],
         defer_model_check=True,
     )
     analysis_agent.instructions(add_runtime_context)
-    analysis_agent.tool(run_sql_query)
+
+    @analysis_agent.output_validator
+    async def validate_output(
+        ctx: RunContext[AgentDependencies],
+        output: AnalysisResult,
+    ) -> AnalysisResult:
+        if not isinstance(output, DataAnalysisResult):
+            return output
+        query_result = ctx.deps.last_query_result
+        if query_result is None:
+            ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.logger.event(
+                ctx.deps.trace_id,
+                "output_validation_retry",
+                reason="data_answer_without_query",
+                retry_attempt=ctx.retry,
+                max_retries=ctx.max_retries,
+            )
+            raise ModelRetry("A data analysis result requires a successful run_sql_query call.")
+        report = _data_result_to_report("", output, query_result)
+        evidence = assess_report_evidence(
+            report,
+            query_result.rows,
+            query_result.sql,
+        )
+        if not evidence.is_supported:
+            ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.logger.event(
+                ctx.deps.trace_id,
+                "output_validation_retry",
+                reason="unsupported_numeric_claim",
+                retry_attempt=ctx.retry,
+                max_retries=ctx.max_retries,
+                unsupported_claim_count=len(evidence.unsupported_numeric_claims),
+            )
+            raise ModelRetry(
+                "Revise the answer so every numeric claim is supported by the verified "
+                "query result."
+            )
+        return output
+
     return analysis_agent
 
 
@@ -235,43 +381,19 @@ async def run_question(
         golden_index_version=config.retrieval.collection,
     )
 
-    retrieval_query = _contextual_retrieval_query(question, state)
-    try:
-        golden_trios = golden_store.search(
-            retrieval_query,
-            trace_id,
-            limit=config.retrieval.top_k,
-        )
-    except Exception as exc:
-        golden_trios = []
-        logger.event(
-            trace_id,
-            "golden_knowledge_unavailable",
-            session_id=state.session_id,
-            turn_index=turn_index,
-            failure_class=exc.__class__.__name__,
-            error=str(exc),
-        )
-    trio_ids = tuple(trio.id for trio in golden_trios)
-    logger.event(
-        trace_id,
-        "agent_golden_context_prepared",
-        session_id=state.session_id,
-        turn_index=turn_index,
-        ids=list(trio_ids),
-    )
     deps = AgentDependencies(
         config=config,
         bigquery=bigquery,
         logger=logger,
         user=user,
         trace_id=trace_id,
+        golden_store=golden_store,
     )
 
     prompt = (
         f"User question: {question}\n"
-        f"{_follow_up_context(state)}"
-        f"{_format_golden_context(golden_trios)}\n"
+        "Use the bounded conversation history to resolve follow-up references. "
+        "Call only the tools needed for this question.\n"
         f"Return a report matching preferred format {user.preferred_format}."
     )
     runner = analysis_agent or build_analysis_agent(config)
@@ -282,6 +404,8 @@ async def run_question(
             model=config.model.llm_model,
             message_history=history or None,
             conversation_id=state.session_id,
+            model_settings=ModelSettings(temperature=config.model.temperature),
+            usage_limits=_usage_limits(config),
         )
     except Exception as exc:
         failure_code, retryable = _classify_failure(
@@ -304,6 +428,11 @@ async def run_question(
             prompt_version=build_analysis_prompt().version,
             persona_version=config.persona_version,
             golden_index_version=config.retrieval.collection,
+            retrieval_attempted=deps.retrieval_attempted,
+            retrieval_degraded=deps.retrieval_degraded,
+            tool_sequence=deps.tool_sequence,
+            tool_events=deps.tool_events,
+            output_validation_retries=deps.output_validation_retries,
             duration_ms=_duration_ms(started),
             error=str(exc),
         )
@@ -327,14 +456,17 @@ async def run_question(
         return TurnResult(
             response=response,
             conversation=next_state,
-            retrieved_trio_ids=trio_ids,
+            retrieved_trio_ids=tuple(deps.retrieved_trio_ids),
             query_result=deps.last_query_result,
             sql_tool_invoked=deps.sql_tool_invoked,
         )
 
-    report = _sanitize_report(result.output, trace_id)
-    if deps.last_query_result is not None:
-        report = report.model_copy(update={"sql": deps.last_query_result.sql})
+    response = _to_analysis_response(
+        question,
+        result.output,
+        deps,
+        trace_id,
+    )
     new_messages = _new_messages(result)
     next_state = state.complete_turn(
         question=question,
@@ -347,20 +479,25 @@ async def run_question(
         "agent_run_completed",
         session_id=state.session_id,
         turn_index=turn_index,
-        refused=report.refused,
-        degraded=report.degraded,
-        sql=report.sql,
-        retrieved_trio_ids=list(trio_ids),
+        refused=isinstance(response, AnalysisReport) and response.refused,
+        degraded=isinstance(response, AnalysisReport) and response.degraded,
+        sql=response.sql if isinstance(response, AnalysisReport) else None,
+        retrieved_trio_ids=deps.retrieved_trio_ids,
+        retrieval_attempted=deps.retrieval_attempted,
+        retrieval_degraded=deps.retrieval_degraded,
+        tool_sequence=deps.tool_sequence,
+        tool_events=deps.tool_events,
         usage=_usage(result),
+        output_validation_retries=deps.output_validation_retries,
         duration_ms=_duration_ms(started),
         prompt_version=build_analysis_prompt().version,
         persona_version=config.persona_version,
         golden_index_version=config.retrieval.collection,
     )
     return TurnResult(
-        response=report,
+        response=response,
         conversation=next_state,
-        retrieved_trio_ids=trio_ids,
+        retrieved_trio_ids=tuple(deps.retrieved_trio_ids),
         query_result=deps.last_query_result,
         sql_tool_invoked=deps.sql_tool_invoked,
     )
@@ -390,41 +527,132 @@ def _record_tool_failure(
     ctx.deps.last_tool_failure_retryable = retryable
 
 
-def _contextual_retrieval_query(question: str, state: ConversationState) -> str:
-    if not state.recent_questions:
-        return question
-    return f"Previous question: {state.recent_questions[-1]}\nFollow-up: {question}"
+def _to_analysis_response(
+    question: str,
+    output: Any,
+    deps: AgentDependencies,
+    trace_id: str,
+) -> AnalysisResponse:
+    if isinstance(output, AnalysisReport):
+        report = output
+        if deps.last_query_result is not None:
+            report = report.model_copy(update={"sql": deps.last_query_result.sql})
+        return _sanitize_report(report, trace_id)
+    if isinstance(output, DataAnalysisResult):
+        if deps.last_query_result is None:
+            return AgentFailure(
+                question=question,
+                message=_failure_message("retry_exhausted"),
+                failure_code="retry_exhausted",
+                trace_id=trace_id,
+                retryable=False,
+            )
+        return _sanitize_report(
+            _data_result_to_report(question, output, deps.last_query_result),
+            trace_id,
+        )
+    if isinstance(output, SchemaExplanationResult):
+        return _sanitize_report(
+            AnalysisReport(
+                question=question,
+                answer=output.explanation,
+                caveats=output.caveats,
+                followups=output.followups,
+            ),
+            trace_id,
+        )
+    if isinstance(output, ClarificationRequest):
+        return _sanitize_report(
+            AnalysisReport(question=question, answer=output.question),
+            trace_id,
+        )
+    if isinstance(output, UnsupportedRequest):
+        return _sanitize_report(
+            AnalysisReport(
+                question=question,
+                answer=output.reason,
+                refused=True,
+            ),
+            trace_id,
+        )
+    if isinstance(output, ExecutionFailure):
+        failure_code: FailureCode = "model_unavailable" if output.retryable else "internal_error"
+        return AgentFailure(
+            question=question,
+            message=_failure_message(failure_code),
+            failure_code=failure_code,
+            trace_id=trace_id,
+            retryable=output.retryable,
+        )
+    raise TypeError(f"Unsupported analysis output: {type(output)!r}")
 
 
-def _follow_up_context(state: ConversationState) -> str:
-    if not state.recent_questions:
-        return ""
-    return (
-        f"Previous question: {state.recent_questions[-1]}\n"
-        "Treat this as a follow-up to that analysis and preserve its entity, "
-        "timestamp column, filters, and time bounds unless the user explicitly "
-        "changes them.\n"
+def _data_result_to_report(
+    question: str,
+    output: DataAnalysisResult,
+    query_result: QueryResult,
+) -> AnalysisReport:
+    return AnalysisReport(
+        question=question,
+        answer=output.direct_answer,
+        highlights=[*output.highlights, *output.supporting_evidence],
+        table=query_result.rows,
+        sql=query_result.sql,
+        caveats=output.caveats,
+        followups=output.followups,
     )
 
 
-def _format_golden_context(trios: list[RetrievedTrio]) -> str:
-    if not trios:
-        return "Golden Knowledge analyst precedents: none retrieved."
+def _usage_limits(config: AgentConfig) -> UsageLimits:
+    return UsageLimits(
+        request_limit=config.agent_limits.request_limit,
+        tool_calls_limit=config.agent_limits.tool_calls_limit,
+        total_tokens_limit=config.agent_limits.total_tokens_limit,
+    )
 
-    blocks = ["Golden Knowledge analyst precedents:"]
-    for idx, trio in enumerate(trios, start=1):
-        tags = ", ".join(trio.tags) if trio.tags else "none"
-        blocks.append(
-            "\n".join(
-                [
-                    f"{idx}. ID: {trio.id} (score {trio.score:.4f}, tags: {tags})",
-                    f"Question: {trio.question}",
-                    f"SQL precedent: {trio.sql}",
-                    f"Analyst report precedent: {trio.analyst_report}",
-                ]
-            )
+
+def _process_message_history(
+    ctx: RunContext[AgentDependencies],
+    messages: list[ModelMessage],
+) -> list[ModelMessage]:
+    groups: list[list[ModelMessage]] = []
+    current: list[ModelMessage] = []
+    for message in messages:
+        starts_turn = isinstance(message, ModelRequest) and any(
+            isinstance(part, UserPromptPart) for part in message.parts
         )
-    return "\n\n".join(blocks)
+        if starts_turn and current:
+            groups.append(current)
+            current = []
+        current.append(message)
+    if current:
+        groups.append(current)
+
+    selected: list[list[ModelMessage]] = []
+    used_bytes = 0
+    max_groups = ctx.deps.config.conversation.max_history_turns + 1
+    for group in reversed(groups[-max_groups:]):
+        group_bytes = _message_size(group)
+        if selected and used_bytes + group_bytes > ctx.deps.config.conversation.max_history_bytes:
+            break
+        selected.append(group)
+        used_bytes += group_bytes
+    return [message for group in reversed(selected) for message in group]
+
+
+def _record_tool_event(
+    ctx: RunContext[AgentDependencies],
+    tool_name: str,
+    status: str,
+    started: float,
+) -> None:
+    event = {
+        "tool": tool_name,
+        "status": status,
+        "duration_ms": _duration_ms(started),
+    }
+    ctx.deps.tool_events.append(event)
+    ctx.deps.logger.event(ctx.deps.trace_id, "agent_tool_completed", **event)
 
 
 def _sanitize_report(report: AnalysisReport, trace_id: str) -> AnalysisReport:
@@ -514,9 +742,7 @@ def _duration_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
 
 
-def _compact_tool_returns(
-    messages: Sequence[ModelMessage], max_bytes: int
-) -> list[ModelMessage]:
+def _compact_tool_returns(messages: Sequence[ModelMessage], max_bytes: int) -> list[ModelMessage]:
     materialized = list(messages)
     if _message_size(materialized) <= max_bytes:
         return materialized
