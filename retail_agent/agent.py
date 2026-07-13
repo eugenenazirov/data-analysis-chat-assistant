@@ -254,7 +254,11 @@ async def run_question(
 
     retrieval_query = _contextual_retrieval_query(question, state)
     try:
-        golden_trios = golden_store.search(retrieval_query, trace_id, limit=3)
+        golden_trios = golden_store.search(
+            retrieval_query,
+            trace_id,
+            limit=config.qdrant.top_k,
+        )
     except Exception as exc:
         golden_trios = []
         logger.event(

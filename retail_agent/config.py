@@ -32,6 +32,7 @@ class QdrantConfig(BaseModel):
     api_key: str | None = None
     collection: str = "golden_trios"
     timeout_seconds: int = 30
+    top_k: int = Field(default=3, ge=1, le=20)
 
 
 class ModelConfig(BaseModel):
@@ -182,6 +183,7 @@ def _env_overrides() -> dict[str, Any]:
         ("QDRANT_URL",): ("qdrant", "url"),
         ("QDRANT_API_KEY",): ("qdrant", "api_key"),
         ("QDRANT_COLLECTION",): ("qdrant", "collection"),
+        ("GOLDEN_TOP_K",): ("qdrant", "top_k"),
         ("LLM_MODEL",): ("model", "llm_model"),
         ("EMBEDDING_PROVIDER",): ("model", "embedding_provider"),
         ("EMBEDDING_MODEL",): ("model", "embedding_model"),
@@ -201,6 +203,7 @@ def _env_overrides() -> dict[str, Any]:
                 "max_sql_retries",
                 "max_history_turns",
                 "max_history_bytes",
+                "top_k",
             }:
                 overrides[section][field] = int(raw)
             else:
