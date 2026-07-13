@@ -6,6 +6,7 @@ import pytest
 from google import genai
 from pydantic import SecretStr
 
+from retail_agent.domain.errors import RetrievalError
 from retail_agent.embeddings import GeminiEmbedder
 
 
@@ -109,3 +110,15 @@ def test_gemini_embedder_uses_configured_api_key(test_config, monkeypatch):
 
     assert embedder.client.models
     assert calls == [{"api_key": "api-secret"}]
+
+
+def test_gemini_embedder_translates_provider_failure(test_config):
+    class FailingModels:
+        def embed_content(self, **kwargs):
+            raise ConnectionError("provider detail")
+
+    embedder = GeminiEmbedder(test_config)
+    embedder._client = SimpleNamespace(models=FailingModels())
+
+    with pytest.raises(RetrievalError, match="Embedding request failed"):
+        embedder.embed("question")

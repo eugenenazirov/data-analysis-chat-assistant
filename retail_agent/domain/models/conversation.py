@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
 
@@ -47,12 +47,23 @@ class ConversationRole(StrEnum):
     assistant = "assistant"
 
 
+class ToolResultSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tool_name: str
+    summary: str
+    sql: str | None = None
+    rows: tuple[dict[str, Any], ...] = Field(default=(), max_length=20)
+    total_rows: int | None = Field(default=None, ge=0)
+    artifact_path: str | None = None
+
+
 class ConversationTurn(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     role: ConversationRole
     content: str
-    tool_result_summaries: tuple[str, ...] = ()
+    tool_result_summaries: tuple[ToolResultSummary, ...] = ()
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -72,7 +83,7 @@ class Conversation(BaseModel):
         role: ConversationRole,
         content: str,
         *,
-        tool_result_summaries: tuple[str, ...] = (),
+        tool_result_summaries: tuple[ToolResultSummary, ...] = (),
     ) -> Self:
         turn = ConversationTurn(
             role=role,

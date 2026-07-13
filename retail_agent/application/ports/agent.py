@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from retail_agent.domain.models import AnalysisReport, Conversation, UserQuestion
+from retail_agent.application.dto import AgentAnalysisResult
+from retail_agent.domain.models import Conversation, UserProfile, UserQuestion
 
 
 class AnalysisAgent(Protocol):
@@ -10,4 +11,5 @@ class AnalysisAgent(Protocol):
         self,
         question: UserQuestion,
         conversation: Conversation,
-    ) -> AnalysisReport: ...
+        user: UserProfile,
+    ) -> AgentAnalysisResult: ...

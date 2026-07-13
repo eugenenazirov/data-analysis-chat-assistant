@@ -3,6 +3,7 @@ import json
 import pytest
 from qdrant_client import QdrantClient
 
+from retail_agent.domain.errors import RetrievalError
 from retail_agent.embeddings import HashingEmbedder
 from retail_agent.golden_store import GoldenStore
 from retail_agent.models import GoldenTrio
@@ -87,8 +88,14 @@ def test_golden_store_wait_until_ready_raises_last_error(
             raise ConnectionError("not ready")
 
     times = iter([0.0, 0.1, 2.0])
-    monkeypatch.setattr("retail_agent.golden_store.time.time", lambda: next(times))
-    monkeypatch.setattr("retail_agent.golden_store.time.sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        "retail_agent.infrastructure.retrieval.qdrant_adapter.time.time",
+        lambda: next(times),
+    )
+    monkeypatch.setattr(
+        "retail_agent.infrastructure.retrieval.qdrant_adapter.time.sleep",
+        lambda seconds: None,
+    )
     store = GoldenStore(
         test_config,
         HashingEmbedder(size=8),
@@ -98,3 +105,19 @@ def test_golden_store_wait_until_ready_raises_last_error(
 
     with pytest.raises(RuntimeError, match="not ready"):
         store.wait_until_ready(timeout_seconds=1)
+
+
+def test_golden_store_translates_qdrant_search_failure(test_config, tmp_path):
+    class FailingClient:
+        def query_points(self, **kwargs):
+            raise ConnectionError("qdrant detail")
+
+    store = GoldenStore(
+        test_config,
+        HashingEmbedder(size=8),
+        EventLogger(tmp_path / "runs.jsonl"),
+    )
+    store.client = FailingClient()
+
+    with pytest.raises(RetrievalError, match="retrieval failed"):
+        store.search("question", trace_id="trace")

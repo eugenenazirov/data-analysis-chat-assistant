@@ -1,4 +1,4 @@
-from retail_agent.cli import app
+from retail_agent.presentation.cli.app import app
 
 if __name__ == "__main__":
     app()

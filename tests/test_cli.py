@@ -6,41 +6,37 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from retail_agent import cli
-from retail_agent.bigquery import QueryExecutionError
-from retail_agent.cli import BIGQUERY_SMOKE_SQL
-from retail_agent.models import QueryResult
-from retail_agent.observability import EventLogger
+from retail_agent.application.dto import AnalyzeQuestionResponse
+from retail_agent.bootstrap import RuntimeOperationError
+from retail_agent.domain.models import AgentFailure, QueryResult
+from retail_agent.presentation.cli import app as cli
+from retail_agent.presentation.cli.app import BIGQUERY_SMOKE_SQL
 from retail_agent.sql_guard import validate_and_prepare_sql
 
 
-class EmptyGoldenStore:
-    def search(self, question: str, trace_id: str, limit: int = 3):
-        return []
-
-
-class FakeBigQuery:
-    def describe_allowed_tables(self) -> str:
-        return "- orders"
-
-
-class FailingAgent:
-    def __init__(self):
-        self.calls = 0
-
-    async def run(self, prompt: str, **kwargs):
-        self.calls += 1
-        raise ConnectionError("provider detail must stay out of the UI")
-
-
 def _failing_runtime(test_config, tmp_path):
-    return SimpleNamespace(
-        config=test_config,
-        bigquery=FakeBigQuery(),
-        golden_store=EmptyGoldenStore(),
-        logger=EventLogger(tmp_path / "runs.jsonl"),
-        analysis_agent=FailingAgent(),
-    )
+    class Runtime:
+        def __init__(self):
+            self.calls = 0
+            self.start_conversation = SimpleNamespace(execute=self.start)
+
+        async def start(self):
+            return "conversation"
+
+        async def analyze(self, question, *, user_id, conversation_id=None):
+            self.calls += 1
+            return AnalyzeQuestionResponse(
+                response=AgentFailure(
+                    question=question,
+                    message="The analysis model is temporarily unavailable.",
+                    failure_code="model_unavailable",
+                    retryable=True,
+                    trace_id="trace",
+                ),
+                conversation_id=conversation_id or "conversation",
+            )
+
+    return Runtime()
 
 
 def test_bigquery_smoke_sql_is_guardrail_safe(test_config):
@@ -60,7 +56,7 @@ def test_ask_model_failure_exits_cleanly_without_traceback(test_config, tmp_path
     assert result.exit_code == 1
     assert "provider detail" not in result.output
     assert "Traceback" not in result.output
-    assert runtime.analysis_agent.calls == 1
+    assert runtime.calls == 1
 
 
 def test_chat_continues_after_model_failure(test_config, tmp_path, monkeypatch):
@@ -71,7 +67,7 @@ def test_chat_continues_after_model_failure(test_config, tmp_path, monkeypatch):
 
     cli.chat()
 
-    assert runtime.analysis_agent.calls == 1
+    assert runtime.calls == 1
 
 
 def test_quality_replay_cli_passes():
@@ -113,7 +109,7 @@ def test_quality_automated_only_accepts_pending_human_review(
     pending = summarize_quality_results(
         "replay", [evaluate_quality_case(test_config, case, replay)]
     )
-    monkeypatch.setattr(cli, "load_config", lambda path: test_config)
+    monkeypatch.setattr(cli, "load_settings", lambda path: test_config)
     monkeypatch.setattr(cli, "run_quality_replay_evals", lambda config, path: pending)
 
     automated = CliRunner().invoke(
@@ -131,41 +127,34 @@ def test_quality_automated_only_accepts_pending_human_review(
 
 
 def test_bq_smoke_renders_success(test_config, tmp_path, monkeypatch):
-    test_config.observability.log_path = tmp_path / "smoke.jsonl"
-
-    class SuccessfulRunner:
-        def __init__(self, config, logger):
-            pass
-
-        def execute(self, sql, trace_id):
-            return QueryResult(
+    runtime = SimpleNamespace(
+        bigquery_smoke=lambda sql: SimpleNamespace(
+            query=QueryResult(
                 sql=sql,
                 rows=[{"order_item_rows": 10}],
                 total_rows=1,
                 dry_run_bytes=100,
                 job_id="job-1",
-            )
-
-    monkeypatch.setattr(cli, "load_config", lambda path: test_config)
-    monkeypatch.setattr(cli, "BigQueryRunner", SuccessfulRunner)
+            ),
+            trace_id="trace",
+            project=None,
+            dataset=test_config.bigquery.dataset,
+        )
+    )
+    monkeypatch.setattr(cli, "_runtime", lambda *args, **kwargs: runtime)
 
     cli.bq_smoke()
 
-    assert test_config.observability.log_path.exists()
-
 
 def test_bq_smoke_converts_query_failure_to_clean_exit(test_config, tmp_path, monkeypatch):
-    test_config.observability.log_path = tmp_path / "smoke.jsonl"
+    def fail(sql):
+        raise RuntimeOperationError("warehouse unavailable")
 
-    class FailingRunner:
-        def __init__(self, config, logger):
-            pass
-
-        def execute(self, sql, trace_id):
-            raise QueryExecutionError("warehouse unavailable")
-
-    monkeypatch.setattr(cli, "load_config", lambda path: test_config)
-    monkeypatch.setattr(cli, "BigQueryRunner", FailingRunner)
+    monkeypatch.setattr(
+        cli,
+        "_runtime",
+        lambda *args, **kwargs: SimpleNamespace(bigquery_smoke=fail),
+    )
 
     with pytest.raises(typer.Exit) as exc_info:
         cli.bq_smoke()
@@ -174,19 +163,12 @@ def test_bq_smoke_converts_query_failure_to_clean_exit(test_config, tmp_path, mo
 
 
 def test_index_golden_uses_runtime_store(monkeypatch):
-    class Store:
-        def load_seed_trios(self, path):
-            return ["trio"]
-
-        def index(self, trios, recreate=False):
-            assert trios == ["trio"]
+    class Runtime:
+        def index_golden(self, *, recreate=False):
             assert recreate is True
             return 1
 
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(golden_trios_path="trios.jsonl"),
-        golden_store=Store(),
-    )
+    runtime = Runtime()
     monkeypatch.setattr(cli, "_runtime", lambda *args, **kwargs: runtime)
 
     cli.index_golden(recreate=True)

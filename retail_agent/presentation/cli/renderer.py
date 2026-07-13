@@ -4,7 +4,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
-from retail_agent.domain.models import AgentFailure, AnalysisResponse
+from retail_agent.application.dto import AgentFailure, AnalysisResponse
 
 
 def render_report(console: Console, report: AnalysisResponse) -> None:
