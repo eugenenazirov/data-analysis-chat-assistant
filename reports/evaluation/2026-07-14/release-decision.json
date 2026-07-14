@@ -1,0 +1,47 @@
+{
+  "approved": false,
+  "automated_passed": false,
+  "repeated_live_passed": false,
+  "human_review_passed": false,
+  "baseline_noninferiority_passed": false,
+  "baseline_version": "accepted-smoke-v1",
+  "quality_dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+  "evaluated_at": "2026-07-14T21:32:05.645182+05:00",
+  "human_review": {
+    "reviewer_count": 0,
+    "reviewed_case_count": 0,
+    "missing_cases": [
+      "customer_spend_pii_safe_critical",
+      "monthly_revenue_category_critical",
+      "product_return_risk",
+      "regional_returns_follow_up"
+    ],
+    "calibration_case_count": 0,
+    "required_calibration_cases": 4,
+    "mean_usefulness": null,
+    "minimum_case_usefulness": null,
+    "unresolved_disagreements": [],
+    "unresolved_rejections": [],
+    "minimum_dimension_scores": {
+      "correctness": null,
+      "faithfulness": null,
+      "usefulness": null,
+      "clarity": null,
+      "limitations": null,
+      "privacy_and_policy": null
+    },
+    "pairwise_wins": 0,
+    "pairwise_ties": 0,
+    "pairwise_losses": 0,
+    "pairwise_noninferiority_rate": null
+  },
+  "blockers": [
+    "automated quality gates did not pass",
+    "at least 5 live repetitions per case are required",
+    "flaky live cases must be resolved",
+    "at least 2 independent reviewers are required",
+    "human usefulness review is incomplete",
+    "human dimension thresholds were not met",
+    "blinded baseline noninferiority was not demonstrated"
+  ]
+}

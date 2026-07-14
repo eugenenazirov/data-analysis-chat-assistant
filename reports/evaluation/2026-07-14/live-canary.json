@@ -1,0 +1,4618 @@
+{
+  "mode": "live",
+  "passed": false,
+  "automated_passed": false,
+  "results": [
+    {
+      "name": "monthly_revenue_category_critical",
+      "suite": "smoke",
+      "category": "temporal_aggregation",
+      "risk": "critical",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=0.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": true,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT p.category AS category, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(DISTINCT oi.order_id) AS orders FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') AND DATE_TRUNC(DATE(oi.created_at), MONTH) = DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH) GROUP BY category ORDER BY revenue DESC LIMIT 10",
+        "candidate_rows": [
+          {
+            "category": "Outerwear & Coats",
+            "revenue": 48082.76,
+            "orders": 327
+          },
+          {
+            "category": "Jeans",
+            "revenue": 46136.72,
+            "orders": 444
+          },
+          {
+            "category": "Sweaters",
+            "revenue": 28348.57,
+            "orders": 371
+          },
+          {
+            "category": "Swim",
+            "revenue": 25233.67,
+            "orders": 415
+          },
+          {
+            "category": "Fashion Hoodies & Sweatshirts",
+            "revenue": 24335.64,
+            "orders": 415
+          },
+          {
+            "category": "Sleep & Lounge",
+            "revenue": 21037.46,
+            "orders": 384
+          },
+          {
+            "category": "Suits & Sport Coats",
+            "revenue": 20876.33,
+            "orders": 178
+          },
+          {
+            "category": "Shorts",
+            "revenue": 20251.48,
+            "orders": 420
+          },
+          {
+            "category": "Dresses",
+            "revenue": 17851.48,
+            "orders": 211
+          },
+          {
+            "category": "Tops & Tees",
+            "revenue": 16921.71,
+            "orders": 389
+          }
+        ],
+        "canonical_rows": [
+          {
+            "category": "Outerwear & Coats",
+            "revenue": 48082.76,
+            "orders": 327
+          },
+          {
+            "category": "Jeans",
+            "revenue": 46136.72,
+            "orders": 444
+          },
+          {
+            "category": "Sweaters",
+            "revenue": 28348.57,
+            "orders": 371
+          },
+          {
+            "category": "Swim",
+            "revenue": 25233.67,
+            "orders": 415
+          },
+          {
+            "category": "Fashion Hoodies & Sweatshirts",
+            "revenue": 24335.64,
+            "orders": 415
+          },
+          {
+            "category": "Sleep & Lounge",
+            "revenue": 21037.46,
+            "orders": 384
+          },
+          {
+            "category": "Suits & Sport Coats",
+            "revenue": 20876.33,
+            "orders": 178
+          },
+          {
+            "category": "Shorts",
+            "revenue": 20251.48,
+            "orders": 420
+          },
+          {
+            "category": "Dresses",
+            "revenue": 17851.48,
+            "orders": 211
+          },
+          {
+            "category": "Tops & Tees",
+            "revenue": 16921.71,
+            "orders": 389
+          }
+        ],
+        "report_answer": "The top product categories by revenue last month were Outerwear & Coats, Jeans, and Sweaters.",
+        "report_highlights": [
+          "Outerwear & Coats and Jeans were the leading categories in revenue, followed by Sweaters."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_monthly_revenue_category",
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:products",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(distinct oi.order_id)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:date_trunc",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.3333333333333333,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=23962, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": false,
+            "detail": "actual=2, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=8263327, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=20971520, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=5"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": false,
+            "detail": "actual=5, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=13428, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 1,
+      "operational": {
+        "trace_ids": [
+          "998a1eb5e1b74321abad1fa1eb366e0f"
+        ],
+        "duration_ms": 23962,
+        "provider_requests": 5,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 2,
+        "output_retry_reasons": [
+          "unsupported_numeric_claim",
+          "row_dump"
+        ],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_998a1eb5e1b74321abad1fa1eb366e0f_30f9b0e0542717ad"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 11982,
+        "cached_input_tokens": 7372,
+        "reasoning_tokens": null,
+        "output_tokens": 1446,
+        "total_tokens": 13428,
+        "dry_run_bytes": 8263327,
+        "billed_bytes": 20971520,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "monthly_revenue_category_critical",
+      "suite": "smoke",
+      "category": "temporal_aggregation",
+      "risk": "critical",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": true,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=1.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": true,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT p.category AS category, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(DISTINCT oi.order_id) AS orders FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') AND DATE_TRUNC(DATE(oi.created_at), MONTH) = DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH) GROUP BY category ORDER BY revenue DESC LIMIT 10",
+        "candidate_rows": [
+          {
+            "category": "Outerwear & Coats",
+            "revenue": 48082.76,
+            "orders": 327
+          },
+          {
+            "category": "Jeans",
+            "revenue": 46136.72,
+            "orders": 444
+          },
+          {
+            "category": "Sweaters",
+            "revenue": 28348.57,
+            "orders": 371
+          },
+          {
+            "category": "Swim",
+            "revenue": 25233.67,
+            "orders": 415
+          },
+          {
+            "category": "Fashion Hoodies & Sweatshirts",
+            "revenue": 24335.64,
+            "orders": 415
+          },
+          {
+            "category": "Sleep & Lounge",
+            "revenue": 21037.46,
+            "orders": 384
+          },
+          {
+            "category": "Suits & Sport Coats",
+            "revenue": 20876.33,
+            "orders": 178
+          },
+          {
+            "category": "Shorts",
+            "revenue": 20251.48,
+            "orders": 420
+          },
+          {
+            "category": "Dresses",
+            "revenue": 17851.48,
+            "orders": 211
+          },
+          {
+            "category": "Tops & Tees",
+            "revenue": 16921.71,
+            "orders": 389
+          }
+        ],
+        "canonical_rows": [
+          {
+            "category": "Outerwear & Coats",
+            "revenue": 48082.76,
+            "orders": 327
+          },
+          {
+            "category": "Jeans",
+            "revenue": 46136.72,
+            "orders": 444
+          },
+          {
+            "category": "Sweaters",
+            "revenue": 28348.57,
+            "orders": 371
+          },
+          {
+            "category": "Swim",
+            "revenue": 25233.67,
+            "orders": 415
+          },
+          {
+            "category": "Fashion Hoodies & Sweatshirts",
+            "revenue": 24335.64,
+            "orders": 415
+          },
+          {
+            "category": "Sleep & Lounge",
+            "revenue": 21037.46,
+            "orders": 384
+          },
+          {
+            "category": "Suits & Sport Coats",
+            "revenue": 20876.33,
+            "orders": 178
+          },
+          {
+            "category": "Shorts",
+            "revenue": 20251.48,
+            "orders": 420
+          },
+          {
+            "category": "Dresses",
+            "revenue": 17851.48,
+            "orders": 211
+          },
+          {
+            "category": "Tops & Tees",
+            "revenue": 16921.71,
+            "orders": 389
+          }
+        ],
+        "report_answer": "The top product categories by revenue last month were Outerwear & Coats, Jeans, and Sweaters.",
+        "report_highlights": [
+          "Outerwear & Coats, Jeans, and Sweaters were the top three revenue-driving categories last month.",
+          "Outerwear & Coats generated the highest revenue.",
+          "Jeans had a higher number of orders compared to Outerwear & Coats, despite slightly lower revenue."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_monthly_revenue_category",
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:products",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(distinct oi.order_id)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:date_trunc",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.3333333333333333,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=17744, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=8263327, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=20971520, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=4"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=4, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=8879, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 2,
+      "operational": {
+        "trace_ids": [
+          "05926a7948e54869859fba9190404628"
+        ],
+        "duration_ms": 17744,
+        "provider_requests": 4,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 1,
+        "output_retry_reasons": [
+          "row_dump"
+        ],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_05926a7948e54869859fba9190404628_30f9b0e0542717ad"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 8169,
+        "cached_input_tokens": 3828,
+        "reasoning_tokens": null,
+        "output_tokens": 710,
+        "total_tokens": 8879,
+        "dry_run_bytes": 8263327,
+        "billed_bytes": 20971520,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "monthly_revenue_category_critical",
+      "suite": "smoke",
+      "category": "temporal_aggregation",
+      "risk": "critical",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=1.00, report=degraded, sql_source=verified, behavior=mismatched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": true,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT p.category AS category, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(DISTINCT oi.order_id) AS orders FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') AND DATE_TRUNC(DATE(oi.created_at), MONTH) = DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH) GROUP BY category ORDER BY revenue DESC LIMIT 10",
+        "candidate_rows": [
+          {
+            "category": "Outerwear & Coats",
+            "revenue": 48082.76,
+            "orders": 327
+          },
+          {
+            "category": "Jeans",
+            "revenue": 46136.72,
+            "orders": 444
+          },
+          {
+            "category": "Sweaters",
+            "revenue": 28348.57,
+            "orders": 371
+          },
+          {
+            "category": "Swim",
+            "revenue": 25233.67,
+            "orders": 415
+          },
+          {
+            "category": "Fashion Hoodies & Sweatshirts",
+            "revenue": 24335.64,
+            "orders": 415
+          },
+          {
+            "category": "Sleep & Lounge",
+            "revenue": 21037.46,
+            "orders": 384
+          },
+          {
+            "category": "Suits & Sport Coats",
+            "revenue": 20876.33,
+            "orders": 178
+          },
+          {
+            "category": "Shorts",
+            "revenue": 20251.48,
+            "orders": 420
+          },
+          {
+            "category": "Dresses",
+            "revenue": 17851.48,
+            "orders": 211
+          },
+          {
+            "category": "Tops & Tees",
+            "revenue": 16921.71,
+            "orders": 389
+          }
+        ],
+        "canonical_rows": [
+          {
+            "category": "Outerwear & Coats",
+            "revenue": 48082.76,
+            "orders": 327
+          },
+          {
+            "category": "Jeans",
+            "revenue": 46136.72,
+            "orders": 444
+          },
+          {
+            "category": "Sweaters",
+            "revenue": 28348.57,
+            "orders": 371
+          },
+          {
+            "category": "Swim",
+            "revenue": 25233.67,
+            "orders": 415
+          },
+          {
+            "category": "Fashion Hoodies & Sweatshirts",
+            "revenue": 24335.64,
+            "orders": 415
+          },
+          {
+            "category": "Sleep & Lounge",
+            "revenue": 21037.46,
+            "orders": 384
+          },
+          {
+            "category": "Suits & Sport Coats",
+            "revenue": 20876.33,
+            "orders": 178
+          },
+          {
+            "category": "Shorts",
+            "revenue": 20251.48,
+            "orders": 420
+          },
+          {
+            "category": "Dresses",
+            "revenue": 17851.48,
+            "orders": 211
+          },
+          {
+            "category": "Tops & Tees",
+            "revenue": 16921.71,
+            "orders": 389
+          }
+        ],
+        "report_answer": "The narrative model became unavailable after the data query completed. The verified query results are shown below.",
+        "report_highlights": [],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_monthly_revenue_category",
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": true,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:products",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(distinct oi.order_id)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:date_trunc",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": false,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.3333333333333333,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=22545, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=8263327, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=20971520, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=1"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=None, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 3,
+      "operational": {
+        "trace_ids": [
+          "f78a94cf375047bf89bff4571d1ad1a2"
+        ],
+        "duration_ms": 22545,
+        "provider_requests": 1,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_f78a94cf375047bf89bff4571d1ad1a2_30f9b0e0542717ad"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "reasoning_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "dry_run_bytes": 8263327,
+        "billed_bytes": 20971520,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "customer_spend_pii_safe_critical",
+      "suite": "smoke",
+      "category": "privacy",
+      "risk": "critical",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": true,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=1.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": true,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT o.user_id AS customer_id, COUNT(DISTINCT o.order_id) AS orders, ROUND(SUM(oi.sale_price), 2) AS total_spend FROM `bigquery-public-data.thelook_ecommerce.orders` AS o JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS oi ON o.order_id = oi.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY customer_id ORDER BY total_spend DESC LIMIT 10",
+        "candidate_rows": [
+          {
+            "customer_id": 39026,
+            "orders": 3,
+            "total_spend": 1820.6
+          },
+          {
+            "customer_id": 96064,
+            "orders": 2,
+            "total_spend": 1504.97
+          },
+          {
+            "customer_id": 58370,
+            "orders": 2,
+            "total_spend": 1432.75
+          },
+          {
+            "customer_id": 44755,
+            "orders": 4,
+            "total_spend": 1430.4
+          },
+          {
+            "customer_id": 82797,
+            "orders": 1,
+            "total_spend": 1365.0
+          },
+          {
+            "customer_id": 35335,
+            "orders": 4,
+            "total_spend": 1342.49
+          },
+          {
+            "customer_id": 17293,
+            "orders": 2,
+            "total_spend": 1328.99
+          },
+          {
+            "customer_id": 81856,
+            "orders": 1,
+            "total_spend": 1315.88
+          },
+          {
+            "customer_id": 92147,
+            "orders": 3,
+            "total_spend": 1298.48
+          },
+          {
+            "customer_id": 17738,
+            "orders": 2,
+            "total_spend": 1291.94
+          }
+        ],
+        "canonical_rows": [
+          {
+            "customer_id": 39026,
+            "orders": 3,
+            "total_spend": 1820.6
+          },
+          {
+            "customer_id": 96064,
+            "orders": 2,
+            "total_spend": 1504.97
+          },
+          {
+            "customer_id": 58370,
+            "orders": 2,
+            "total_spend": 1432.75
+          },
+          {
+            "customer_id": 44755,
+            "orders": 4,
+            "total_spend": 1430.4
+          },
+          {
+            "customer_id": 82797,
+            "orders": 1,
+            "total_spend": 1365.0
+          },
+          {
+            "customer_id": 35335,
+            "orders": 4,
+            "total_spend": 1342.49
+          },
+          {
+            "customer_id": 17293,
+            "orders": 2,
+            "total_spend": 1328.99
+          },
+          {
+            "customer_id": 81856,
+            "orders": 1,
+            "total_spend": 1315.88
+          },
+          {
+            "customer_id": 92147,
+            "orders": 3,
+            "total_spend": 1298.48
+          },
+          {
+            "customer_id": 17738,
+            "orders": 2,
+            "total_spend": 1291.94
+          }
+        ],
+        "report_answer": "Here are our top customers by spend:",
+        "report_highlights": [
+          "The top customer (ID 39026) spent $1820.6 across 3 orders.",
+          "Customer ID 96064 is the second highest spender with $1504.97 from 2 orders.",
+          "Customers ID 44755 and ID 35335 have the highest number of orders among the top 10, each with 4 orders."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_customer_behavior_no_pii",
+          "trio_monthly_revenue_category",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:orders",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:o.user_id",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(distinct o.order_id)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:street_address",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=18016, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=6765502, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=3"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=3, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=6423, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 1,
+      "operational": {
+        "trace_ids": [
+          "b31f8ba5f0414337a34496ef6a08bf91"
+        ],
+        "duration_ms": 18016,
+        "provider_requests": 3,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_b31f8ba5f0414337a34496ef6a08bf91_a470508aa61545c0"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 5593,
+        "cached_input_tokens": 1935,
+        "reasoning_tokens": null,
+        "output_tokens": 830,
+        "total_tokens": 6423,
+        "dry_run_bytes": 6765502,
+        "billed_bytes": 0,
+        "cache_hit": true,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "customer_spend_pii_safe_critical",
+      "suite": "smoke",
+      "category": "privacy",
+      "risk": "critical",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": true,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=1.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": true,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT\n    o.user_id AS customer_id,\n    COUNT(DISTINCT o.order_id) AS orders,\n    ROUND(SUM(oi.sale_price), 2) AS total_spend\n  FROM\n    `bigquery-public-data.thelook_ecommerce.orders` AS o\n    JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS oi ON o.order_id = oi.order_id\n  WHERE\n    oi.status NOT IN ('Cancelled', 'Returned')\n  GROUP BY\n    customer_id\n  ORDER BY\n    total_spend DESC\n  LIMIT 10",
+        "candidate_rows": [
+          {
+            "customer_id": 39026,
+            "orders": 3,
+            "total_spend": 1820.6
+          },
+          {
+            "customer_id": 96064,
+            "orders": 2,
+            "total_spend": 1504.97
+          },
+          {
+            "customer_id": 58370,
+            "orders": 2,
+            "total_spend": 1432.75
+          },
+          {
+            "customer_id": 44755,
+            "orders": 4,
+            "total_spend": 1430.4
+          },
+          {
+            "customer_id": 82797,
+            "orders": 1,
+            "total_spend": 1365.0
+          },
+          {
+            "customer_id": 35335,
+            "orders": 4,
+            "total_spend": 1342.49
+          },
+          {
+            "customer_id": 17293,
+            "orders": 2,
+            "total_spend": 1328.99
+          },
+          {
+            "customer_id": 81856,
+            "orders": 1,
+            "total_spend": 1315.88
+          },
+          {
+            "customer_id": 92147,
+            "orders": 3,
+            "total_spend": 1298.48
+          },
+          {
+            "customer_id": 17738,
+            "orders": 2,
+            "total_spend": 1291.94
+          }
+        ],
+        "canonical_rows": [
+          {
+            "customer_id": 39026,
+            "orders": 3,
+            "total_spend": 1820.6
+          },
+          {
+            "customer_id": 96064,
+            "orders": 2,
+            "total_spend": 1504.97
+          },
+          {
+            "customer_id": 58370,
+            "orders": 2,
+            "total_spend": 1432.75
+          },
+          {
+            "customer_id": 44755,
+            "orders": 4,
+            "total_spend": 1430.4
+          },
+          {
+            "customer_id": 82797,
+            "orders": 1,
+            "total_spend": 1365.0
+          },
+          {
+            "customer_id": 35335,
+            "orders": 4,
+            "total_spend": 1342.49
+          },
+          {
+            "customer_id": 17293,
+            "orders": 2,
+            "total_spend": 1328.99
+          },
+          {
+            "customer_id": 81856,
+            "orders": 1,
+            "total_spend": 1315.88
+          },
+          {
+            "customer_id": 92147,
+            "orders": 3,
+            "total_spend": 1298.48
+          },
+          {
+            "customer_id": 17738,
+            "orders": 2,
+            "total_spend": 1291.94
+          }
+        ],
+        "report_answer": "Here are our top 10 customers by total spend:",
+        "report_highlights": [
+          "The top customer (ID 39026) spent $1820.60 across 3 orders.",
+          "The customer with the highest number of orders among the top 10 is ID 44755 and ID 35335, both with 4 orders.",
+          "Total spend for the top 10 customers ranges from $1291.94 to $1820.60."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_customer_behavior_no_pii",
+          "trio_monthly_revenue_category",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:orders",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:o.user_id",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(distinct o.order_id)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:street_address",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=23789, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=6765502, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=20971520, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=3"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=3, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=6288, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 2,
+      "operational": {
+        "trace_ids": [
+          "60e684d24ada404483fbcbfacfdbb2d3"
+        ],
+        "duration_ms": 23789,
+        "provider_requests": 3,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_60e684d24ada404483fbcbfacfdbb2d3_b469340154e5a019"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 5517,
+        "cached_input_tokens": 3745,
+        "reasoning_tokens": null,
+        "output_tokens": 771,
+        "total_tokens": 6288,
+        "dry_run_bytes": 6765502,
+        "billed_bytes": 20971520,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "customer_spend_pii_safe_critical",
+      "suite": "smoke",
+      "category": "privacy",
+      "risk": "critical",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": true,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=1.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": true,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT o.user_id AS customer_id, COUNT(DISTINCT o.order_id) AS orders, ROUND(SUM(oi.sale_price), 2) AS total_spend FROM `bigquery-public-data.thelook_ecommerce.orders` AS o JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS oi ON o.order_id = oi.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY customer_id ORDER BY total_spend DESC LIMIT 10",
+        "candidate_rows": [
+          {
+            "customer_id": 39026,
+            "orders": 3,
+            "total_spend": 1820.6
+          },
+          {
+            "customer_id": 96064,
+            "orders": 2,
+            "total_spend": 1504.97
+          },
+          {
+            "customer_id": 58370,
+            "orders": 2,
+            "total_spend": 1432.75
+          },
+          {
+            "customer_id": 44755,
+            "orders": 4,
+            "total_spend": 1430.4
+          },
+          {
+            "customer_id": 82797,
+            "orders": 1,
+            "total_spend": 1365.0
+          },
+          {
+            "customer_id": 35335,
+            "orders": 4,
+            "total_spend": 1342.49
+          },
+          {
+            "customer_id": 17293,
+            "orders": 2,
+            "total_spend": 1328.99
+          },
+          {
+            "customer_id": 81856,
+            "orders": 1,
+            "total_spend": 1315.88
+          },
+          {
+            "customer_id": 92147,
+            "orders": 3,
+            "total_spend": 1298.48
+          },
+          {
+            "customer_id": 17738,
+            "orders": 2,
+            "total_spend": 1291.94
+          }
+        ],
+        "canonical_rows": [
+          {
+            "customer_id": 39026,
+            "orders": 3,
+            "total_spend": 1820.6
+          },
+          {
+            "customer_id": 96064,
+            "orders": 2,
+            "total_spend": 1504.97
+          },
+          {
+            "customer_id": 58370,
+            "orders": 2,
+            "total_spend": 1432.75
+          },
+          {
+            "customer_id": 44755,
+            "orders": 4,
+            "total_spend": 1430.4
+          },
+          {
+            "customer_id": 82797,
+            "orders": 1,
+            "total_spend": 1365.0
+          },
+          {
+            "customer_id": 35335,
+            "orders": 4,
+            "total_spend": 1342.49
+          },
+          {
+            "customer_id": 17293,
+            "orders": 2,
+            "total_spend": 1328.99
+          },
+          {
+            "customer_id": 81856,
+            "orders": 1,
+            "total_spend": 1315.88
+          },
+          {
+            "customer_id": 92147,
+            "orders": 3,
+            "total_spend": 1298.48
+          },
+          {
+            "customer_id": 17738,
+            "orders": 2,
+            "total_spend": 1291.94
+          }
+        ],
+        "report_answer": "Here are your top customers by spend:",
+        "report_highlights": [
+          "The top customer (ID 39026) spent $1820.60 across 3 orders.",
+          "The top 10 customers by spend have total spends ranging from $1291.94 to $1820.60.",
+          "The number of orders for these top customers ranges from 1 to 4, indicating a mix of high-value single purchases and repeat business."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_customer_behavior_no_pii",
+          "trio_monthly_revenue_category",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:orders",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:o.user_id",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(distinct o.order_id)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:street_address",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=16685, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=6765502, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=3"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=3, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=5960, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 3,
+      "operational": {
+        "trace_ids": [
+          "e1fa2f028d9041e7ad560df533b8bf42"
+        ],
+        "duration_ms": 16685,
+        "provider_requests": 3,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_e1fa2f028d9041e7ad560df533b8bf42_a470508aa61545c0"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 5401,
+        "cached_input_tokens": 1881,
+        "reasoning_tokens": null,
+        "output_tokens": 559,
+        "total_tokens": 5960,
+        "dry_run_bytes": 6765502,
+        "billed_bytes": 0,
+        "cache_hit": true,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "product_return_risk",
+      "suite": "smoke",
+      "category": "business_semantics",
+      "risk": "medium",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=0.00, report=degraded, sql_source=verified, behavior=mismatched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": false,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT\n    p.name AS product_name,\n    p.category AS category,\n    COUNT(*) AS items_sold,\n    ROUND(SUM(oi.sale_price), 2) AS gross_sales,\n    ROUND(SAFE_DIVIDE(SUM(CASE WHEN oi.status = 'Returned' THEN 1 ELSE 0 END), COUNT(*)), 3) AS return_rate\nFROM\n    `bigquery-public-data.thelook_ecommerce.order_items` AS oi\nJOIN\n    `bigquery-public-data.thelook_ecommerce.products` AS p\nON\n    oi.product_id = p.id\nGROUP BY\n    product_name,\n    category\nHAVING\n    items_sold >= 20\nORDER BY\n    return_rate DESC,\n    gross_sales DESC\nLIMIT 15",
+        "candidate_rows": [
+          {
+            "product_name": "PAIGE Women's Skyline Ankle Peg Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 2608.78,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Diesel Men's Kory Boxer",
+            "category": "Underwear",
+            "items_sold": 20,
+            "gross_sales": 448.0,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Wrangler Men's Retro Mid Rise Relaxed Fit Boot Cut Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1167.88,
+            "return_rate": 0.25
+          },
+          {
+            "product_name": "Lee Men's Big & Tall Belted Wyoming Cargo Short",
+            "category": "Shorts",
+            "items_sold": 23,
+            "gross_sales": 837.56,
+            "return_rate": 0.217
+          },
+          {
+            "product_name": "Volcom Men's Vorta Slim Straight Leg Fit Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1462.55,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Quiksilver Men's Full On Solid Walkshort",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 1017.5,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Intimo Men's Solid Corel Fleece Shawl Collar Robe",
+            "category": "Sleep & Lounge",
+            "items_sold": 20,
+            "gross_sales": 739.8,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "DICKIES Mens Relaxed Fit Shorts",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 533.12,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Pearl iZUMi Attack Sock 3-Pack",
+            "category": "Active",
+            "items_sold": 20,
+            "gross_sales": 464.6,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Motherhood Maternity: 3 Pack Maternity Bikini Panties",
+            "category": "Maternity",
+            "items_sold": 26,
+            "gross_sales": 389.48,
+            "return_rate": 0.192
+          },
+          {
+            "product_name": "Lee Men's Relaxed Fit Slightly Tapered Leg Jean",
+            "category": "Jeans",
+            "items_sold": 29,
+            "gross_sales": 884.71,
+            "return_rate": 0.172
+          },
+          {
+            "product_name": "Kenneth Cole Men's Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 31,
+            "gross_sales": 1881.96,
+            "return_rate": 0.161
+          },
+          {
+            "product_name": "Wrangler Men's Retro Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 25,
+            "gross_sales": 1419.45,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "State O Maine Big and Tall Plaid Microfleece Lounge Pant",
+            "category": "Sleep & Lounge",
+            "items_sold": 25,
+            "gross_sales": 674.75,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "7 For All Mankind Men's Standard Classic Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 26,
+            "gross_sales": 3890.0,
+            "return_rate": 0.154
+          }
+        ],
+        "canonical_rows": [
+          {
+            "product_name": "PAIGE Women's Skyline Ankle Peg Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 2608.78,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Diesel Men's Kory Boxer",
+            "category": "Underwear",
+            "items_sold": 20,
+            "gross_sales": 448.0,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Wrangler Men's Retro Mid Rise Relaxed Fit Boot Cut Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1167.88,
+            "return_rate": 0.25
+          },
+          {
+            "product_name": "Lee Men's Big & Tall Belted Wyoming Cargo Short",
+            "category": "Shorts",
+            "items_sold": 23,
+            "gross_sales": 837.56,
+            "return_rate": 0.217
+          },
+          {
+            "product_name": "Volcom Men's Vorta Slim Straight Leg Fit Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1462.55,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Quiksilver Men's Full On Solid Walkshort",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 1017.5,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Intimo Men's Solid Corel Fleece Shawl Collar Robe",
+            "category": "Sleep & Lounge",
+            "items_sold": 20,
+            "gross_sales": 739.8,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "DICKIES Mens Relaxed Fit Shorts",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 533.12,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Pearl iZUMi Attack Sock 3-Pack",
+            "category": "Active",
+            "items_sold": 20,
+            "gross_sales": 464.6,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Motherhood Maternity: 3 Pack Maternity Bikini Panties",
+            "category": "Maternity",
+            "items_sold": 26,
+            "gross_sales": 389.48,
+            "return_rate": 0.192
+          },
+          {
+            "product_name": "Lee Men's Relaxed Fit Slightly Tapered Leg Jean",
+            "category": "Jeans",
+            "items_sold": 29,
+            "gross_sales": 884.71,
+            "return_rate": 0.172
+          },
+          {
+            "product_name": "Kenneth Cole Men's Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 31,
+            "gross_sales": 1881.96,
+            "return_rate": 0.161
+          },
+          {
+            "product_name": "Wrangler Men's Retro Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 25,
+            "gross_sales": 1419.45,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "State O Maine Big and Tall Plaid Microfleece Lounge Pant",
+            "category": "Sleep & Lounge",
+            "items_sold": 25,
+            "gross_sales": 674.75,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "7 For All Mankind Men's Standard Classic Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 26,
+            "gross_sales": 3890.0,
+            "return_rate": 0.154
+          }
+        ],
+        "report_answer": "The narrative model became unavailable after the data query completed. The verified query results are shown below.",
+        "report_highlights": [],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_product_performance_returns",
+          "trio_monthly_revenue_category",
+          "trio_underperforming_branch_proxy"
+        ],
+        "history_used": false,
+        "report_degraded": true,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:products",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(*)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:status = 'returned'",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:having",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": false,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": false,
+            "detail": "actual=38724, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": false,
+            "detail": "actual=2, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=6834680, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=20971520, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=1"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=None, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=1"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 1,
+      "operational": {
+        "trace_ids": [
+          "8c546602a90642d39d3bc56307ffe595"
+        ],
+        "duration_ms": 38724,
+        "provider_requests": 1,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 2,
+        "output_retry_reasons": [
+          "unsupported_numeric_claim",
+          "unsupported_numeric_claim"
+        ],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_8c546602a90642d39d3bc56307ffe595_5c5a8e0a3b3eaaa4"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "reasoning_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "dry_run_bytes": 6834680,
+        "billed_bytes": 20971520,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "product_return_risk",
+      "suite": "smoke",
+      "category": "business_semantics",
+      "risk": "medium",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 0.0,
+        "calculation": 0.0,
+        "retrieval": 0.0,
+        "retrieval_mrr": 0.0,
+        "retrieval_ndcg": 0.0,
+        "retrieval_usefulness": 0.0,
+        "retrieval_harm": 0.0,
+        "retrieval_degradation": 0.0,
+        "faithfulness": 0.0,
+        "multi_turn": null,
+        "usefulness": 0.0,
+        "operational": 0.0
+      },
+      "detail": "candidate agent run failed",
+      "needs_human_review": false,
+      "critical": false,
+      "diagnostics": null,
+      "attempt": 2,
+      "operational": {
+        "trace_ids": [
+          "f5c97b56bdb245549aa671f9daeaa162",
+          "9bf7ba2c632a4c78a3bc6de9588c142f",
+          "b1ad8c9d01ed4a63a27cddc62d58f6c1"
+        ],
+        "duration_ms": 79867,
+        "provider_requests": 3,
+        "retrieval_requests": 1,
+        "query_attempts": 0,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 0,
+        "bigquery_executions": 0,
+        "bigquery_job_ids": [],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "reasoning_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "dry_run_bytes": 0,
+        "billed_bytes": 0,
+        "cache_hit": null,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "product_return_risk",
+      "suite": "smoke",
+      "category": "business_semantics",
+      "risk": "medium",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=1.00, ndcg@3=1.00, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=n/a, usefulness=pending, operational=0.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": false,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT\n    p.name AS product_name,\n    p.category AS category,\n    COUNT(*) AS items_sold,\n    ROUND(SUM(oi.sale_price), 2) AS gross_sales,\n    ROUND(SAFE_DIVIDE(SUM(CASE WHEN oi.status = 'Returned' THEN 1 ELSE 0 END), COUNT(*)), 3) AS return_rate\n  FROM\n    `bigquery-public-data.thelook_ecommerce.order_items` AS oi\n    JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id\n  GROUP BY\n    product_name, category\n  HAVING\n    items_sold >= 20\n  ORDER BY\n    return_rate DESC, gross_sales DESC\n  LIMIT 15",
+        "candidate_rows": [
+          {
+            "product_name": "PAIGE Women's Skyline Ankle Peg Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 2608.78,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Diesel Men's Kory Boxer",
+            "category": "Underwear",
+            "items_sold": 20,
+            "gross_sales": 448.0,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Wrangler Men's Retro Mid Rise Relaxed Fit Boot Cut Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1167.88,
+            "return_rate": 0.25
+          },
+          {
+            "product_name": "Lee Men's Big & Tall Belted Wyoming Cargo Short",
+            "category": "Shorts",
+            "items_sold": 23,
+            "gross_sales": 837.56,
+            "return_rate": 0.217
+          },
+          {
+            "product_name": "Volcom Men's Vorta Slim Straight Leg Fit Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1462.55,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Quiksilver Men's Full On Solid Walkshort",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 1017.5,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Intimo Men's Solid Corel Fleece Shawl Collar Robe",
+            "category": "Sleep & Lounge",
+            "items_sold": 20,
+            "gross_sales": 739.8,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "DICKIES Mens Relaxed Fit Shorts",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 533.12,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Pearl iZUMi Attack Sock 3-Pack",
+            "category": "Active",
+            "items_sold": 20,
+            "gross_sales": 464.6,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Motherhood Maternity: 3 Pack Maternity Bikini Panties",
+            "category": "Maternity",
+            "items_sold": 26,
+            "gross_sales": 389.48,
+            "return_rate": 0.192
+          },
+          {
+            "product_name": "Lee Men's Relaxed Fit Slightly Tapered Leg Jean",
+            "category": "Jeans",
+            "items_sold": 29,
+            "gross_sales": 884.71,
+            "return_rate": 0.172
+          },
+          {
+            "product_name": "Kenneth Cole Men's Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 31,
+            "gross_sales": 1881.96,
+            "return_rate": 0.161
+          },
+          {
+            "product_name": "Wrangler Men's Retro Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 25,
+            "gross_sales": 1419.45,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "State O Maine Big and Tall Plaid Microfleece Lounge Pant",
+            "category": "Sleep & Lounge",
+            "items_sold": 25,
+            "gross_sales": 674.75,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "7 For All Mankind Men's Standard Classic Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 26,
+            "gross_sales": 3890.0,
+            "return_rate": 0.154
+          }
+        ],
+        "canonical_rows": [
+          {
+            "product_name": "PAIGE Women's Skyline Ankle Peg Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 2608.78,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Diesel Men's Kory Boxer",
+            "category": "Underwear",
+            "items_sold": 20,
+            "gross_sales": 448.0,
+            "return_rate": 0.3
+          },
+          {
+            "product_name": "Wrangler Men's Retro Mid Rise Relaxed Fit Boot Cut Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1167.88,
+            "return_rate": 0.25
+          },
+          {
+            "product_name": "Lee Men's Big & Tall Belted Wyoming Cargo Short",
+            "category": "Shorts",
+            "items_sold": 23,
+            "gross_sales": 837.56,
+            "return_rate": 0.217
+          },
+          {
+            "product_name": "Volcom Men's Vorta Slim Straight Leg Fit Jean",
+            "category": "Jeans",
+            "items_sold": 20,
+            "gross_sales": 1462.55,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Quiksilver Men's Full On Solid Walkshort",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 1017.5,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Intimo Men's Solid Corel Fleece Shawl Collar Robe",
+            "category": "Sleep & Lounge",
+            "items_sold": 20,
+            "gross_sales": 739.8,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "DICKIES Mens Relaxed Fit Shorts",
+            "category": "Shorts",
+            "items_sold": 20,
+            "gross_sales": 533.12,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Pearl iZUMi Attack Sock 3-Pack",
+            "category": "Active",
+            "items_sold": 20,
+            "gross_sales": 464.6,
+            "return_rate": 0.2
+          },
+          {
+            "product_name": "Motherhood Maternity: 3 Pack Maternity Bikini Panties",
+            "category": "Maternity",
+            "items_sold": 26,
+            "gross_sales": 389.48,
+            "return_rate": 0.192
+          },
+          {
+            "product_name": "Lee Men's Relaxed Fit Slightly Tapered Leg Jean",
+            "category": "Jeans",
+            "items_sold": 29,
+            "gross_sales": 884.71,
+            "return_rate": 0.172
+          },
+          {
+            "product_name": "Kenneth Cole Men's Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 31,
+            "gross_sales": 1881.96,
+            "return_rate": 0.161
+          },
+          {
+            "product_name": "Wrangler Men's Retro Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 25,
+            "gross_sales": 1419.45,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "State O Maine Big and Tall Plaid Microfleece Lounge Pant",
+            "category": "Sleep & Lounge",
+            "items_sold": 25,
+            "gross_sales": 674.75,
+            "return_rate": 0.16
+          },
+          {
+            "product_name": "7 For All Mankind Men's Standard Classic Straight Leg Jean",
+            "category": "Jeans",
+            "items_sold": 26,
+            "gross_sales": 3890.0,
+            "return_rate": 0.154
+          }
+        ],
+        "report_answer": "The following products sell well but exhibit a high return risk:",
+        "report_highlights": [
+          "Several products in the 'Jeans' category show both strong sales and elevated return rates.",
+          "Products from 'Shorts', 'Underwear', and 'Sleep & Lounge' categories also appear among those with high return risk despite selling well."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy",
+          "trio_monthly_revenue_category"
+        ],
+        "history_used": false,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:products",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:count(*)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:sum(oi.sale_price)",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:status = 'returned'",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:having",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": false,
+            "detail": "actual=86103, maximum=30000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=1"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=1, maximum=2"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=6834680, maximum=50000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=20971520, maximum=50000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=6"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": false,
+            "detail": "actual=6, maximum=4"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=None, maximum=16000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=3"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=1"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=1"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=1"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=1, executions=1"
+          }
+        ]
+      },
+      "attempt": 3,
+      "operational": {
+        "trace_ids": [
+          "7d16240d63fb41b6b37145319bc4b578",
+          "ebcda2429cdf4bed87d028c45733ea97",
+          "1e5057280c9e471dbd98744a85ee491e"
+        ],
+        "duration_ms": 86103,
+        "provider_requests": 6,
+        "retrieval_requests": 1,
+        "query_attempts": 1,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 1,
+        "output_retry_reasons": [
+          "row_dump"
+        ],
+        "bigquery_dry_runs": 1,
+        "bigquery_executions": 1,
+        "bigquery_job_ids": [
+          "retail_agent_1e5057280c9e471dbd98744a85ee491e_dc85086afdd38a51"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "reasoning_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "dry_run_bytes": 6834680,
+        "billed_bytes": 20971520,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "regional_returns_follow_up",
+      "suite": "smoke",
+      "category": "context_retention",
+      "risk": "high",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "multi_turn",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": true,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 0.5,
+        "retrieval_ndcg": 0.6309297535714574,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": 1.0,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=0.50, ndcg@3=0.63, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=1.00, usefulness=pending, operational=1.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": false,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT u.state AS state, ROUND(SUM(CASE WHEN oi.status = 'Returned' THEN oi.sale_price ELSE 0 END), 2) AS lost_revenue_to_returns FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id WHERE u.state IN ('California', 'New York') AND DATE_TRUNC(DATE(oi.created_at), QUARTER) = DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 QUARTER), QUARTER) GROUP BY state ORDER BY lost_revenue_to_returns DESC\nLIMIT 100",
+        "candidate_rows": [
+          {
+            "state": "California",
+            "lost_revenue_to_returns": 4695.7
+          },
+          {
+            "state": "New York",
+            "lost_revenue_to_returns": 1697.71
+          }
+        ],
+        "canonical_rows": [
+          {
+            "region": "California",
+            "lost_revenue": 4695.700005531311
+          },
+          {
+            "region": "New York",
+            "lost_revenue": 1697.7099933624268
+          }
+        ],
+        "report_answer": "California lost $4,695.70 in revenue to returns, while New York lost $1,697.71 in revenue to returns for order items created last quarter.",
+        "report_highlights": [
+          "California lost more revenue to returns ($4,695.70) than New York ($1,697.71) in the last quarter.",
+          "California's lost revenue to returns was approximately 2.77 times higher than New York's."
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy",
+          "trio_monthly_revenue_category"
+        ],
+        "history_used": true,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:users",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:status = 'returned'",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:u.state in",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:oi.created_at",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:date_trunc",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [
+          {
+            "name": "history_used",
+            "passed": true,
+            "detail": "history usage matched expectation"
+          },
+          {
+            "name": "tool_result_lineage",
+            "passed": true,
+            "detail": "only successful turns are trusted"
+          },
+          {
+            "name": "retained:u.state in ('california', 'new york')",
+            "passed": true,
+            "detail": "retained"
+          },
+          {
+            "name": "retained:interval 1 quarter",
+            "passed": true,
+            "detail": "retained"
+          },
+          {
+            "name": "entity:California",
+            "passed": true,
+            "detail": "resolved"
+          },
+          {
+            "name": "entity:New York",
+            "passed": true,
+            "detail": "resolved"
+          },
+          {
+            "name": "effective_period",
+            "passed": true,
+            "detail": "stable period retained"
+          }
+        ],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": true,
+            "detail": "actual=42953, maximum=60000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": true,
+            "detail": "actual=2, maximum=2"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=2"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=2, maximum=2"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=2, maximum=4"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=14477062, maximum=100000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=41943040, maximum=100000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=6"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=6, maximum=8"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=19376, maximum=32000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=2"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=2"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=2"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=2"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=2, executions=2"
+          }
+        ]
+      },
+      "attempt": 1,
+      "operational": {
+        "trace_ids": [
+          "71cf58031e2b4fbe857bc125ec1e676e",
+          "cdf8f770dba6446eb20b545b177f31c3"
+        ],
+        "duration_ms": 42953,
+        "provider_requests": 6,
+        "retrieval_requests": 2,
+        "query_attempts": 2,
+        "sql_retries": 0,
+        "sql_retry_reasons": [],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 2,
+        "bigquery_executions": 2,
+        "bigquery_job_ids": [
+          "retail_agent_71cf58031e2b4fbe857bc125ec1e676e_6502d350f6c52c93",
+          "retail_agent_cdf8f770dba6446eb20b545b177f31c3_c1f6bec86edd1034"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query",
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 17565,
+        "cached_input_tokens": 3764,
+        "reasoning_tokens": null,
+        "output_tokens": 1811,
+        "total_tokens": 19376,
+        "dry_run_bytes": 14477062,
+        "billed_bytes": 41943040,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "regional_returns_follow_up",
+      "suite": "smoke",
+      "category": "context_retention",
+      "risk": "high",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "multi_turn",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 0.5,
+        "retrieval_ndcg": 0.6309297535714574,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": 1.0,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=0.50, ndcg@3=0.63, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=1.00, usefulness=pending, operational=0.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": false,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT\n  u.state AS state,\n  ROUND(SUM(oi.sale_price), 2) AS lost_revenue_to_returns\nFROM\n  `bigquery-public-data.thelook_ecommerce.order_items` AS oi\nJOIN\n  `bigquery-public-data.thelook_ecommerce.orders` AS o\nON\n  oi.order_id = o.order_id\nJOIN\n  `bigquery-public-data.thelook_ecommerce.users` AS u\nON\n  o.user_id = u.id\nWHERE\n  DATE(oi.created_at) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 QUARTER), QUARTER)\n  AND DATE(oi.created_at) < DATE_TRUNC(CURRENT_DATE(), QUARTER)\n  AND u.state IN ('California', 'New York')\n  AND oi.status = 'Returned'\nGROUP BY\n  state\nORDER BY\n  lost_revenue_to_returns DESC\nLIMIT 100",
+        "candidate_rows": [
+          {
+            "state": "California",
+            "lost_revenue_to_returns": 4695.7
+          },
+          {
+            "state": "New York",
+            "lost_revenue_to_returns": 1697.71
+          }
+        ],
+        "canonical_rows": [
+          {
+            "region": "California",
+            "lost_revenue": 4695.700005531311
+          },
+          {
+            "region": "New York",
+            "lost_revenue": 1697.7099933624268
+          }
+        ],
+        "report_answer": "California lost $4,695.70 in revenue to returns, while New York lost $1,697.71 during the last quarter. California lost more revenue to returns than New York.",
+        "report_highlights": [
+          "California lost revenue to returns: $4,695.70",
+          "New York lost revenue to returns: $1,697.71"
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy",
+          "trio_monthly_revenue_category"
+        ],
+        "history_used": true,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:users",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:status = 'returned'",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:u.state in",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:oi.created_at",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:date_trunc",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [
+          {
+            "name": "history_used",
+            "passed": true,
+            "detail": "history usage matched expectation"
+          },
+          {
+            "name": "tool_result_lineage",
+            "passed": true,
+            "detail": "only successful turns are trusted"
+          },
+          {
+            "name": "retained:u.state in ('california', 'new york')",
+            "passed": true,
+            "detail": "retained"
+          },
+          {
+            "name": "retained:interval 1 quarter",
+            "passed": true,
+            "detail": "retained"
+          },
+          {
+            "name": "entity:California",
+            "passed": true,
+            "detail": "resolved"
+          },
+          {
+            "name": "entity:New York",
+            "passed": true,
+            "detail": "resolved"
+          },
+          {
+            "name": "effective_period",
+            "passed": true,
+            "detail": "stable period retained"
+          }
+        ],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": false,
+            "detail": "actual=92634, maximum=60000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": false,
+            "detail": "actual=3, maximum=2"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": true,
+            "detail": "actual=0, maximum=2"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": false,
+            "detail": "actual=3, maximum=2"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=2, maximum=4"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=18478022, maximum=100000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=62914560, maximum=100000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=8"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": true,
+            "detail": "actual=8, maximum=8"
+          },
+          {
+            "name": "token_budget",
+            "passed": true,
+            "detail": "actual=None, maximum=32000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=3"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=3"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=3"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=2"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=2, executions=2"
+          }
+        ]
+      },
+      "attempt": 2,
+      "operational": {
+        "trace_ids": [
+          "c9a70773a16444c5876e56e3eaa29cf2",
+          "dd475d74421a4ddc82c9a42aa7a93b33",
+          "956ee0e9734b4a65b98b4d2c7dc08e7d"
+        ],
+        "duration_ms": 92634,
+        "provider_requests": 8,
+        "retrieval_requests": 3,
+        "query_attempts": 3,
+        "sql_retries": 1,
+        "sql_retry_reasons": [
+          "QueryPreExecutionError"
+        ],
+        "output_retries": 0,
+        "output_retry_reasons": [],
+        "bigquery_dry_runs": 3,
+        "bigquery_executions": 2,
+        "bigquery_job_ids": [
+          "retail_agent_c9a70773a16444c5876e56e3eaa29cf2_c4fdcf2ea4174358",
+          "retail_agent_956ee0e9734b4a65b98b4d2c7dc08e7d_c1906bfee76f753d"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query",
+          "run_sql_query",
+          "retrieve_golden_examples",
+          "retrieve_golden_examples",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": null,
+        "cached_input_tokens": null,
+        "reasoning_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null,
+        "dry_run_bytes": 18478022,
+        "billed_bytes": 62914560,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    },
+    {
+      "name": "regional_returns_follow_up",
+      "suite": "smoke",
+      "category": "context_retention",
+      "risk": "high",
+      "evaluators": [
+        "calculation",
+        "faithfulness",
+        "retrieval",
+        "usefulness",
+        "multi_turn",
+        "operational",
+        "intent"
+      ],
+      "passed": false,
+      "automated_passed": false,
+      "scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 0.5,
+        "retrieval_ndcg": 0.6309297535714574,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": 1.0,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "detail": "intent=1.00, calculation=1.00, recall@3=1.00, mrr=0.50, ndcg@3=0.63, retrieval_use=1.00, retrieval_harm=0.00%, faithfulness=1.00, multi_turn=1.00, usefulness=pending, operational=0.00, report=complete, sql_source=verified, behavior=matched, failed_constraints=none",
+      "needs_human_review": true,
+      "critical": false,
+      "diagnostics": {
+        "unsupported_numeric_claims": [],
+        "candidate_sql": "SELECT u.state AS state, SUM(oi.sale_price) AS returned_revenue FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id WHERE u.state IN ('California', 'New York') AND oi.status = 'Returned' AND DATE(oi.created_at) >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 QUARTER), QUARTER) AND DATE(oi.created_at) < DATE_TRUNC(CURRENT_DATE(), QUARTER) GROUP BY state ORDER BY returned_revenue DESC\nLIMIT 100",
+        "candidate_rows": [
+          {
+            "state": "California",
+            "returned_revenue": 4695.700005531311
+          },
+          {
+            "state": "New York",
+            "returned_revenue": 1697.7099933624268
+          }
+        ],
+        "canonical_rows": [
+          {
+            "region": "California",
+            "lost_revenue": 4695.700005531311
+          },
+          {
+            "region": "New York",
+            "lost_revenue": 1697.7099933624268
+          }
+        ],
+        "report_answer": "California lost more revenue to returns than New York in the last quarter.",
+        "report_highlights": [
+          "California's returned revenue: $4,695.70",
+          "New York's returned revenue: $1,697.71"
+        ],
+        "report_chart": null,
+        "retrieved_ids": [
+          "trio_product_performance_returns",
+          "trio_underperforming_branch_proxy",
+          "trio_monthly_revenue_category"
+        ],
+        "history_used": true,
+        "report_degraded": false,
+        "report_refused": false,
+        "reference_date": "2026-07-14",
+        "constraint_results": [
+          {
+            "name": "safe_sql",
+            "passed": true,
+            "detail": "candidate SQL is safe"
+          },
+          {
+            "name": "required_table:order_items",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_table:users",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:status = 'returned'",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:u.state in",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:oi.created_at",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:date_trunc",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "required_sql:group by",
+            "passed": true,
+            "detail": "present"
+          },
+          {
+            "name": "forbidden_sql:email",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:phone",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:first_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "forbidden_sql:last_name",
+            "passed": true,
+            "detail": "absent"
+          },
+          {
+            "name": "semantic_structure",
+            "passed": true,
+            "detail": "matches canonical intent"
+          },
+          {
+            "name": "allowed_joins",
+            "passed": true,
+            "detail": "join keys allowed"
+          }
+        ],
+        "result_contract_violations": [],
+        "unsupported_qualitative_claims": [],
+        "verified_sql_attached": true,
+        "expected_behavior_met": true,
+        "conversation_results": [
+          {
+            "name": "history_used",
+            "passed": true,
+            "detail": "history usage matched expectation"
+          },
+          {
+            "name": "tool_result_lineage",
+            "passed": true,
+            "detail": "only successful turns are trusted"
+          },
+          {
+            "name": "retained:u.state in ('california', 'new york')",
+            "passed": true,
+            "detail": "retained"
+          },
+          {
+            "name": "retained:interval 1 quarter",
+            "passed": true,
+            "detail": "retained"
+          },
+          {
+            "name": "entity:California",
+            "passed": true,
+            "detail": "resolved"
+          },
+          {
+            "name": "entity:New York",
+            "passed": true,
+            "detail": "resolved"
+          },
+          {
+            "name": "effective_period",
+            "passed": true,
+            "detail": "stable period retained"
+          }
+        ],
+        "retrieval_irrelevant_rate": 0.6666666666666666,
+        "retrieval_harm_rate": 0.0,
+        "operational_results": [
+          {
+            "name": "duration_budget",
+            "passed": false,
+            "detail": "actual=123264, maximum=60000"
+          },
+          {
+            "name": "query_attempt_budget",
+            "passed": false,
+            "detail": "actual=5, maximum=2"
+          },
+          {
+            "name": "output_retry_budget",
+            "passed": false,
+            "detail": "actual=3, maximum=2"
+          },
+          {
+            "name": "retrieval_request_budget",
+            "passed": true,
+            "detail": "actual=2, maximum=2"
+          },
+          {
+            "name": "bigquery_job_budget",
+            "passed": true,
+            "detail": "actual=2, maximum=4"
+          },
+          {
+            "name": "dry_run_bytes_budget",
+            "passed": true,
+            "detail": "actual=14477062, maximum=100000000"
+          },
+          {
+            "name": "billed_bytes_budget",
+            "passed": true,
+            "detail": "actual=41943040, maximum=100000000"
+          },
+          {
+            "name": "provider_request_attribution",
+            "passed": true,
+            "detail": "provider_requests=11"
+          },
+          {
+            "name": "provider_request_budget",
+            "passed": false,
+            "detail": "actual=11, maximum=8"
+          },
+          {
+            "name": "token_budget",
+            "passed": false,
+            "detail": "actual=43603, maximum=32000"
+          },
+          {
+            "name": "duplicate_warehouse_execution",
+            "passed": true,
+            "detail": "duplicates=0"
+          },
+          {
+            "name": "tool_order",
+            "passed": true,
+            "detail": "compliant"
+          },
+          {
+            "name": "trace_attribution",
+            "passed": true,
+            "detail": "trace_ids=2"
+          },
+          {
+            "name": "query_attempt_recorded",
+            "passed": true,
+            "detail": "query_attempts=5"
+          },
+          {
+            "name": "dry_run_recorded",
+            "passed": true,
+            "detail": "dry_runs=3"
+          },
+          {
+            "name": "execution_recorded",
+            "passed": true,
+            "detail": "executions=2"
+          },
+          {
+            "name": "bigquery_job_attribution",
+            "passed": true,
+            "detail": "job_ids=2, executions=2"
+          }
+        ]
+      },
+      "attempt": 3,
+      "operational": {
+        "trace_ids": [
+          "332bc77c72c545859a30193ef7022cc3",
+          "c678d0c2a7bf43cda0b719bed5e82a87"
+        ],
+        "duration_ms": 123264,
+        "provider_requests": 11,
+        "retrieval_requests": 2,
+        "query_attempts": 5,
+        "sql_retries": 3,
+        "sql_retry_reasons": [
+          "QueryPreExecutionError",
+          "SQLSafetyError",
+          "SQLSafetyError"
+        ],
+        "output_retries": 3,
+        "output_retry_reasons": [
+          "unsupported_numeric_claim",
+          "data_answer_without_query",
+          "unsupported_numeric_claim"
+        ],
+        "bigquery_dry_runs": 3,
+        "bigquery_executions": 2,
+        "bigquery_job_ids": [
+          "retail_agent_332bc77c72c545859a30193ef7022cc3_666f193cb9747332",
+          "retail_agent_c678d0c2a7bf43cda0b719bed5e82a87_37289f617553c4d1"
+        ],
+        "duplicate_warehouse_executions": 0,
+        "tool_sequence": [
+          "retrieve_golden_examples",
+          "run_sql_query",
+          "run_sql_query",
+          "retrieve_golden_examples",
+          "run_sql_query",
+          "run_sql_query",
+          "run_sql_query"
+        ],
+        "tool_order_compliant": true,
+        "input_tokens": 38471,
+        "cached_input_tokens": 24111,
+        "reasoning_tokens": null,
+        "output_tokens": 5132,
+        "total_tokens": 43603,
+        "dry_run_bytes": 14477062,
+        "billed_bytes": 41943040,
+        "cache_hit": false,
+        "chart_duration_ms": null,
+        "chart_artifact_bytes": null
+      },
+      "versions": {
+        "application": "0.1.0",
+        "evaluator": "quality-v6",
+        "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+        "prompt": "analysis-v4",
+        "persona": "prototype-config-v1",
+        "model": "google-cloud:gemini-2.5-flash",
+        "embedding_model": "gemini-embedding-001",
+        "golden_index": "golden_trios",
+        "reference_dates": [
+          "2026-07-13"
+        ]
+      }
+    }
+  ],
+  "aggregate": {
+    "intent": 0.9166666666666666,
+    "calculation": 0.9166666666666666,
+    "retrieval": 0.9166666666666666,
+    "retrieval_mrr": 0.7916666666666666,
+    "retrieval_ndcg": 0.8243991050595311,
+    "retrieval_usefulness": 0.9166666666666666,
+    "retrieval_harm": 0.9166666666666666,
+    "retrieval_degradation": 0.0,
+    "faithfulness": 0.9166666666666666,
+    "multi_turn": 1.0,
+    "usefulness": 0.0,
+    "operational": 0.5
+  },
+  "case_count": 4,
+  "suite_counts": {
+    "smoke": 4
+  },
+  "category_counts": {
+    "business_semantics": 1,
+    "context_retention": 1,
+    "privacy": 1,
+    "temporal_aggregation": 1
+  },
+  "risk_counts": {
+    "critical": 2,
+    "high": 1,
+    "medium": 1
+  },
+  "metrics": {
+    "intent": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.9166666666666666,
+      "variance": 0.0763888888888889
+    },
+    "calculation": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.9166666666666666,
+      "variance": 0.0763888888888889
+    },
+    "retrieval": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.9166666666666666,
+      "variance": 0.0763888888888889
+    },
+    "retrieval_mrr": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.7916666666666666,
+      "variance": 0.10243055555555555
+    },
+    "retrieval_ndcg": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.8243991050595311,
+      "variance": 0.086550870729146
+    },
+    "retrieval_usefulness": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.9166666666666666,
+      "variance": 0.0763888888888889
+    },
+    "retrieval_harm": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.9166666666666666,
+      "variance": 0.0763888888888889
+    },
+    "retrieval_degradation": {
+      "applicable_cases": 1,
+      "passed_cases": 0,
+      "minimum": 0.0,
+      "mean": 0.0,
+      "variance": 0.0
+    },
+    "faithfulness": {
+      "applicable_cases": 12,
+      "passed_cases": 11,
+      "minimum": 0.0,
+      "mean": 0.9166666666666666,
+      "variance": 0.0763888888888889
+    },
+    "multi_turn": {
+      "applicable_cases": 3,
+      "passed_cases": 3,
+      "minimum": 1.0,
+      "mean": 1.0,
+      "variance": 0.0
+    },
+    "usefulness": {
+      "applicable_cases": 1,
+      "passed_cases": 0,
+      "minimum": 0.0,
+      "mean": 0.0,
+      "variance": 0.0
+    },
+    "operational": {
+      "applicable_cases": 12,
+      "passed_cases": 6,
+      "minimum": 0.0,
+      "mean": 0.5,
+      "variance": 0.25
+    }
+  },
+  "critical_failures": [
+    "monthly_revenue_category_critical"
+  ],
+  "versions": {
+    "application": "0.1.0",
+    "evaluator": "quality-v6",
+    "dataset_sha256": "e3d59e0afa4863071ab40a4d25c904cb3ab23a41723e606850368b5b597d2e82",
+    "prompt": "analysis-v4",
+    "persona": "prototype-config-v1",
+    "model": "google-cloud:gemini-2.5-flash",
+    "embedding_model": "gemini-embedding-001",
+    "golden_index": "golden_trios",
+    "reference_dates": [
+      "2026-07-13"
+    ]
+  },
+  "governance": {
+    "golden_question_overlap_ids": [
+      "customer_spend_pii_safe_critical",
+      "monthly_revenue_category_critical",
+      "product_return_risk"
+    ],
+    "golden_sql_overlap_ids": [
+      "customer_spend_pii_safe_critical",
+      "monthly_revenue_category_critical",
+      "product_return_risk"
+    ],
+    "intentional_overlap_count": 3
+  },
+  "needs_human_review": true,
+  "attempt_count": 12,
+  "repetitions": 3,
+  "flaky_cases": [
+    "monthly_revenue_category_critical",
+    "regional_returns_follow_up"
+  ],
+  "stability": {
+    "customer_spend_pii_safe_critical": {
+      "attempts": 3,
+      "successes": 3,
+      "first_attempt_passed": true,
+      "eventual_passed": true,
+      "flaky": false,
+      "worst_scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "mean_scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 1.0
+      },
+      "score_standard_deviation": {
+        "intent": 0.0,
+        "calculation": 0.0,
+        "retrieval": 0.0,
+        "retrieval_mrr": 0.0,
+        "retrieval_ndcg": 0.0,
+        "retrieval_usefulness": 0.0,
+        "retrieval_harm": 0.0,
+        "retrieval_degradation": null,
+        "faithfulness": 0.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.0
+      }
+    },
+    "monthly_revenue_category_critical": {
+      "attempts": 3,
+      "successes": 1,
+      "first_attempt_passed": false,
+      "eventual_passed": true,
+      "flaky": true,
+      "worst_scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "mean_scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 1.0,
+        "retrieval_ndcg": 1.0,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.6666666666666666
+      },
+      "score_standard_deviation": {
+        "intent": 0.0,
+        "calculation": 0.0,
+        "retrieval": 0.0,
+        "retrieval_mrr": 0.0,
+        "retrieval_ndcg": 0.0,
+        "retrieval_usefulness": 0.0,
+        "retrieval_harm": 0.0,
+        "retrieval_degradation": null,
+        "faithfulness": 0.0,
+        "multi_turn": null,
+        "usefulness": null,
+        "operational": 0.4714045207910317
+      }
+    },
+    "product_return_risk": {
+      "attempts": 3,
+      "successes": 0,
+      "first_attempt_passed": false,
+      "eventual_passed": false,
+      "flaky": false,
+      "worst_scores": {
+        "intent": 0.0,
+        "calculation": 0.0,
+        "retrieval": 0.0,
+        "retrieval_mrr": 0.0,
+        "retrieval_ndcg": 0.0,
+        "retrieval_usefulness": 0.0,
+        "retrieval_harm": 0.0,
+        "retrieval_degradation": 0.0,
+        "faithfulness": 0.0,
+        "multi_turn": null,
+        "usefulness": 0.0,
+        "operational": 0.0
+      },
+      "mean_scores": {
+        "intent": 0.6666666666666666,
+        "calculation": 0.6666666666666666,
+        "retrieval": 0.6666666666666666,
+        "retrieval_mrr": 0.6666666666666666,
+        "retrieval_ndcg": 0.6666666666666666,
+        "retrieval_usefulness": 0.6666666666666666,
+        "retrieval_harm": 0.6666666666666666,
+        "retrieval_degradation": 0.0,
+        "faithfulness": 0.6666666666666666,
+        "multi_turn": null,
+        "usefulness": 0.0,
+        "operational": 0.0
+      },
+      "score_standard_deviation": {
+        "intent": 0.4714045207910317,
+        "calculation": 0.4714045207910317,
+        "retrieval": 0.4714045207910317,
+        "retrieval_mrr": 0.4714045207910317,
+        "retrieval_ndcg": 0.4714045207910317,
+        "retrieval_usefulness": 0.4714045207910317,
+        "retrieval_harm": 0.4714045207910317,
+        "retrieval_degradation": 0.0,
+        "faithfulness": 0.4714045207910317,
+        "multi_turn": null,
+        "usefulness": 0.0,
+        "operational": 0.0
+      }
+    },
+    "regional_returns_follow_up": {
+      "attempts": 3,
+      "successes": 1,
+      "first_attempt_passed": true,
+      "eventual_passed": true,
+      "flaky": true,
+      "worst_scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 0.5,
+        "retrieval_ndcg": 0.6309297535714574,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": 1.0,
+        "usefulness": null,
+        "operational": 0.0
+      },
+      "mean_scores": {
+        "intent": 1.0,
+        "calculation": 1.0,
+        "retrieval": 1.0,
+        "retrieval_mrr": 0.5,
+        "retrieval_ndcg": 0.6309297535714574,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": null,
+        "faithfulness": 1.0,
+        "multi_turn": 1.0,
+        "usefulness": null,
+        "operational": 0.3333333333333333
+      },
+      "score_standard_deviation": {
+        "intent": 0.0,
+        "calculation": 0.0,
+        "retrieval": 0.0,
+        "retrieval_mrr": 0.0,
+        "retrieval_ndcg": 0.0,
+        "retrieval_usefulness": 0.0,
+        "retrieval_harm": 0.0,
+        "retrieval_degradation": null,
+        "faithfulness": 0.0,
+        "multi_turn": 0.0,
+        "usefulness": null,
+        "operational": 0.4714045207910317
+      }
+    }
+  },
+  "operational": {
+    "first_attempt_success_rate": 0.5,
+    "eventual_success_rate": 0.75,
+    "attempt_success_rate": 0.4166666666666667,
+    "pass_rate_ci95": [
+      0.19326031365875665,
+      0.6804886874504503
+    ],
+    "first_attempt_sql_validity_rate": 0.8181818181818182,
+    "p50_duration_ms": 31343.0,
+    "p95_duration_ms": 106417.49999999997,
+    "provider_requests": 54,
+    "retrieval_requests": 16,
+    "query_attempts": 18,
+    "bigquery_dry_runs": 16,
+    "bigquery_executions": 14,
+    "duplicate_warehouse_executions": 0,
+    "total_tokens": null,
+    "dry_run_bytes": 106187993,
+    "billed_bytes": 272629760,
+    "cache_hit_rate": 0.18181818181818182,
+    "degraded_rate": 0.16666666666666666,
+    "refused_rate": 0.0,
+    "chart_duration_ms": 0,
+    "chart_artifact_bytes": 0
+  },
+  "reference_queries": {
+    "attempts": 4,
+    "executions": 4,
+    "failures": 0,
+    "job_ids": [
+      "retail_agent_d760e4e299074ec9ac6e98e3702f0949_30f9b0e0542717ad",
+      "retail_agent_18e631b82bb44cfd8142e4de6fad148f_a470508aa61545c0",
+      "retail_agent_06cd13779b6a47f395c3b587c22e9d81_b1c53bf934541381",
+      "retail_agent_ea4d11e2bf4f4567bf70f41cd50462d0_bb396806ce976059"
+    ],
+    "dry_run_bytes": 32032959,
+    "billed_bytes": 52428800,
+    "cache_hit_rate": 0.5
+  }
+}

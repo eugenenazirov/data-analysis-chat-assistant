@@ -1,97 +1,41 @@
 # Verification Record
 
-This file records reproducible project-level evidence without machine-specific
-account names, project IDs, tokens, or local credential paths. Run the exact
-current gates from `docs/qa.md`; credentialed results are environment-dependent
-and should be stored as workflow artifacts rather than committed secrets.
+The current dated evidence is:
 
-## Current Offline Baseline
+- [Executive evaluation](../reports/EXECUTIVE_EVALUATION_2026-07-14.md)
+- [Testing report](../reports/TESTING_REPORT_2026-07-14.md)
+- [Machine-readable evaluation evidence](../reports/evaluation/2026-07-14/)
+
+## Current Result
 
 Verified on 2026-07-14 with Python 3.12 and uv 0.10.8:
 
 | Gate | Result |
 |---|---|
-| Lockfile and environment consistency | Pass |
-| Ruff | Pass |
-| Pytest | 229 passed |
-| Branch-aware runtime coverage | 89.81% (85% gate) |
-| Guardrail evaluation | 10/10 passed |
-| Answer-quality replay | 4/4 cases passed |
-| Credentialed live automated quality | 4/4 cases passed |
-| Runtime image excludes `evals/` and `pydantic-evals` | Pass |
-| Evaluation image guardrails and replay | Pass |
-
-The replay aggregate met all release thresholds: SQL intent, canonical
-calculation, retrieval recall, MRR, numeric faithfulness, multi-turn resolution,
-critical-case pass rate, and automated pass rate were 1.0; mean analyst
-usefulness was 0.9 on the normalized scale.
-
-## Runtime And Chart Verification
-
-Credential-free tests prove:
-
-- model-selected retrieval and SQL paths through PydanticAI `TestModel` and
-  `FunctionModel`;
-- Qdrant degradation, provider failures before and after SQL, bounded output
-  retries, and non-retryable unknown warehouse outcomes;
-- chart-tool invisibility before verified SQL and availability afterward;
-- successful PNG and SVG generation, fixed data binding, timeout and process
-  cleanup, environment minimization, size limits, output validation, and CLI
-  artifact rendering;
-- runtime/evaluation dependency and image separation.
-
-The Compose application mounts `/app/artifacts` in the named
-`chart_artifacts` volume so generated charts survive one-shot `docker compose
-run --rm` containers.
-
-## Credentialed Live Path
-
-The BigQuery smoke command passed on 2026-07-14 against
-`bigquery-public-data.thelook_ecommerce`: the dry run processed 4,348,656 bytes
-and the bounded aggregate returned one row.
-
-The four-case Gemini/BigQuery automated quality gate also passed on 2026-07-14.
-Every case scored 1.0 for SQL intent, canonical calculation, Retrieval Recall@3,
-MRR, numeric faithfulness, and multi-turn resolution; every report was complete
-and attached the verified SQL. Analyst usefulness remains pending, so this is a
-current regression pass rather than release approval.
-
-Current smoke command:
-
-```bash
-docker compose run --rm app bq-smoke
-```
-
-Current live-quality procedure:
-
-```bash
-docker compose up -d qdrant
-docker compose run --rm app index-golden --recreate
-QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
-  --mode live \
-  --automated-only \
-  --output artifacts/quality-eval-live.json
-```
-
-For release approval, rerun with analyst scores:
-
-```bash
-QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
-  --mode live \
-  --human-scores path/to/human-scores.json \
-  --output artifacts/quality-eval-live.json
-```
-
-The scheduled/manual workflow uses workload identity federation, uploads the
-JSON report, and requires the analyst-scored run for release. Local Application
-Default Credentials are acceptable for an explicit developer smoke test but
-must never be copied into the repository or container image.
+| Lockfile, environment, and Ruff | Pass |
+| Pytest | 320 passed |
+| Branch-aware runtime coverage | 90.84% (85% gate) |
+| Fixture provenance and dataset governance | Pass |
+| Replay evaluation | 67/67 automated pass across six partitions |
+| BigQuery smoke under 50 MB cap | Pass; 4,356,216 dry-run bytes, one row |
+| Runtime/evaluation image boundary | Pass |
+| Three-repetition live canary | Fail; 5/12 attempts passed, two flaky cases |
+| Five-repetition release candidate | Not run after failed canary |
+| Independent analyst review | Pending |
+| Release decision | **Blocked** |
 
 ## Interpretation
 
-- Offline checks are deterministic release prerequisites.
-- `--automated-only` live mode is a regression signal, not final approval.
-- A credentialed release rerun must use current data, current model/index/prompt
-  versions, and current analyst scores.
-- A live dependency or credential failure must be reported as an environment
-  limitation; it must not be rewritten as a passing application result.
+The deterministic application/evaluation gates are healthy, and the live run
+preserved safe boundaries: canonical queries succeeded, completed analytical
+comparisons were correct and faithful, and duplicate warehouse executions stayed
+at zero. The live candidate still failed reliability and latency budgets because
+of provider availability, SQL/output retry variance, and degraded responses.
+
+`--automated-only` is a regression signal, never release approval. The computed
+decision also requires five clean live repetitions, no flaky case, two
+independent reviewers, human dimension floors, and blinded baseline
+noninferiority. See the executive report for the exact blockers and next action.
+
+No machine-specific account name, project ID, token, credential, or local
+credential path is committed in these narrative reports.
