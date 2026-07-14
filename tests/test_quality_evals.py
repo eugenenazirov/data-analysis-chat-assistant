@@ -28,7 +28,7 @@ def _faithfulness_score(report, rows, sql, tolerance):
     return assess_report_evidence(report, rows, sql, tolerance).score
 
 
-def test_quality_replay_suite_meets_release_gates(test_config):
+def test_smoke_replay_suite_remains_comparable(test_config):
     result = run_quality_replay_evals(test_config, CASES_PATH)
 
     assert result.passed is True
@@ -40,6 +40,14 @@ def test_quality_replay_suite_meets_release_gates(test_config):
     assert result.aggregate.multi_turn == 1
     assert result.aggregate.usefulness is not None
     assert result.aggregate.usefulness >= 0.8
+    assert result.case_count == 4
+    assert result.suite_counts == {"smoke": 4}
+    assert result.metrics["multi_turn"].applicable_cases == 1
+    assert result.metrics["multi_turn"].passed_cases == 1
+    assert result.results[0].scores.multi_turn is None
+    assert result.results[-1].scores.multi_turn == 1
+    assert result.versions.dataset_sha256 != "unknown"
+    assert result.versions.prompt == "analysis-v3"
 
 
 def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
@@ -381,6 +389,43 @@ def test_quality_dataset_contains_multi_turn_and_critical_cases():
     assert any(case.history for case in cases)
     assert any(case.critical for case in cases)
     assert all(case.canonical_sql for case in cases)
+    assert all(case.suite == "smoke" for case in cases)
+    assert all(case.title and case.category for case in cases)
+    assert all(case.reference_date == date(2026, 7, 13) for case in cases)
+
+
+def test_quality_dataset_rejects_duplicate_case_ids(tmp_path):
+    case = load_quality_cases(CASES_PATH)[0]
+    path = tmp_path / "duplicates.jsonl"
+    path.write_text(f"{case.model_dump_json()}\n{case.model_dump_json()}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Duplicate evaluation case IDs"):
+        load_quality_cases(path)
+
+
+@pytest.mark.parametrize(
+    "contents,error",
+    [
+        pytest.param("", "dataset is empty", id="empty"),
+        pytest.param("not-json\n", "Invalid evaluation case", id="malformed-json"),
+    ],
+)
+def test_quality_dataset_fails_closed(tmp_path, contents, error):
+    path = tmp_path / "invalid.jsonl"
+    path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        load_quality_cases(path)
+
+
+def test_quality_dataset_rejects_unknown_fields(tmp_path):
+    raw = json.loads(load_quality_cases(CASES_PATH)[0].model_dump_json())
+    raw["unexpected"] = True
+    path = tmp_path / "unknown-field.jsonl"
+    path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        load_quality_cases(path)
 
 
 class CanonicalWarehouse:

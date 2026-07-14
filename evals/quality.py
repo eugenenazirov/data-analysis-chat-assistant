@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -8,11 +9,11 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from statistics import mean
+from statistics import mean, pvariance
 from typing import Any, Literal
 
 import sqlglot
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
@@ -23,15 +24,51 @@ from retail_agent.domain.policies.report_evidence import (
     assess_report_evidence,
     report_uses_verified_sql,
 )
+from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger, new_trace_id
 from retail_agent.ports import AnalysisAgentPort
 from retail_agent.sql_guard import normalized_table_aliases, validate_and_prepare_sql
 
 type QualityMode = Literal["replay", "live"]
+type EvaluationSuite = Literal[
+    "smoke", "development", "regression", "release_holdout", "adversarial", "multi_turn"
+]
+type EvaluationRisk = Literal["low", "medium", "high", "critical"]
+type ExpectedBehavior = Literal["answer", "clarify", "refuse", "degrade"]
+type EvaluatorName = Literal[
+    "intent",
+    "calculation",
+    "retrieval",
+    "faithfulness",
+    "multi_turn",
+    "usefulness",
+]
+type ScoreName = Literal[
+    "intent",
+    "calculation",
+    "retrieval",
+    "retrieval_mrr",
+    "faithfulness",
+    "multi_turn",
+    "usefulness",
+]
+
+EVALUATOR_VERSION = "quality-v2"
+_AUTOMATED_EVALUATORS: tuple[EvaluatorName, ...] = (
+    "intent",
+    "calculation",
+    "retrieval",
+    "faithfulness",
+    "multi_turn",
+)
 
 
-class JoinKey(BaseModel):
+class EvaluationModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class JoinKey(EvaluationModel):
     left: str
     right: str
 
@@ -39,7 +76,7 @@ class JoinKey(BaseModel):
         return tuple(sorted((self.left.lower(), self.right.lower())))
 
 
-class QualityExpectations(BaseModel):
+class QualityExpectations(EvaluationModel):
     required_tables: list[str] = Field(default_factory=list)
     allowed_joins: list[JoinKey] = Field(default_factory=list)
     required_sql_fragments: list[str] = Field(default_factory=list)
@@ -48,7 +85,7 @@ class QualityExpectations(BaseModel):
     numeric_tolerance: float = 0.001
 
 
-class QualityReplay(BaseModel):
+class QualityReplay(EvaluationModel):
     candidate_sql: str
     candidate_rows: list[dict[str, Any]]
     canonical_rows: list[dict[str, Any]]
@@ -59,28 +96,54 @@ class QualityReplay(BaseModel):
     reference_date: date | None = None
 
 
-class QualityEvalCase(BaseModel):
+class QualityEvalCase(EvaluationModel):
     id: str
+    title: str
+    suite: EvaluationSuite
+    category: str
+    risk: EvaluationRisk
     question: str
     user_id: str = "manager_a"
     history: list[str] = Field(default_factory=list)
+    reference_date: date
+    expected_behavior: ExpectedBehavior
+    modes: set[QualityMode]
+    evaluators: set[EvaluatorName]
     canonical_sql: str
     expectations: QualityExpectations
     replay: QualityReplay
     critical: bool = False
 
+    @model_validator(mode="after")
+    def validate_contract(self) -> QualityEvalCase:
+        if not re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", self.id):
+            raise ValueError("case id must be stable snake_case")
+        if not self.title.strip() or not self.category.strip():
+            raise ValueError("title and category must not be blank")
+        if "replay" not in self.modes:
+            raise ValueError("every committed case must support replay mode")
+        if "multi_turn" in self.evaluators and not self.history:
+            raise ValueError("multi_turn evaluator requires conversation history")
+        if self.history and "multi_turn" not in self.evaluators:
+            raise ValueError("conversation history requires the multi_turn evaluator")
+        if self.critical and self.risk not in {"high", "critical"}:
+            raise ValueError("critical cases must declare high or critical risk")
+        if self.replay.reference_date not in {None, self.reference_date}:
+            raise ValueError("replay reference date must match the case reference date")
+        return self
 
-class QualityScores(BaseModel):
-    intent: float
-    calculation: float
-    retrieval: float
-    retrieval_mrr: float
-    faithfulness: float
-    multi_turn: float
+
+class QualityScores(EvaluationModel):
+    intent: float | None
+    calculation: float | None
+    retrieval: float | None
+    retrieval_mrr: float | None
+    faithfulness: float | None
+    multi_turn: float | None
     usefulness: float | None
 
 
-class QualityDiagnostics(BaseModel):
+class QualityDiagnostics(EvaluationModel):
     unsupported_numeric_claims: list[float] = Field(default_factory=list)
     candidate_sql: str
     candidate_rows: list[dict[str, Any]]
@@ -94,8 +157,12 @@ class QualityDiagnostics(BaseModel):
     reference_date: date | None = None
 
 
-class QualityEvalResult(BaseModel):
+class QualityEvalResult(EvaluationModel):
     name: str
+    suite: EvaluationSuite
+    category: str
+    risk: EvaluationRisk
+    evaluators: set[EvaluatorName]
     passed: bool
     automated_passed: bool
     scores: QualityScores
@@ -105,28 +172,71 @@ class QualityEvalResult(BaseModel):
     diagnostics: QualityDiagnostics | None = None
 
 
-class QualitySuiteResult(BaseModel):
+class MetricSummary(EvaluationModel):
+    applicable_cases: int
+    passed_cases: int
+    minimum: float | None
+    mean: float | None
+    variance: float | None
+
+
+class EvaluationVersions(EvaluationModel):
+    application: str = "0.1.0"
+    evaluator: str = EVALUATOR_VERSION
+    dataset_sha256: str = "unknown"
+    prompt: str = "unknown"
+    persona: str = "unknown"
+    model: str = "unknown"
+    embedding_model: str = "unknown"
+    golden_index: str = "unknown"
+    reference_dates: list[date] = Field(default_factory=list)
+
+
+class QualitySuiteResult(EvaluationModel):
     mode: QualityMode
     passed: bool
     automated_passed: bool
     results: list[QualityEvalResult]
     aggregate: QualityScores
+    case_count: int
+    suite_counts: dict[str, int] = Field(default_factory=dict)
+    category_counts: dict[str, int] = Field(default_factory=dict)
+    risk_counts: dict[str, int] = Field(default_factory=dict)
+    metrics: dict[ScoreName, MetricSummary] = Field(default_factory=dict)
+    critical_failures: list[str] = Field(default_factory=list)
+    versions: EvaluationVersions = Field(default_factory=EvaluationVersions)
     needs_human_review: bool = False
 
 
 def load_quality_cases(path: Path) -> list[QualityEvalCase]:
     cases: list[QualityEvalCase] = []
     with path.open(encoding="utf-8") as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             if line.strip():
-                cases.append(QualityEvalCase.model_validate(json.loads(line)))
+                try:
+                    cases.append(QualityEvalCase.model_validate_json(line))
+                except (ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"Invalid evaluation case at {path}:{line_number}: {exc}"
+                    ) from exc
+    if not cases:
+        raise ValueError(f"Evaluation dataset is empty: {path}")
+    duplicate_ids = sorted(
+        case_id for case_id, count in Counter(c.id for c in cases).items() if count > 1
+    )
+    if duplicate_ids:
+        raise ValueError(f"Duplicate evaluation case IDs: {', '.join(duplicate_ids)}")
     return cases
 
 
 def run_quality_replay_evals(config: AgentConfig, path: Path) -> QualitySuiteResult:
     cases = load_quality_cases(path)
     results = [evaluate_quality_case(config, case, case.replay) for case in cases]
-    return summarize_quality_results("replay", results)
+    return summarize_quality_results(
+        "replay",
+        results,
+        versions=_evaluation_versions(config, path, cases),
+    )
 
 
 async def run_quality_live_evals(
@@ -142,7 +252,8 @@ async def run_quality_live_evals(
     retry_delay_seconds: float = 5.0,
 ) -> QualitySuiteResult:
     results: list[QualityEvalResult] = []
-    for case in load_quality_cases(path):
+    cases = load_quality_cases(path)
+    for case in cases:
         conversation = ConversationState()
         history_succeeded = True
         for question in case.history:
@@ -165,7 +276,7 @@ async def run_quality_live_evals(
 
         if not history_succeeded:
             results.append(
-                _failed_live_result(case.id, "history turn failed", critical=case.critical)
+                _failed_live_result(case, "history turn failed")
             )
             continue
 
@@ -183,7 +294,7 @@ async def run_quality_live_evals(
         )
         if isinstance(turn.response, AgentFailure) or turn.query_result is None:
             results.append(
-                _failed_live_result(case.id, "candidate agent run failed", critical=case.critical)
+                _failed_live_result(case, "candidate agent run failed")
             )
             continue
 
@@ -191,11 +302,7 @@ async def run_quality_live_evals(
             canonical = bigquery.execute(case.canonical_sql, new_trace_id())
         except Exception as exc:
             results.append(
-                _failed_live_result(
-                    case.id,
-                    f"canonical query failed: {exc.__class__.__name__}",
-                    critical=case.critical,
-                )
+                _failed_live_result(case, f"canonical query failed: {exc.__class__.__name__}")
             )
             continue
 
@@ -205,13 +312,17 @@ async def run_quality_live_evals(
             canonical_rows=canonical.rows,
             retrieved_ids=list(turn.retrieved_trio_ids),
             report=turn.response,
-            history_used=not case.history or bool(conversation.completed_turns),
+            history_used=bool(case.history and conversation.completed_turns),
             usefulness_score=(human_scores or {}).get(case.id),
-            reference_date=turn.reference_date,
+            reference_date=turn.reference_date or case.reference_date,
         )
         results.append(evaluate_quality_case(config, case, replay))
 
-    return summarize_quality_results("live", results)
+    return summarize_quality_results(
+        "live",
+        results,
+        versions=_evaluation_versions(config, path, cases),
+    )
 
 
 async def _run_live_turn(
@@ -255,19 +366,29 @@ async def _run_live_turn(
 def evaluate_quality_case(
     config: AgentConfig, case: QualityEvalCase, replay: QualityReplay
 ) -> QualityEvalResult:
-    intent = _intent_score(
-        config,
-        replay.candidate_sql,
-        case.canonical_sql,
-        case.expectations,
+    intent = (
+        _intent_score(
+            config,
+            replay.candidate_sql,
+            case.canonical_sql,
+            case.expectations,
+        )
+        if "intent" in case.evaluators
+        else None
     )
-    calculation = _row_score(
-        replay.candidate_rows,
-        replay.canonical_rows,
-        case.expectations.numeric_tolerance,
+    calculation = (
+        _row_score(
+            replay.candidate_rows,
+            replay.canonical_rows,
+            case.expectations.numeric_tolerance,
+        )
+        if "calculation" in case.evaluators
+        else None
     )
-    retrieval, retrieval_mrr = _retrieval_scores(
-        replay.retrieved_ids, case.expectations.expected_retrieval_ids
+    retrieval, retrieval_mrr = (
+        _retrieval_scores(replay.retrieved_ids, case.expectations.expected_retrieval_ids)
+        if "retrieval" in case.evaluators
+        else (None, None)
     )
     evidence = assess_report_evidence(
         replay.report,
@@ -276,27 +397,37 @@ def evaluate_quality_case(
         case.expectations.numeric_tolerance,
         reference_date=replay.reference_date,
     )
-    faithfulness = evidence.score
+    faithfulness = evidence.score if "faithfulness" in case.evaluators else None
     unsupported_claims = list(evidence.unsupported_numeric_claims)
-    multi_turn = 1.0 if not case.history else 1.0 if replay.history_used and intent == 1.0 else 0.0
-    usefulness = replay.usefulness_score / 5 if replay.usefulness_score is not None else None
-    needs_human_review = usefulness is None
+    multi_turn = (
+        1.0 if replay.history_used and intent == 1.0 else 0.0
+    ) if "multi_turn" in case.evaluators else None
+    usefulness = (
+        replay.usefulness_score / 5
+        if "usefulness" in case.evaluators and replay.usefulness_score is not None
+        else None
+    )
+    needs_human_review = "usefulness" in case.evaluators and usefulness is None
     executed_sql_attached = report_uses_verified_sql(
         replay.report,
         replay.candidate_sql,
     )
     automated_passed = (
-        intent == 1.0
-        and calculation >= 0.95
-        and retrieval >= 0.9
-        and retrieval_mrr >= 1 / 3
-        and faithfulness == 1.0
-        and multi_turn == 1.0
+        _applicable_score_passes("intent", intent)
+        and _applicable_score_passes("calculation", calculation)
+        and _applicable_score_passes("retrieval", retrieval)
+        and _applicable_score_passes("retrieval_mrr", retrieval_mrr)
+        and _applicable_score_passes("faithfulness", faithfulness)
+        and _applicable_score_passes("multi_turn", multi_turn)
         and executed_sql_attached
         and not replay.report.degraded
         and not replay.report.refused
     )
-    passed = automated_passed and usefulness is not None and usefulness >= 0.6
+    passed = (
+        automated_passed
+        and _applicable_score_passes("usefulness", usefulness)
+        and not needs_human_review
+    )
     scores = QualityScores(
         intent=intent,
         calculation=calculation,
@@ -306,20 +437,30 @@ def evaluate_quality_case(
         multi_turn=multi_turn,
         usefulness=usefulness,
     )
-    usefulness_detail = f"{usefulness:.2f}" if usefulness is not None else "pending"
+    usefulness_detail = (
+        f"{usefulness:.2f}"
+        if usefulness is not None
+        else "pending"
+        if "usefulness" in case.evaluators
+        else "n/a"
+    )
     report_status = (
         "degraded" if replay.report.degraded else "refused" if replay.report.refused else "complete"
     )
     detail = (
-        f"intent={intent:.2f}, calculation={calculation:.2f}, "
-        f"recall@3={retrieval:.2f}, mrr={retrieval_mrr:.2f}, "
-        f"faithfulness={faithfulness:.2f}, "
-        f"multi_turn={multi_turn:.2f}, usefulness={usefulness_detail}, "
+        f"intent={_format_score(intent)}, calculation={_format_score(calculation)}, "
+        f"recall@3={_format_score(retrieval)}, mrr={_format_score(retrieval_mrr)}, "
+        f"faithfulness={_format_score(faithfulness)}, "
+        f"multi_turn={_format_score(multi_turn)}, usefulness={usefulness_detail}, "
         f"report={report_status}, "
         f"sql_source={'verified' if executed_sql_attached else 'unverified'}"
     )
     return QualityEvalResult(
         name=case.id,
+        suite=case.suite,
+        category=case.category,
+        risk=case.risk,
+        evaluators=case.evaluators,
         passed=passed,
         automated_passed=automated_passed,
         scores=scores,
@@ -343,7 +484,10 @@ def evaluate_quality_case(
 
 
 def summarize_quality_results(
-    mode: QualityMode, results: list[QualityEvalResult]
+    mode: QualityMode,
+    results: list[QualityEvalResult],
+    *,
+    versions: EvaluationVersions | None = None,
 ) -> QualitySuiteResult:
     if not results:
         return QualitySuiteResult(
@@ -352,44 +496,44 @@ def summarize_quality_results(
             automated_passed=False,
             results=[],
             aggregate=_zero_scores(),
+            case_count=0,
+            versions=versions or EvaluationVersions(),
             needs_human_review=False,
         )
 
-    usefulness_scores = [
-        result.scores.usefulness for result in results if result.scores.usefulness is not None
-    ]
     aggregate = QualityScores(
-        intent=mean(result.scores.intent for result in results),
-        calculation=mean(result.scores.calculation for result in results),
-        retrieval=mean(result.scores.retrieval for result in results),
-        retrieval_mrr=mean(result.scores.retrieval_mrr for result in results),
-        faithfulness=mean(result.scores.faithfulness for result in results),
-        multi_turn=mean(result.scores.multi_turn for result in results),
-        usefulness=mean(usefulness_scores) if len(usefulness_scores) == len(results) else None,
+        **{
+            score_name: _applicable_mean(results, score_name)
+            for score_name in QualityScores.model_fields
+        }
     )
     needs_human_review = any(result.needs_human_review for result in results)
-    automated_passed = (
-        aggregate.intent >= 0.95
-        and aggregate.calculation >= 0.95
-        and aggregate.retrieval >= 0.9
-        and aggregate.retrieval_mrr >= 0.8
-        and aggregate.faithfulness == 1.0
-        and aggregate.multi_turn >= 0.9
-        and all(result.automated_passed for result in results)
-    )
+    automated_passed = all(result.automated_passed for result in results)
     passed = (
         automated_passed
-        and aggregate.usefulness is not None
-        and aggregate.usefulness >= 0.8
+        and _applicable_score_passes("usefulness", aggregate.usefulness)
         and not needs_human_review
         and all(result.passed for result in results)
     )
+    score_summaries = {
+        score_name: _metric_summary(results, score_name)
+        for score_name in QualityScores.model_fields
+    }
     return QualitySuiteResult(
         mode=mode,
         passed=passed,
         automated_passed=automated_passed,
         results=results,
         aggregate=aggregate,
+        case_count=len(results),
+        suite_counts=dict(sorted(Counter(result.suite for result in results).items())),
+        category_counts=dict(sorted(Counter(result.category for result in results).items())),
+        risk_counts=dict(sorted(Counter(result.risk for result in results).items())),
+        metrics=score_summaries,
+        critical_failures=[
+            result.name for result in results if result.critical and not result.automated_passed
+        ],
+        versions=versions or EvaluationVersions(),
         needs_human_review=needs_human_review,
     )
 
@@ -528,27 +672,117 @@ def _retrieval_scores(retrieved: list[str], expected: list[str]) -> tuple[float,
     return recall, mrr
 
 
-def _failed_live_result(name: str, detail: str, *, critical: bool = False) -> QualityEvalResult:
+def _failed_live_result(case: QualityEvalCase, detail: str) -> QualityEvalResult:
     return QualityEvalResult(
-        name=name,
+        name=case.id,
+        suite=case.suite,
+        category=case.category,
+        risk=case.risk,
+        evaluators=case.evaluators,
         passed=False,
         automated_passed=False,
-        scores=_zero_scores(),
+        scores=QualityScores(
+            **{
+                score_name: 0.0
+                if _score_evaluator(score_name) in case.evaluators
+                else None
+                for score_name in QualityScores.model_fields
+            }
+        ),
         detail=detail,
         needs_human_review=False,
-        critical=critical,
+        critical=case.critical,
     )
 
 
 def _zero_scores() -> QualityScores:
     return QualityScores(
-        intent=0,
-        calculation=0,
-        retrieval=0,
-        retrieval_mrr=0,
-        faithfulness=0,
-        multi_turn=0,
+        intent=None,
+        calculation=None,
+        retrieval=None,
+        retrieval_mrr=None,
+        faithfulness=None,
+        multi_turn=None,
         usefulness=None,
+    )
+
+
+def _format_score(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def _score_evaluator(score_name: str) -> EvaluatorName:
+    return "retrieval" if score_name == "retrieval_mrr" else score_name  # type: ignore[return-value]
+
+
+def _applicable_score_passes(score_name: ScoreName, value: float | None) -> bool:
+    if value is None:
+        return True
+    thresholds: dict[ScoreName, float] = {
+        "intent": 1.0,
+        "calculation": 0.95,
+        "retrieval": 0.9,
+        "retrieval_mrr": 1 / 3,
+        "faithfulness": 1.0,
+        "multi_turn": 1.0,
+        "usefulness": 0.6,
+    }
+    return value >= thresholds[score_name]
+
+
+def _applicable_results(
+    results: list[QualityEvalResult], score_name: str
+) -> list[QualityEvalResult]:
+    evaluator = _score_evaluator(score_name)
+    return [result for result in results if evaluator in result.evaluators]
+
+
+def _applicable_mean(results: list[QualityEvalResult], score_name: str) -> float | None:
+    values = [
+        value
+        for result in _applicable_results(results, score_name)
+        if (value := getattr(result.scores, score_name)) is not None
+    ]
+    return mean(values) if values else None
+
+
+def _metric_summary(
+    results: list[QualityEvalResult], score_name: str
+) -> MetricSummary:
+    applicable = _applicable_results(results, score_name)
+    values = [
+        value
+        for result in applicable
+        if (value := getattr(result.scores, score_name)) is not None
+    ]
+    return MetricSummary(
+        applicable_cases=len(applicable),
+        passed_cases=sum(
+            _applicable_score_passes(score_name, value)  # type: ignore[arg-type]
+            for value in values
+        ),
+        minimum=min(values) if values else None,
+        mean=mean(values) if values else None,
+        variance=pvariance(values) if len(values) > 1 else 0.0 if values else None,
+    )
+
+
+def _evaluation_versions(
+    config: AgentConfig,
+    path: Path,
+    cases: list[QualityEvalCase],
+) -> EvaluationVersions:
+    from retail_agent import __version__
+
+    return EvaluationVersions(
+        application=__version__,
+        dataset_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        prompt=build_analysis_prompt().version,
+        persona=config.persona_version,
+        model=config.model.llm_model,
+        embedding_model=config.model.embedding_model,
+        golden_index=config.retrieval.collection,
+        reference_dates=sorted({case.reference_date for case in cases}),
     )
 
 
