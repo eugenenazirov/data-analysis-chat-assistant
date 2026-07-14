@@ -490,7 +490,6 @@ def test_exhausted_warehouse_tool_failure_keeps_retryable_classification(test_co
 @pytest.mark.parametrize(
     ("effect", "failure_code", "retryable"),
     [
-        (QueryResult(sql="SELECT 1", rows=[], total_rows=0), "retry_exhausted", False),
         (QueryCostExceeded("over budget"), "retry_exhausted", False),
         (QueryPreExecutionError("unavailable"), "warehouse_unavailable", True),
         (ValueError("invalid SQL"), "retry_exhausted", False),
@@ -520,6 +519,50 @@ def test_sql_tool_records_failure_before_model_retry(
     assert deps.last_tool_failure_code == failure_code
     assert deps.last_tool_failure_retryable is retryable
     assert deps.sql_tool_invoked is True
+
+
+def test_sql_tool_preserves_valid_empty_result_without_retry(test_config, tmp_path):
+    empty = QueryResult(
+        sql="SELECT product_id FROM safe_table WHERE FALSE",
+        rows=[],
+        total_rows=0,
+        dry_run_bytes=128,
+        total_bytes_billed=0,
+    )
+
+    class EmptyWarehouse(FakeBigQueryRunner):
+        def execute(self, sql: str, trace_id: str) -> QueryResult:
+            return empty
+
+    deps = agent.AgentDependencies(
+        config=test_config,
+        bigquery=EmptyWarehouse(),
+        logger=EventLogger(tmp_path / "runs.jsonl"),
+        user=test_config.user_profile("manager_a"),
+        trace_id="trace",
+    )
+
+    result = asyncio.run(
+        agent.run_sql_query(SimpleNamespace(deps=deps, retry=0, max_retries=2), empty.sql)
+    )
+
+    assert result is empty
+    assert deps.last_query_result is empty
+    assert deps.last_tool_failure_code is None
+    assert deps.bigquery_executions == 1
+    assert deps.bigquery_job_ids == []
+    assert agent._empty_result_is_disclosed("No matching data was found.") is True
+    assert agent._empty_result_is_disclosed("The analysis completed.") is False
+
+
+def test_tool_order_rejects_retrieval_after_sql():
+    events = [
+        {"tool": "retrieve_golden_examples", "status": "succeeded"},
+        {"tool": "run_sql_query", "status": "succeeded"},
+        {"tool": "retrieve_golden_examples", "status": "succeeded"},
+    ]
+
+    assert agent._tool_order_is_compliant(events) is False
 
 
 def test_sql_tool_does_not_model_retry_unknown_query_outcome(test_config, tmp_path):
@@ -743,6 +786,54 @@ def test_output_validator_retries_unsupported_claim_then_accepts_evidence(test_c
     assert deps.output_retry_reasons == ["unsupported_numeric_claim"]
     assert len(deps.bigquery.calls) == 1
     assert deps.bigquery_job_ids == ["job-native-agent-trace"]
+    assert calls == 3
+
+
+def test_output_validator_requires_empty_result_disclosure_without_rerunning_sql(
+    test_config, tmp_path
+):
+    class EmptyBigQueryRunner(FakeBigQueryRunner):
+        def execute(self, sql: str, trace_id: str) -> QueryResult:
+            self.calls.append((sql, trace_id))
+            return QueryResult(
+                sql=sql,
+                rows=[],
+                total_rows=0,
+                dry_run_bytes=1024,
+                total_bytes_billed=1024,
+                job_id=f"job-{trace_id}",
+                cache_hit=False,
+            )
+
+    deps = _agent_dependencies(test_config, tmp_path)
+    deps.bigquery = EmptyBigQueryRunner()
+    calls = 0
+
+    def model_function(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("run_sql_query", {"sql": "SELECT 1 WHERE FALSE"})]
+            )
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
+        )
+        answer = "Analysis completed." if calls == 2 else "No matching data was found."
+        return ModelResponse(parts=[ToolCallPart(output_tool.name, {"direct_answer": answer})])
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "Are there matching orders?",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+
+    assert isinstance(result.output, DataAnalysisResult)
+    assert result.output.direct_answer == "No matching data was found."
+    assert deps.output_retry_reasons == ["empty_result_not_disclosed"]
+    assert len(deps.bigquery.calls) == 1
     assert calls == 3
 
 

@@ -187,6 +187,10 @@ def human_review_form(
     form_output: Annotated[
         Path, typer.Option("--form-output", help="Reviewer-facing scoring packet.")
     ] = Path("artifacts/human-review-form.json"),
+    pairwise_output: Annotated[
+        Path,
+        typer.Option("--pairwise-output", help="Blinded A/B packet distributed first."),
+    ] = Path("artifacts/human-pairwise-form.json"),
     key_output: Annotated[
         Path,
         typer.Option(
@@ -202,18 +206,19 @@ def human_review_form(
 
     result = QualitySuiteResult.model_validate_json(report_path.read_text(encoding="utf-8"))
     cases = load_quality_cases(cases_path)
-    form, key = write_human_review_packet(
+    form, pairwise, key = write_human_review_packet(
         cases,
         result,
         load_accepted_baseline(baseline_path),
         form_path=form_output,
+        pairwise_path=pairwise_output,
         key_path=key_output,
         seed=seed,
     )
     console.print(
         "[green]human_review_form_created[/green] "
-        f"cases={len(form.cases)} comparisons={len(key.assignments)} "
-        f"form={form_output} key={key_output}"
+        f"cases={len(form.cases)} comparisons={len(pairwise.cases)} "
+        f"form={form_output} pairwise={pairwise_output} key={key_output}"
     )
 
 

@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from evals.quality import (
     RetrievalContract,
@@ -419,11 +420,21 @@ def test_quality_dataset_rejects_unknown_fields(tmp_path):
 class CanonicalWarehouse:
     def __init__(self, rows):
         self.rows = rows
+        self.calls: list[tuple[str, str]] = []
 
     def execute(self, sql: str, trace_id: str):
         from retail_agent.models import QueryResult
 
-        return QueryResult(sql=sql, rows=self.rows, total_rows=len(self.rows))
+        self.calls.append((sql, trace_id))
+        return QueryResult(
+            sql=sql,
+            rows=self.rows,
+            total_rows=len(self.rows),
+            dry_run_bytes=100,
+            total_bytes_billed=80,
+            job_id=f"reference-{len(self.calls)}",
+            cache_hit=False,
+        )
 
 
 class FailingCanonicalWarehouse(CanonicalWarehouse):
@@ -1050,11 +1061,12 @@ def test_repeated_live_eval_reports_flakiness_and_attempt_statistics(
         )
 
     monkeypatch.setattr("evals.quality.run_question", fake_run_question)
+    warehouse = CanonicalWarehouse(case.replay.canonical_rows)
     result = asyncio.run(
         run_quality_live_evals(
             test_config,
             _single_case_file(tmp_path),
-            bigquery=CanonicalWarehouse(case.replay.canonical_rows),
+            bigquery=warehouse,
             golden_store=object(),
             logger=EventLogger(tmp_path / "runs.jsonl"),
             analysis_agent=object(),
@@ -1065,6 +1077,7 @@ def test_repeated_live_eval_reports_flakiness_and_attempt_statistics(
     )
 
     assert calls == 5
+    assert len(warehouse.calls) == 1
     assert result.case_count == 1
     assert result.attempt_count == 5
     assert result.repetitions == 5
@@ -1080,3 +1093,66 @@ def test_repeated_live_eval_reports_flakiness_and_attempt_statistics(
     assert result.operational.p50_duration_ms == 300
     assert result.operational.p95_duration_ms == pytest.approx(480)
     assert result.operational.pass_rate_ci95 is not None
+    assert result.reference_queries.attempts == 1
+    assert result.reference_queries.executions == 1
+    assert result.reference_queries.dry_run_bytes == 100
+    assert result.reference_queries.billed_bytes == 80
+
+
+def test_live_multi_turn_eval_merges_history_and_final_operational_metrics(
+    test_config, tmp_path, monkeypatch
+):
+    case = load_quality_cases(CASES_PATH)[3]
+    calls = 0
+
+    async def fake_run_question(question, *, conversation, **kwargs):
+        nonlocal calls
+        calls += 1
+        return TurnResult(
+            response=case.replay.report,
+            conversation=conversation.complete_turn(
+                messages=[ModelRequest(parts=[UserPromptPart(content=question)])],
+                max_turns=6,
+            ),
+            retrieved_trio_ids=tuple(case.replay.retrieved_ids),
+            query_result=CanonicalWarehouse(case.replay.candidate_rows).execute(
+                case.replay.candidate_sql, f"trace-{calls}"
+            ),
+            operational=case.replay.operational.model_copy(
+                update={
+                    "trace_ids": [f"trace-{calls}"],
+                    "provider_requests": 1,
+                    "query_attempts": 1,
+                    "bigquery_dry_runs": 1,
+                    "bigquery_executions": 1,
+                    "bigquery_job_ids": [f"job-{calls}"],
+                    "dry_run_bytes": 100,
+                    "billed_bytes": 80,
+                    "total_tokens": 100,
+                }
+            ),
+        )
+
+    monkeypatch.setattr("evals.quality.run_question", fake_run_question)
+    result = asyncio.run(
+        run_quality_live_evals(
+            test_config,
+            _single_case_file(tmp_path, 3),
+            bigquery=CanonicalWarehouse(case.replay.canonical_rows),
+            golden_store=object(),
+            logger=EventLogger(tmp_path / "runs.jsonl"),
+            analysis_agent=object(),
+            human_scores={case.id: 5},
+            max_safe_attempts=1,
+        )
+    )
+
+    operations = result.results[0].operational
+    assert calls == 2
+    assert operations.trace_ids == ["trace-1", "trace-2"]
+    assert operations.provider_requests == 2
+    assert operations.query_attempts == 2
+    assert operations.bigquery_executions == 2
+    assert operations.bigquery_job_ids == ["job-1", "job-2"]
+    assert operations.total_tokens == 200
+    assert result.results[0].automated_passed is True, result.results[0].model_dump_json(indent=2)

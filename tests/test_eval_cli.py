@@ -87,6 +87,7 @@ def test_human_review_and_release_decision_cli(test_config, tmp_path):
     quality_result = cli.run_quality_replay_evals(test_config, cli.DEFAULT_CASES_PATH)
     report_path = tmp_path / "quality.json"
     form_path = tmp_path / "form.json"
+    pairwise_path = tmp_path / "pairwise.json"
     key_path = tmp_path / "key.json"
     reviews_path = tmp_path / "reviews.json"
     decision_path = tmp_path / "decision.json"
@@ -104,6 +105,8 @@ def test_human_review_and_release_decision_cli(test_config, tmp_path):
             str(report_path),
             "--form-output",
             str(form_path),
+            "--pairwise-output",
+            str(pairwise_path),
             "--key-output",
             str(key_path),
         ],

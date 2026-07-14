@@ -24,8 +24,10 @@ concurrency:
 
 jobs:
   evaluate:
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    environment: quality-live-evaluation
     services:
       qdrant:
         image: qdrant/qdrant:v1.12.4
@@ -97,6 +99,7 @@ jobs:
           --cases "${{ steps.tier.outputs.cases }}"
           --seed "${{ github.sha }}-${{ github.run_id }}"
           --form-output artifacts/human-review-form.json
+          --pairwise-output artifacts/human-pairwise-form.json
           --key-output artifacts/human-review-key.json
 
       - name: Record candidate provenance and file digests

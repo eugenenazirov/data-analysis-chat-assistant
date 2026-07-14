@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from statistics import mean
 from typing import Any, Literal
@@ -12,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from evals.quality import QualityEvalCase, QualitySuiteResult
 from retail_agent.models import ChartArtifact
 
-RUBRIC_VERSION = "retail_analysis_v1"
 DEFAULT_RUBRIC_PATH = Path("evals/rubrics/retail_analysis_v1.json")
 
 
@@ -28,13 +28,25 @@ class ReleaseThresholds(HumanEvaluationModel):
     minimum_pairwise_noninferiority_rate: float = Field(ge=0, le=1)
     minimum_live_repetitions: int = Field(ge=2)
     calibration_case_limit: int = Field(ge=1)
+    minimum_case_dimension_score: float = Field(ge=1, le=5)
+    blocking_dimensions: list[str]
+    minimum_blocking_dimension_score: float = Field(ge=1, le=5)
 
 
 class HumanRubric(HumanEvaluationModel):
     version: str
     scale: dict[str, str]
-    dimensions: list[str]
+    dimensions: dict[str, str]
     release_thresholds: ReleaseThresholds
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> HumanRubric:
+        expected = set(HumanDimensionScores.model_fields)
+        if set(self.dimensions) != expected:
+            raise ValueError("rubric dimensions must match the structured score fields")
+        if not set(self.release_thresholds.blocking_dimensions).issubset(expected):
+            raise ValueError("blocking rubric dimensions must be score fields")
+        return self
 
 
 class BaselineCase(HumanEvaluationModel):
@@ -86,7 +98,6 @@ class HumanReviewFormCase(HumanEvaluationModel):
     question: str
     history: list[str]
     pointwise: ReviewOutput
-    pairwise: PairwiseComparison | None = None
 
 
 class HumanReviewForm(HumanEvaluationModel):
@@ -94,6 +105,21 @@ class HumanReviewForm(HumanEvaluationModel):
     instructions: list[str]
     dimensions: dict[str, str]
     cases: list[HumanReviewFormCase]
+
+
+class PairwiseReviewFormCase(HumanEvaluationModel):
+    case_id: str
+    title: str
+    risk: str
+    question: str
+    history: list[str]
+    comparison: PairwiseComparison
+
+
+class PairwiseReviewForm(HumanEvaluationModel):
+    rubric_version: str
+    instructions: list[str]
+    cases: list[PairwiseReviewFormCase]
 
 
 class BlindAssignment(HumanEvaluationModel):
@@ -179,6 +205,8 @@ class HumanReviewSummary(HumanEvaluationModel):
     mean_usefulness: float | None
     minimum_case_usefulness: float | None
     unresolved_disagreements: list[str]
+    unresolved_rejections: list[str]
+    minimum_dimension_scores: dict[str, float | None]
     pairwise_wins: int
     pairwise_ties: int
     pairwise_losses: int
@@ -202,6 +230,7 @@ def load_accepted_baseline(path: Path) -> AcceptedBaseline:
     return AcceptedBaseline.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+@lru_cache
 def load_human_rubric(path: Path = DEFAULT_RUBRIC_PATH) -> HumanRubric:
     return HumanRubric.model_validate_json(path.read_text(encoding="utf-8"))
 
@@ -220,17 +249,26 @@ def write_human_review_packet(
     baseline: AcceptedBaseline,
     *,
     form_path: Path,
+    pairwise_path: Path,
     key_path: Path,
     seed: str,
-) -> tuple[HumanReviewForm, HumanReviewKey]:
-    if baseline.rubric_version != RUBRIC_VERSION:
+    rubric: HumanRubric | None = None,
+) -> tuple[HumanReviewForm, PairwiseReviewForm, HumanReviewKey]:
+    resolved_rubric = rubric or load_human_rubric()
+    if baseline.rubric_version != resolved_rubric.version:
         raise ValueError("accepted baseline and scoring form must use the same rubric version")
+    mismatched_cases = [
+        case.id for case in cases if case.human_rubric != resolved_rubric.version
+    ]
+    if mismatched_cases:
+        raise ValueError("evaluation cases and scoring form must use the same rubric version")
     result_by_case = {
         item.name: item for item in result.results if item.attempt == 1 and item.diagnostics
     }
     baseline_by_case = {case.case_id: case for case in baseline.cases}
     assignments: list[BlindAssignment] = []
     form_cases: list[HumanReviewFormCase] = []
+    pairwise_cases: list[PairwiseReviewFormCase] = []
     for case in cases:
         case_result = result_by_case.get(case.id)
         if case_result is None or case_result.diagnostics is None:
@@ -243,7 +281,6 @@ def write_human_review_packet(
             highlights=diagnostics.report_highlights,
             chart=diagnostics.report_chart,
         )
-        pairwise = None
         if previous := baseline_by_case.get(case.id):
             presentation_id = f"{case.id}-blind-v1"
             candidate_label: Literal["A", "B"] = (
@@ -258,7 +295,7 @@ def write_human_review_packet(
                 highlights=previous.highlights,
                 chart=previous.chart,
             )
-            pairwise = PairwiseComparison(
+            comparison = PairwiseComparison(
                 presentation_id=presentation_id,
                 output_a=pointwise if candidate_label == "A" else previous_output,
                 output_b=previous_output if candidate_label == "A" else pointwise,
@@ -270,6 +307,16 @@ def write_human_review_packet(
                     candidate_label=candidate_label,
                 )
             )
+            pairwise_cases.append(
+                PairwiseReviewFormCase(
+                    case_id=case.id,
+                    title=case.title,
+                    risk=case.risk,
+                    question=case.question,
+                    history=case.history,
+                    comparison=comparison,
+                )
+            )
         form_cases.append(
             HumanReviewFormCase(
                 case_id=case.id,
@@ -278,32 +325,33 @@ def write_human_review_packet(
                 question=case.question,
                 history=case.history,
                 pointwise=pointwise,
-                pairwise=pairwise,
             )
         )
 
     form = HumanReviewForm(
-        rubric_version=RUBRIC_VERSION,
+        rubric_version=resolved_rubric.version,
         instructions=[
-            "Score each pointwise output independently before opening the A/B comparison.",
+            "Receive this pointwise packet only after the blinded A/B review is submitted.",
             "Use the full 1-5 anchors; do not infer facts that are absent from verified rows.",
-            "For A/B, select A, B, or tie without attempting to identify either source.",
             "Use pseudonymous reviewer IDs and keep notes free of secrets and personal data.",
         ],
-        dimensions={
-            "correctness": "Answers the requested business question and uses correct calculations.",
-            "faithfulness": "Every factual claim is supported by the verified rows and SQL.",
-            "usefulness": "Provides decision-relevant, actionable retail analysis.",
-            "clarity": "Communicates the result directly and unambiguously.",
-            "limitations": "States material assumptions, caveats, and data limits.",
-            "privacy_and_policy": "Avoids personal data, unsafe actions, and policy violations.",
-        },
+        dimensions=resolved_rubric.dimensions,
         cases=form_cases,
+    )
+    pairwise = PairwiseReviewForm(
+        rubric_version=resolved_rubric.version,
+        instructions=[
+            "Complete and submit this A/B packet before receiving any pointwise packet.",
+            "Select A, B, or tie without attempting to identify either output source.",
+            "Do not compare this packet with candidate reports or other reviewer materials.",
+        ],
+        cases=pairwise_cases,
     )
     key = HumanReviewKey(baseline_version=baseline.version, assignments=assignments)
     _write_model(form, form_path)
+    _write_model(pairwise, pairwise_path)
     _write_model(key, key_path)
-    return form, key
+    return form, pairwise, key
 
 
 def evaluate_release_readiness(
@@ -369,6 +417,32 @@ def evaluate_release_readiness(
             and not resolved
         ):
             unresolved_disagreements.append(case_id)
+    unresolved_rejections = sorted(
+        {
+            review.case_id
+            for review in reviews.reviews
+            if review.case_id in required_cases
+            and review.recommendation == "reject"
+            and not (review.resolution_notes or "").strip()
+        }
+    )
+
+    minimum_dimension_scores: dict[str, float | None] = {}
+    for dimension in HumanDimensionScores.model_fields:
+        case_scores = [
+            mean(getattr(review.scores, dimension) for review in case_reviews)
+            for case_reviews in reviews_by_case.values()
+        ]
+        minimum_dimension_scores[dimension] = min(case_scores) if case_scores else None
+    dimension_thresholds_passed = all(
+        score is not None and score >= thresholds.minimum_case_dimension_score
+        for score in minimum_dimension_scores.values()
+    ) and all(
+        minimum_dimension_scores[dimension] is not None
+        and minimum_dimension_scores[dimension]
+        >= thresholds.minimum_blocking_dimension_score
+        for dimension in thresholds.blocking_dimensions
+    )
 
     pairwise_wins = 0
     pairwise_ties = 0
@@ -402,6 +476,8 @@ def evaluate_release_readiness(
         not missing_cases
         and len(reviewer_ids) >= thresholds.minimum_reviewers
         and not unresolved_disagreements
+        and not unresolved_rejections
+        and dimension_thresholds_passed
         and mean_usefulness is not None
         and mean_usefulness >= thresholds.minimum_mean_usefulness
         and minimum_usefulness is not None
@@ -437,6 +513,10 @@ def evaluate_release_readiness(
         blockers.append("human usefulness review is incomplete")
     if unresolved_disagreements:
         blockers.append("major reviewer disagreements require resolution notes")
+    if unresolved_rejections:
+        blockers.append("reject recommendations require resolution notes and rescoring")
+    if not dimension_thresholds_passed:
+        blockers.append("human dimension thresholds were not met")
     if not baseline_passed:
         blockers.append("blinded baseline noninferiority was not demonstrated")
     if (
@@ -465,6 +545,8 @@ def evaluate_release_readiness(
         mean_usefulness=mean_usefulness,
         minimum_case_usefulness=minimum_usefulness,
         unresolved_disagreements=sorted(unresolved_disagreements),
+        unresolved_rejections=unresolved_rejections,
+        minimum_dimension_scores=minimum_dimension_scores,
         pairwise_wins=pairwise_wins,
         pairwise_ties=pairwise_ties,
         pairwise_losses=pairwise_losses,

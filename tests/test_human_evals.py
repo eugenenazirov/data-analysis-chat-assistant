@@ -108,13 +108,15 @@ def test_review_packet_contains_required_context_and_keeps_pairwise_sources_blin
 ):
     result = run_quality_replay_evals(test_config, CASES_PATH)
     form_path = tmp_path / "review-form.json"
+    pairwise_path = tmp_path / "pairwise-form.json"
     key_path = tmp_path / "review-key.json"
 
-    form, key = write_human_review_packet(
+    form, pairwise, key = write_human_review_packet(
         load_quality_cases(CASES_PATH),
         result,
         _baseline(),
         form_path=form_path,
+        pairwise_path=pairwise_path,
         key_path=key_path,
         seed="release-2026-07-14",
     )
@@ -126,14 +128,16 @@ def test_review_packet_contains_required_context_and_keeps_pairwise_sources_blin
     assert first.pointwise.answer
     assert first.pointwise.highlights == []
     assert first.pointwise.chart is None
-    assert first.pairwise is not None
-    pairwise_payload = first.pairwise.model_dump_json().casefold()
+    comparison = pairwise.cases[0]
+    pairwise_payload = comparison.model_dump_json().casefold()
     assert "candidate" not in pairwise_payload
     assert "baseline" not in pairwise_payload
     assert key.assignments[0].candidate_label in {"A", "B"}
     assert json.loads(form_path.read_text(encoding="utf-8"))["rubric_version"] == (
         "retail_analysis_v1"
     )
+    pairwise_file = json.loads(pairwise_path.read_text(encoding="utf-8"))
+    assert all("pointwise" not in item for item in pairwise_file["cases"])
     assert json.loads(key_path.read_text(encoding="utf-8"))["baseline_version"] == (
         "accepted-smoke-v1"
     )
@@ -239,6 +243,60 @@ def test_major_reviewer_disagreement_blocks_until_resolution(test_config):
 
     assert decision.approved is False
     assert first_case in decision.human_review.unresolved_disagreements
+
+
+def test_low_critical_dimension_or_reject_recommendation_blocks_release(test_config):
+    replay = run_quality_replay_evals(test_config, CASES_PATH)
+    repeated = [
+        result.model_copy(update={"attempt": attempt})
+        for result in replay.results
+        for attempt in range(1, 6)
+    ]
+    live = summarize_quality_results(
+        "live", repeated, versions=replay.versions, governance=replay.governance
+    )
+    low_privacy_reviews = _reviews()
+    low_privacy_reviews = low_privacy_reviews.model_copy(
+        update={
+            "reviews": [
+                review.model_copy(
+                    update={
+                        "scores": review.scores.model_copy(update={"privacy_and_policy": 1})
+                    }
+                )
+                for review in low_privacy_reviews.reviews
+            ]
+        }
+    )
+    reject_reviews = _reviews()
+    reject_reviews = reject_reviews.model_copy(
+        update={
+            "reviews": [
+                review.model_copy(update={"recommendation": "reject"})
+                if index == 0
+                else review
+                for index, review in enumerate(reject_reviews.reviews)
+            ]
+        }
+    )
+
+    low_privacy = evaluate_release_readiness(
+        live,
+        low_privacy_reviews,
+        _blind_assignments(),
+        baseline_version="accepted-smoke-v1",
+    )
+    rejected = evaluate_release_readiness(
+        live,
+        reject_reviews,
+        _blind_assignments(),
+        baseline_version="accepted-smoke-v1",
+    )
+
+    assert low_privacy.approved is False
+    assert "human dimension thresholds were not met" in low_privacy.blockers
+    assert rejected.approved is False
+    assert rejected.human_review.unresolved_rejections
 
 
 def test_release_decision_round_trips(test_config, tmp_path):

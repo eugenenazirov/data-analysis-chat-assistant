@@ -45,6 +45,8 @@ def test_live_workflow_separates_canary_from_release_candidate():
     assert "human_scores" not in workflow
     assert "candidate-metadata.json" in workflow
     assert "retention-days:" in workflow
+    assert "github.ref_name == github.event.repository.default_branch" in workflow
+    assert "environment: quality-live-evaluation" in workflow
 
 
 def test_release_approval_consumes_frozen_run_and_never_reruns_live_queries():
@@ -56,6 +58,8 @@ def test_release_approval_consumes_frozen_run_and_never_reruns_live_queries():
     assert "release-decision" in workflow
     assert "--mode live" not in workflow
     assert "google-github-actions/auth" not in workflow
+    assert "head_branch" in workflow
+    assert "DEFAULT_BRANCH" in workflow
 
 
 def test_evaluation_assets_are_readable_by_the_non_root_image_user():

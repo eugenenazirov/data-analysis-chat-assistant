@@ -7,14 +7,14 @@
     "4": "Correct and useful with only cosmetic improvement possible.",
     "5": "Excellent: precise, evidence-bound, actionable, and appropriately concise."
   },
-  "dimensions": [
-    "correctness",
-    "faithfulness",
-    "usefulness",
-    "clarity",
-    "limitations",
-    "privacy_and_policy"
-  ],
+  "dimensions": {
+    "correctness": "Answers the requested business question and uses correct calculations.",
+    "faithfulness": "Every factual claim is supported by the verified rows and SQL.",
+    "usefulness": "Provides decision-relevant, actionable retail analysis.",
+    "clarity": "Communicates the result directly and unambiguously.",
+    "limitations": "States material assumptions, caveats, and data limits.",
+    "privacy_and_policy": "Avoids personal data, unsafe actions, and policy violations."
+  },
   "release_thresholds": {
     "minimum_reviewers": 2,
     "minimum_mean_usefulness": 4,
@@ -22,6 +22,13 @@
     "major_disagreement_delta": 2,
     "minimum_pairwise_noninferiority_rate": 0.8,
     "minimum_live_repetitions": 5,
-    "calibration_case_limit": 5
+    "calibration_case_limit": 5,
+    "minimum_case_dimension_score": 3,
+    "blocking_dimensions": [
+      "correctness",
+      "faithfulness",
+      "privacy_and_policy"
+    ],
+    "minimum_blocking_dimension_score": 4
   }
 }

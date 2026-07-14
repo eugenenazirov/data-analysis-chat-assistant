@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from evals.quality import QualityReplay, _fixture_content_sha256, _result_schema
+from evals.human import load_human_rubric
+from evals.quality import (
+    EVALUATOR_VERSION,
+    QualityReplay,
+    _fixture_content_sha256,
+    _result_schema,
+    _sha256_text,
+)
 
 DATASET = "bigquery-public-data.thelook_ecommerce"
 CAPTURED_AT = "2026-07-14T15:00:00Z"
@@ -798,10 +804,6 @@ MULTI_TURN_SCENARIOS += [
 ]
 
 
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def _source_tables(sql: str) -> list[str]:
     return sorted(set(re.findall(r"`([^`]+)`", sql)))
 
@@ -855,7 +857,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "result_schema": result_schema,
             "row_count": len(scenario.rows) if answer_case else 0,
             "captured_at": CAPTURED_AT,
-            "evaluator_version": "quality-v4",
+            "evaluator_version": EVALUATOR_VERSION,
             "prompt_version": "analysis-v3",
             "persona_version": "prototype-config-v1",
             "model": "google-cloud:gemini-2.5-flash",
@@ -967,7 +969,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "max_duration_seconds": 30,
             "max_total_tokens": 16_000,
         },
-        "human_rubric": "retail_analysis_v1",
+        "human_rubric": load_human_rubric().version,
         "replay": replay,
         "critical": scenario.critical,
     }
@@ -986,38 +988,6 @@ def _write_or_check(path: Path, content: str, *, check: bool) -> None:
             raise SystemExit(f"stale replay fixtures: {path}")
         return
     path.write_text(content, encoding="utf-8")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-    root = Path(__file__).parent
-    _write_or_check(
-        root / "release_holdout.jsonl",
-        _render(HOLDOUT_SCENARIOS, "release_holdout"),
-        check=args.check,
-    )
-    _write_or_check(
-        root / "multi_turn.jsonl",
-        _render(MULTI_TURN_SCENARIOS, "multi_turn"),
-        check=args.check,
-    )
-    _write_or_check(
-        root / "development.jsonl",
-        _render(DEVELOPMENT_SCENARIOS, "development"),
-        check=args.check,
-    )
-    _write_or_check(
-        root / "adversarial.jsonl",
-        _render(ADVERSARIAL_SCENARIOS, "adversarial"),
-        check=args.check,
-    )
-    _write_or_check(
-        root / "regression.jsonl",
-        _render(REGRESSION_SCENARIOS, "regression"),
-        check=args.check,
-    )
 
 
 HOLDOUT_SCENARIOS += [
@@ -1557,6 +1527,38 @@ ADVERSARIAL_SCENARIOS = [
         expected_behavior="clarify",
     ),
 ]
+
+
+def _with_current_evaluator_version(path: Path) -> str:
+    rendered: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        raw = json.loads(line)
+        replay = raw["replay"]
+        replay["provenance"]["evaluator_version"] = EVALUATOR_VERSION
+        replay["provenance"]["content_sha256"] = "0" * 64
+        replay_model = QualityReplay.model_validate(replay)
+        replay["provenance"]["content_sha256"] = _fixture_content_sha256(
+            raw["canonical_sql"], replay_model
+        )
+        rendered.append(json.dumps(raw, separators=(",", ":")) + "\n")
+    return "".join(rendered)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    root = Path(__file__).parent
+    fixtures = {
+        "smoke.jsonl": _with_current_evaluator_version(root / "smoke.jsonl"),
+        "release_holdout.jsonl": _render(HOLDOUT_SCENARIOS, "release_holdout"),
+        "multi_turn.jsonl": _render(MULTI_TURN_SCENARIOS, "multi_turn"),
+        "development.jsonl": _render(DEVELOPMENT_SCENARIOS, "development"),
+        "adversarial.jsonl": _render(ADVERSARIAL_SCENARIOS, "adversarial"),
+        "regression.jsonl": _render(REGRESSION_SCENARIOS, "regression"),
+    }
+    for filename, content in fixtures.items():
+        _write_or_check(root / filename, content, check=args.check)
 
 
 if __name__ == "__main__":

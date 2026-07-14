@@ -68,7 +68,7 @@ type ScoreName = Literal[
     "operational",
 ]
 
-EVALUATOR_VERSION = "quality-v4"
+EVALUATOR_VERSION = "quality-v5"
 _AUTOMATED_EVALUATORS: tuple[EvaluatorName, ...] = (
     "intent",
     "calculation",
@@ -240,6 +240,8 @@ class QualityEvalCase(EvaluationModel):
         if self.replay.reference_date not in {None, self.reference_date}:
             raise ValueError("replay reference date must match the case reference date")
         provenance = self.replay.provenance
+        if provenance.evaluator_version != EVALUATOR_VERSION:
+            raise ValueError("fixture evaluator version does not match the runtime evaluator")
         if provenance.reference_date != self.reference_date:
             raise ValueError("fixture provenance reference date must match the case")
         if provenance.canonical_sql_sha256 != _sha256_text(self.canonical_sql):
@@ -424,6 +426,16 @@ class OperationalSummary(EvaluationModel):
     chart_artifact_bytes: int = 0
 
 
+class ReferenceQuerySummary(EvaluationModel):
+    attempts: int = 0
+    executions: int = 0
+    failures: int = 0
+    job_ids: list[str] = Field(default_factory=list)
+    dry_run_bytes: int = 0
+    billed_bytes: int = 0
+    cache_hit_rate: float | None = None
+
+
 class QualitySuiteResult(EvaluationModel):
     mode: QualityMode
     passed: bool
@@ -444,6 +456,7 @@ class QualitySuiteResult(EvaluationModel):
     flaky_cases: list[str] = Field(default_factory=list)
     stability: dict[str, CaseStability] = Field(default_factory=dict)
     operational: OperationalSummary | None = None
+    reference_queries: ReferenceQuerySummary = Field(default_factory=ReferenceQuerySummary)
 
 
 def _sha256_text(value: str) -> str:
@@ -542,7 +555,32 @@ async def run_quality_live_evals(
     governance = inspect_dataset_governance(cases, config.golden_trios_path)
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
+    reference_attempts = 0
+    reference_failures = 0
+    reference_results = []
     for case in cases:
+        canonical_rows: list[dict[str, Any]] = []
+        if case.expected_behavior in {"answer", "degrade"}:
+            reference_attempts += 1
+            try:
+                canonical = await asyncio.to_thread(
+                    bigquery.execute,
+                    case.canonical_sql,
+                    new_trace_id(),
+                )
+                canonical_rows = canonical.rows
+                reference_results.append(canonical)
+            except Exception as exc:
+                reference_failures += 1
+                results.extend(
+                    _failed_live_result(
+                        case,
+                        f"canonical query failed: {exc.__class__.__name__}",
+                        attempt=attempt,
+                    )
+                    for attempt in range(1, repetitions + 1)
+                )
+                continue
         for attempt in range(1, repetitions + 1):
             results.append(
                 await _evaluate_live_case(
@@ -556,14 +594,32 @@ async def run_quality_live_evals(
                     human_scores=human_scores or {},
                     max_safe_attempts=max_safe_attempts,
                     retry_delay_seconds=retry_delay_seconds,
+                    canonical_rows=canonical_rows,
                 )
             )
 
+    cache_values = [
+        result.cache_hit for result in reference_results if result.cache_hit is not None
+    ]
+    reference_queries = ReferenceQuerySummary(
+        attempts=reference_attempts,
+        executions=len(reference_results),
+        failures=reference_failures,
+        job_ids=[result.job_id for result in reference_results if result.job_id is not None],
+        dry_run_bytes=sum(result.dry_run_bytes or 0 for result in reference_results),
+        billed_bytes=sum(result.total_bytes_billed or 0 for result in reference_results),
+        cache_hit_rate=(
+            sum(bool(value) for value in cache_values) / len(cache_values)
+            if cache_values
+            else None
+        ),
+    )
     return summarize_quality_results(
         "live",
         results,
         versions=_evaluation_versions(config, path, cases),
         governance=governance,
+        reference_queries=reference_queries,
     )
 
 
@@ -579,8 +635,10 @@ async def _evaluate_live_case(
     human_scores: dict[str, float],
     max_safe_attempts: int,
     retry_delay_seconds: float,
+    canonical_rows: list[dict[str, Any]],
 ) -> QualityEvalResult:
     conversation = ConversationState()
+    trajectory_metrics: list[OperationalMetrics] = []
     for question in case.history:
         history_turn = await _run_live_turn(
             question,
@@ -594,13 +652,14 @@ async def _evaluate_live_case(
             max_safe_attempts=max_safe_attempts,
             retry_delay_seconds=retry_delay_seconds,
         )
+        trajectory_metrics.append(history_turn.operational)
         conversation = history_turn.conversation
         if isinstance(history_turn.response, AgentFailure):
             return _failed_live_result(
                 case,
                 "history turn failed",
                 attempt=attempt,
-                operational=history_turn.operational,
+                operational=merge_operational_metrics(trajectory_metrics),
             )
 
     turn = await _run_live_turn(
@@ -615,6 +674,8 @@ async def _evaluate_live_case(
         max_safe_attempts=max_safe_attempts,
         retry_delay_seconds=retry_delay_seconds,
     )
+    trajectory_metrics.append(turn.operational)
+    operational = merge_operational_metrics(trajectory_metrics)
     if isinstance(turn.response, AgentFailure) or (
         case.expected_behavior in {"answer", "degrade"} and turn.query_result is None
     ):
@@ -622,21 +683,8 @@ async def _evaluate_live_case(
             case,
             "candidate agent run failed",
             attempt=attempt,
-            operational=turn.operational,
+            operational=operational,
         )
-
-    canonical_rows: list[dict[str, Any]] = []
-    if case.expected_behavior in {"answer", "degrade"}:
-        try:
-            canonical = bigquery.execute(case.canonical_sql, new_trace_id())
-            canonical_rows = canonical.rows
-        except Exception as exc:
-            return _failed_live_result(
-                case,
-                f"canonical query failed: {exc.__class__.__name__}",
-                attempt=attempt,
-                operational=turn.operational,
-            )
 
     replay = case.replay.model_copy(
         update={
@@ -648,7 +696,7 @@ async def _evaluate_live_case(
             "history_used": bool(case.history and conversation.completed_turns),
             "usefulness_score": human_scores.get(case.id),
             "reference_date": turn.reference_date or case.reference_date,
-            "operational": turn.operational,
+            "operational": operational,
         }
     )
     return evaluate_quality_case(config, case, replay, attempt=attempt)
@@ -908,6 +956,7 @@ def summarize_quality_results(
     *,
     versions: EvaluationVersions | None = None,
     governance: DatasetGovernance | None = None,
+    reference_queries: ReferenceQuerySummary | None = None,
 ) -> QualitySuiteResult:
     resolved_versions = versions or EvaluationVersions()
     results = [result.model_copy(update={"versions": resolved_versions}) for result in results]
@@ -922,6 +971,7 @@ def summarize_quality_results(
             versions=resolved_versions,
             governance=governance or DatasetGovernance(),
             needs_human_review=False,
+            reference_queries=reference_queries or ReferenceQuerySummary(),
         )
 
     aggregate = QualityScores(
@@ -971,6 +1021,7 @@ def summarize_quality_results(
         flaky_cases=sorted(case_id for case_id, item in stability.items() if item.flaky),
         stability=stability,
         operational=_operational_summary(results, grouped),
+        reference_queries=reference_queries or ReferenceQuerySummary(),
     )
 
 
@@ -1606,38 +1657,43 @@ def _operational_assessment(
     metrics: OperationalMetrics,
 ) -> OperationalAssessment:
     budgets = case.budgets
+    trajectory_turns = len(case.history) + 1
     expects_query = case.expected_behavior in {"answer", "degrade"}
     constraints = [
         _maximum_constraint(
             "duration_budget",
             metrics.duration_ms,
-            int(budgets.max_duration_seconds * 1000),
+            int(budgets.max_duration_seconds * trajectory_turns * 1000),
         ),
         _maximum_constraint(
-            "query_attempt_budget", metrics.query_attempts, budgets.max_query_attempts
+            "query_attempt_budget",
+            metrics.query_attempts,
+            budgets.max_query_attempts * trajectory_turns,
         ),
         _maximum_constraint(
-            "output_retry_budget", metrics.output_retries, budgets.max_output_retries
+            "output_retry_budget",
+            metrics.output_retries,
+            budgets.max_output_retries * trajectory_turns,
         ),
         _maximum_constraint(
             "retrieval_request_budget",
             metrics.retrieval_requests,
-            budgets.max_retrieval_requests,
+            budgets.max_retrieval_requests * trajectory_turns,
         ),
         _maximum_constraint(
             "bigquery_job_budget",
             metrics.bigquery_executions,
-            budgets.max_bigquery_jobs,
+            budgets.max_bigquery_jobs * trajectory_turns,
         ),
         _maximum_constraint(
             "dry_run_bytes_budget",
             metrics.dry_run_bytes,
-            budgets.max_bytes_processed,
+            budgets.max_bytes_processed * trajectory_turns,
         ),
         _maximum_constraint(
             "billed_bytes_budget",
             metrics.billed_bytes,
-            budgets.max_bytes_processed,
+            budgets.max_bytes_processed * trajectory_turns,
         ),
         ConstraintDiagnostic(
             name="provider_request_attribution",
@@ -1648,16 +1704,24 @@ def _operational_assessment(
             name="provider_request_budget",
             passed=(
                 metrics.provider_requests is not None
-                and metrics.provider_requests <= budgets.max_provider_requests
+                and metrics.provider_requests
+                <= budgets.max_provider_requests * trajectory_turns
             ),
-            detail=(f"actual={metrics.provider_requests}, maximum={budgets.max_provider_requests}"),
+            detail=(
+                f"actual={metrics.provider_requests}, "
+                f"maximum={budgets.max_provider_requests * trajectory_turns}"
+            ),
         ),
         ConstraintDiagnostic(
             name="token_budget",
             passed=(
-                metrics.total_tokens is None or metrics.total_tokens <= budgets.max_total_tokens
+                metrics.total_tokens is None
+                or metrics.total_tokens <= budgets.max_total_tokens * trajectory_turns
             ),
-            detail=f"actual={metrics.total_tokens}, maximum={budgets.max_total_tokens}",
+            detail=(
+                f"actual={metrics.total_tokens}, "
+                f"maximum={budgets.max_total_tokens * trajectory_turns}"
+            ),
         ),
         ConstraintDiagnostic(
             name="duplicate_warehouse_execution",

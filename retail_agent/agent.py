@@ -125,6 +125,7 @@ class AgentDependencies:
     sql_retry_reasons: list[str] = field(default_factory=list)
     output_retry_reasons: list[str] = field(default_factory=list)
     bigquery_job_ids: list[str] = field(default_factory=list)
+    bigquery_executions: int = 0
     dry_run_bytes: int = 0
     billed_bytes: int = 0
     cache_hits: list[bool] = field(default_factory=list)
@@ -265,28 +266,22 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
             ctx.deps.trace_id,
         )
         ctx.deps.bigquery_dry_runs += 1
+        ctx.deps.bigquery_executions += 1
         if result.job_id is not None:
             ctx.deps.bigquery_job_ids.append(result.job_id)
         ctx.deps.dry_run_bytes += result.dry_run_bytes or 0
         ctx.deps.billed_bytes += result.total_bytes_billed or 0
         if result.cache_hit is not None:
             ctx.deps.cache_hits.append(result.cache_hit)
-        if result.total_rows == 0:
-            _record_tool_event(ctx, "run_sql_query", "empty", started)
-            _record_tool_failure(ctx, "retry_exhausted", retryable=False)
-            _log_sql_retry_feedback(
-                ctx,
-                failure_class="EmptyResult",
-                error="The query returned no rows.",
-            )
-            raise ModelRetry(
-                "The query returned no rows. Revise the SQL once using broader "
-                "filters or explain why no matching data exists."
-            )
         ctx.deps.last_query_result = result
         ctx.deps.last_tool_failure_code = None
         ctx.deps.last_tool_failure_retryable = False
-        _record_tool_event(ctx, "run_sql_query", "succeeded", started)
+        _record_tool_event(
+            ctx,
+            "run_sql_query",
+            "empty" if result.total_rows == 0 else "succeeded",
+            started,
+        )
         return result
     except QueryCostExceeded as exc:
         ctx.deps.bigquery_dry_runs += 1
@@ -296,6 +291,7 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         raise ModelRetry(str(exc)) from exc
     except QueryOutcomeUnknownError as exc:
         ctx.deps.bigquery_dry_runs += 1
+        ctx.deps.bigquery_executions += 1
         _record_tool_event(ctx, "run_sql_query", "failed", started)
         _record_tool_failure(ctx, "warehouse_outcome_unknown", retryable=False)
         ctx.deps.bigquery_job_ids.append(exc.job_id)
@@ -465,6 +461,29 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
             )
             raise ModelRetry("A data analysis result requires a successful run_sql_query call.")
         report = _data_result_to_report("", output, query_result)
+        if query_result.total_rows == 0 and not _empty_result_is_disclosed(
+            " ".join(
+                [
+                    output.direct_answer,
+                    *output.highlights,
+                    *output.supporting_evidence,
+                    *output.caveats,
+                ]
+            )
+        ):
+            ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.output_retry_reasons.append("empty_result_not_disclosed")
+            ctx.deps.logger.event(
+                ctx.deps.trace_id,
+                "output_validation_retry",
+                reason="empty_result_not_disclosed",
+                retry_attempt=ctx.retry,
+                max_retries=ctx.max_retries,
+            )
+            raise ModelRetry(
+                "The verified query returned no rows. State explicitly that no matching data "
+                "was found; do not broaden the query or fabricate a value."
+            )
         evidence = assess_report_evidence(
             report,
             query_result.rows,
@@ -1007,7 +1026,6 @@ def _operational_metrics(
         event for event in deps.tool_events if event["tool"] == "retrieve_golden_examples"
     ]
     query_events = [event for event in deps.tool_events if event["tool"] == "run_sql_query"]
-    successful_queries = sum(event["status"] == "succeeded" for event in query_events)
     chart_events = [event for event in deps.tool_events if event["tool"] == "generate_chart"]
     input_tokens = getattr(usage, "input_tokens", None)
     cached_input_tokens = getattr(usage, "cache_read_tokens", None)
@@ -1028,9 +1046,9 @@ def _operational_metrics(
         output_retries=deps.output_validation_retries,
         output_retry_reasons=deps.output_retry_reasons,
         bigquery_dry_runs=deps.bigquery_dry_runs,
-        bigquery_executions=len(deps.bigquery_job_ids),
+        bigquery_executions=deps.bigquery_executions,
         bigquery_job_ids=deps.bigquery_job_ids,
-        duplicate_warehouse_executions=max(0, successful_queries - 1),
+        duplicate_warehouse_executions=max(0, deps.bigquery_executions - 1),
         tool_sequence=deps.tool_sequence,
         tool_order_compliant=_tool_order_is_compliant(deps.tool_events),
         input_tokens=input_tokens,
@@ -1051,7 +1069,9 @@ def _operational_metrics(
 
 
 def _tool_order_is_compliant(tool_events: list[dict[str, Any]]) -> bool:
-    names = [event["tool"] for event in tool_events]
+    sql_events = [
+        index for index, event in enumerate(tool_events) if event["tool"] == "run_sql_query"
+    ]
     successful_sql = [
         index
         for index, event in enumerate(tool_events)
@@ -1059,13 +1079,35 @@ def _tool_order_is_compliant(tool_events: list[dict[str, Any]]) -> bool:
     ]
     if len(successful_sql) > 1:
         return False
-    if "retrieve_golden_examples" in names and "run_sql_query" in names:
-        if names.index("retrieve_golden_examples") > names.index("run_sql_query"):
-            return False
-    if "generate_chart" in names:
-        if not successful_sql or names.index("generate_chart") < successful_sql[0]:
-            return False
+    if sql_events and any(
+        index > sql_events[0]
+        for index, event in enumerate(tool_events)
+        if event["tool"] == "retrieve_golden_examples"
+    ):
+        return False
+    chart_events = [
+        index for index, event in enumerate(tool_events) if event["tool"] == "generate_chart"
+    ]
+    if chart_events and (not successful_sql or min(chart_events) < successful_sql[0]):
+        return False
     return True
+
+
+def _empty_result_is_disclosed(narrative: str) -> bool:
+    normalized = " ".join(narrative.casefold().split())
+    return any(
+        phrase in normalized
+        for phrase in (
+            "no matching data",
+            "no matching rows",
+            "no matching records",
+            "no matching results",
+            "no data was found",
+            "no rows were found",
+            "did not return any data",
+            "did not return any rows",
+        )
+    )
 
 
 def _duration_ms(started: float) -> int:
