@@ -33,9 +33,7 @@ class BigQueryAnalyticsAdapter:
             try:
                 from google.cloud import bigquery
             except ImportError as exc:
-                raise QueryExecutionError(
-                    "google-cloud-bigquery is not installed."
-                ) from exc
+                raise QueryExecutionError("google-cloud-bigquery is not installed.") from exc
             kwargs: dict[str, Any] = {}
             if self.config.bigquery.project:
                 kwargs["project"] = self.config.bigquery.project
@@ -56,9 +54,7 @@ class BigQueryAnalyticsAdapter:
             full_name = f"{self.config.bigquery.dataset}.{table_name}"
             try:
                 table = self.client.get_table(full_name)
-                columns = ", ".join(
-                    f"{field.name} {field.field_type}" for field in table.schema
-                )
+                columns = ", ".join(f"{field.name} {field.field_type}" for field in table.schema)
                 lines.append(f"- `{full_name}`: {columns}")
             except Exception:
                 lines.append(f"- `{full_name}`: schema unavailable at startup")
@@ -185,6 +181,7 @@ class BigQueryAnalyticsAdapter:
             dry_run_bytes=dry_bytes,
             total_bytes_billed=getattr(job, "total_bytes_billed", None),
             job_id=execution_job_id,
+            cache_hit=getattr(job, "cache_hit", None),
         )
 
 

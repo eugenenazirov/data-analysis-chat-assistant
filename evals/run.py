@@ -100,11 +100,21 @@ def quality(
         bool,
         typer.Option(help="Gate automated metrics without requiring analyst scores."),
     ] = False,
+    repetitions: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            max=10,
+            help="Independent live attempts per case (replay remains single-pass).",
+        ),
+    ] = 1,
 ) -> None:
     """Run replay or credentialed live answer-quality evaluations."""
 
     config = load_settings(config_path)
     if mode is QualityEvalMode.replay:
+        if repetitions != 1:
+            raise typer.BadParameter("--repetitions applies only to --mode live")
         result = run_quality_replay_evals(config, cases_path)
     else:
         runtime = Runtime(config)
@@ -117,6 +127,7 @@ def quality(
                 logger=runtime.logger,
                 analysis_agent=runtime.analysis_agent,
                 human_scores=load_human_scores(human_scores),
+                repetitions=repetitions,
             )
         )
         output = output or Path("artifacts/quality-eval-live.json")
@@ -127,7 +138,11 @@ def quality(
     table.add_column("Scores")
     for case_result in result.results:
         table.add_row(
-            case_result.name,
+            (
+                f"{case_result.name}#{case_result.attempt}"
+                if result.repetitions > 1
+                else case_result.name
+            ),
             (
                 "PASS"
                 if case_result.passed
@@ -139,9 +154,7 @@ def quality(
         )
     console.print(table)
     if result.needs_human_review:
-        console.print(
-            "[yellow]Human usefulness scores are required before release.[/yellow]"
-        )
+        console.print("[yellow]Human usefulness scores are required before release.[/yellow]")
     if output is not None:
         write_quality_report(result, output)
         console.print(f"[dim]quality_report={output}[/dim]")

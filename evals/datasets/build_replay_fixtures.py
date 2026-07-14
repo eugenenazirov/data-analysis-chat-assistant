@@ -808,6 +808,7 @@ def _source_tables(sql: str) -> list[str]:
 
 def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
     answer_case = scenario.expected_behavior in {"answer", "degrade"}
+    retrieval_case = bool(scenario.retrieval or scenario.retrieved_ids)
     candidate_sql = scenario.sql if answer_case else ""
     report_sql = candidate_sql or None
     report = {
@@ -854,7 +855,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "result_schema": result_schema,
             "row_count": len(scenario.rows) if answer_case else 0,
             "captured_at": CAPTURED_AT,
-            "evaluator_version": "quality-v3",
+            "evaluator_version": "quality-v4",
             "prompt_version": "analysis-v3",
             "persona_version": "prototype-config-v1",
             "model": "google-cloud:gemini-2.5-flash",
@@ -863,16 +864,46 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "from_cache": True,
             "content_sha256": "0" * 64,
         },
+        "operational": {
+            "trace_ids": [f"replay-{scenario.id}"],
+            "duration_ms": 1200 if answer_case else 400,
+            "provider_requests": 2 if answer_case else 1,
+            "retrieval_requests": 1 if retrieval_case else 0,
+            "query_attempts": 1 if answer_case else 0,
+            "sql_retries": 0,
+            "sql_retry_reasons": [],
+            "output_retries": 0,
+            "output_retry_reasons": [],
+            "bigquery_dry_runs": 1 if answer_case else 0,
+            "bigquery_executions": 1 if answer_case else 0,
+            "bigquery_job_ids": [f"fixture-{scenario.id}"] if answer_case else [],
+            "duplicate_warehouse_executions": 0,
+            "tool_sequence": [
+                *(["retrieve_golden_examples"] if retrieval_case else []),
+                *(["run_sql_query"] if answer_case else []),
+            ],
+            "tool_order_compliant": True,
+            "input_tokens": 500,
+            "cached_input_tokens": 0,
+            "reasoning_tokens": 100,
+            "output_tokens": 200,
+            "total_tokens": 800,
+            "dry_run_bytes": 1_000_000 if answer_case else 0,
+            "billed_bytes": 1_000_000 if answer_case else 0,
+            "cache_hit": False,
+            "chart_duration_ms": None,
+            "chart_artifact_bytes": None,
+        },
     }
     replay_model = QualityReplay.model_validate(replay)
     replay["provenance"]["content_sha256"] = _fixture_content_sha256(scenario.sql, replay_model)
     columns = list(result_schema)
-    evaluators = ["faithfulness", "usefulness"]
+    evaluators = ["faithfulness", "usefulness", "operational"]
     if answer_case:
         evaluators = ["intent", "calculation", *evaluators]
     if scenario.history:
         evaluators.append("multi_turn")
-    if scenario.retrieval or scenario.retrieved_ids:
+    if retrieval_case:
         evaluators.append("retrieval")
     return {
         "id": scenario.id,
@@ -980,6 +1011,11 @@ def main() -> None:
     _write_or_check(
         root / "adversarial.jsonl",
         _render(ADVERSARIAL_SCENARIOS, "adversarial"),
+        check=args.check,
+    )
+    _write_or_check(
+        root / "regression.jsonl",
+        _render(REGRESSION_SCENARIOS, "regression"),
         check=args.check,
     )
 
@@ -1362,6 +1398,68 @@ DEVELOPMENT_SCENARIOS = [
             "required": True,
             "disclosure_fragments": ["required retrieval is unavailable", "cannot"],
         },
+    ),
+]
+
+
+REGRESSION_SCENARIOS = [
+    Scenario(
+        id="returned_value_currency_binding_regression",
+        title="Returned-value currency binding",
+        category="narrative_regression",
+        question="What returned sales value came from California?",
+        sql=_sql("""
+            SELECT u.state, ROUND(SUM(oi.sale_price), 2) AS returned_value
+            FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+            JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id
+            WHERE oi.status = 'Returned' AND u.state = 'California' GROUP BY u.state
+        """),
+        rows=[{"state": "California", "returned_value": 12500.0}],
+        keys=["state"],
+        units={"state": "text", "returned_value": "currency"},
+        answer="California returned value was $12,500.",
+        risk="high",
+    ),
+    Scenario(
+        id="cte_join_alias_regression",
+        title="CTE alias join is assessed correctly",
+        category="sql_lineage_regression",
+        question="Show realized category revenue for repeat customers.",
+        sql=_sql("""
+            WITH customer_orders AS (
+              SELECT user_id, COUNT(DISTINCT order_id) AS order_count
+              FROM `bigquery-public-data.thelook_ecommerce.orders` GROUP BY user_id
+            )
+            SELECT p.category, ROUND(SUM(oi.sale_price), 2) AS revenue
+            FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+            JOIN customer_orders AS c ON oi.user_id = c.user_id
+            JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id
+            WHERE c.order_count > 1 AND oi.status NOT IN ('Cancelled', 'Returned')
+            GROUP BY p.category ORDER BY revenue DESC LIMIT 10
+        """),
+        rows=[{"category": "Outerwear & Coats", "revenue": 80000.0}],
+        keys=["category"],
+        units={"category": "text", "revenue": "currency"},
+        answer="Outerwear & Coats led repeat-customer realized revenue at $80,000.",
+        risk="high",
+    ),
+    Scenario(
+        id="large_business_number_not_pii_regression",
+        title="Large revenue is not treated as a phone number",
+        category="privacy_regression",
+        question="Report aggregate realized revenue and order count.",
+        sql=_sql("""
+            SELECT ROUND(SUM(sale_price), 2) AS revenue,
+                   COUNT(DISTINCT order_id) AS orders
+            FROM `bigquery-public-data.thelook_ecommerce.order_items`
+            WHERE status NOT IN ('Cancelled', 'Returned')
+        """),
+        rows=[{"revenue": 1330431.52, "orders": 1234}],
+        keys=[],
+        units={"revenue": "currency", "orders": "count"},
+        answer="Realized revenue was $1,330,431.52 across 1,234 orders.",
+        risk="critical",
+        critical=True,
     ),
 ]
 

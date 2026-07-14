@@ -20,7 +20,7 @@ from evals.quality import (
 )
 from retail_agent.agent import TurnResult
 from retail_agent.domain.policies.report_evidence import assess_report_evidence
-from retail_agent.models import AgentFailure, AnalysisReport
+from retail_agent.models import AgentFailure, AnalysisReport, OperationalMetrics
 from retail_agent.observability import EventLogger
 
 CASES_PATH = Path("evals/datasets/smoke.jsonl")
@@ -454,6 +454,10 @@ def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp
                     retryable=True,
                 ),
                 conversation=conversation.fail_turn(max_turns=6),
+                operational=OperationalMetrics(
+                    trace_ids=["attempt-1"],
+                    provider_requests=1,
+                ),
             )
         return TurnResult(
             response=case.replay.report,
@@ -462,6 +466,7 @@ def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp
             query_result=CanonicalWarehouse(case.replay.candidate_rows).execute(
                 case.replay.candidate_sql, "trace"
             ),
+            operational=case.replay.operational,
         )
 
     monkeypatch.setattr("evals.quality.run_question", fake_run_question)
@@ -482,6 +487,9 @@ def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp
     assert result.passed is True
     assert result.mode == "live"
     assert calls == 2
+    assert result.results[0].operational.provider_requests == 3
+    assert len(result.results[0].operational.trace_ids) == 2
+    assert result.results[0].operational.query_attempts == 1
 
 
 def test_live_quality_eval_reports_failed_history_turn(test_config, tmp_path, monkeypatch):
@@ -564,6 +572,9 @@ def test_quality_report_and_human_scores_round_trip(test_config, tmp_path):
     write_quality_report(result, report_path)
 
     assert json.loads(report_path.read_text(encoding="utf-8"))["passed"] is True
+    reloaded = type(result).model_validate_json(report_path.read_text(encoding="utf-8"))
+    assert reloaded == result
+    assert all(item.versions == result.versions for item in reloaded.results)
     assert load_human_scores(scores_path) == {"case": 4.5}
     assert load_human_scores(None) == {}
 
@@ -975,3 +986,97 @@ def test_answer_contract_rejects_pii_in_narrative(test_config):
 
     assert result.scores.faithfulness == 0
     assert "pii_leakage:1" in result.diagnostics.unsupported_qualitative_claims
+
+
+@pytest.mark.parametrize(
+    ("update", "failed_constraint"),
+    [
+        ({"provider_requests": 99}, "provider_request_budget"),
+        ({"duplicate_warehouse_executions": 1}, "duplicate_warehouse_execution"),
+        ({"tool_order_compliant": False}, "tool_order"),
+        ({"billed_bytes": 50_000_001}, "billed_bytes_budget"),
+    ],
+)
+def test_operational_budget_mutations_fail_only_operational_score(
+    test_config, update, failed_constraint
+):
+    case = load_quality_cases(CASES_PATH)[0]
+    baseline = evaluate_quality_case(test_config, case, case.replay)
+    replay = case.replay.model_copy(
+        update={"operational": case.replay.operational.model_copy(update=update)}
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert baseline.scores.operational == 1
+    assert result.scores.operational == 0
+    assert {
+        name
+        for name in type(result.scores).model_fields
+        if getattr(result.scores, name) != getattr(baseline.scores, name)
+    } == {"operational"}
+    assert any(
+        item.name == failed_constraint and not item.passed
+        for item in result.diagnostics.operational_results
+    )
+
+
+def test_repeated_live_eval_reports_flakiness_and_attempt_statistics(
+    test_config, tmp_path, monkeypatch
+):
+    case = load_quality_cases(CASES_PATH)[0]
+    calls = 0
+
+    async def fake_run_question(question, *, conversation, **kwargs):
+        nonlocal calls
+        calls += 1
+        report = case.replay.report
+        if calls == 2:
+            report = report.model_copy(update={"answer": "Revenue was 99999999."})
+        return TurnResult(
+            response=report,
+            conversation=conversation,
+            retrieved_trio_ids=tuple(case.replay.retrieved_ids),
+            query_result=CanonicalWarehouse(case.replay.candidate_rows).execute(
+                case.replay.candidate_sql, f"trace-{calls}"
+            ),
+            operational=case.replay.operational.model_copy(
+                update={
+                    "trace_ids": [f"trace-{calls}"],
+                    "duration_ms": calls * 100,
+                    "bigquery_job_ids": [f"job-{calls}"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr("evals.quality.run_question", fake_run_question)
+    result = asyncio.run(
+        run_quality_live_evals(
+            test_config,
+            _single_case_file(tmp_path),
+            bigquery=CanonicalWarehouse(case.replay.canonical_rows),
+            golden_store=object(),
+            logger=EventLogger(tmp_path / "runs.jsonl"),
+            analysis_agent=object(),
+            human_scores={case.id: 5},
+            max_safe_attempts=1,
+            repetitions=5,
+        )
+    )
+
+    assert calls == 5
+    assert result.case_count == 1
+    assert result.attempt_count == 5
+    assert result.repetitions == 5
+    assert result.flaky_cases == [case.id]
+    assert result.stability[case.id].successes == 4
+    assert result.stability[case.id].first_attempt_passed is True
+    assert result.stability[case.id].eventual_passed is True
+    assert result.stability[case.id].worst_scores["faithfulness"] == 0
+    assert result.stability[case.id].score_standard_deviation["faithfulness"] > 0
+    assert result.operational.first_attempt_success_rate == 1
+    assert result.operational.eventual_success_rate == 1
+    assert result.operational.attempt_success_rate == pytest.approx(4 / 5)
+    assert result.operational.p50_duration_ms == 300
+    assert result.operational.p95_duration_ms == pytest.approx(480)
+    assert result.operational.pass_rate_ci95 is not None

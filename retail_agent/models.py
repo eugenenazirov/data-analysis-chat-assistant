@@ -22,6 +22,7 @@ from retail_agent.domain.models import (
     FailureCode,
     GoldenExample,
     GoldenTrio,
+    OperationalMetrics,
     QueryResult,
     RetrievedTrio,
     SafeSql,
@@ -31,6 +32,7 @@ from retail_agent.domain.models import (
     UserPreferences,
     UserProfile,
     UserQuestion,
+    merge_operational_metrics,
 )
 
 __all__ = [
@@ -52,6 +54,8 @@ __all__ = [
     "ExecutionFailure",
     "GoldenExample",
     "GoldenTrio",
+    "OperationalMetrics",
+    "merge_operational_metrics",
     "QueryResult",
     "RetrievedTrio",
     "SafeSql",

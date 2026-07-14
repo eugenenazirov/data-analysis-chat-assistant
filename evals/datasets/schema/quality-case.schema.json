@@ -293,7 +293,8 @@
         "retrieval",
         "faithfulness",
         "multi_turn",
-        "usefulness"
+        "usefulness",
+        "operational"
       ],
       "type": "string"
     },
@@ -466,6 +467,228 @@
       "title": "JoinKey",
       "type": "object"
     },
+    "OperationalMetrics": {
+      "properties": {
+        "bigquery_dry_runs": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bigquery Dry Runs",
+          "type": "integer"
+        },
+        "bigquery_executions": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Bigquery Executions",
+          "type": "integer"
+        },
+        "bigquery_job_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Bigquery Job Ids",
+          "type": "array"
+        },
+        "billed_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Billed Bytes",
+          "type": "integer"
+        },
+        "cache_hit": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Hit"
+        },
+        "cached_input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Input Tokens"
+        },
+        "chart_artifact_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chart Artifact Bytes"
+        },
+        "chart_duration_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chart Duration Ms"
+        },
+        "dry_run_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Dry Run Bytes",
+          "type": "integer"
+        },
+        "duplicate_warehouse_executions": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Duplicate Warehouse Executions",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_retries": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Retries",
+          "type": "integer"
+        },
+        "output_retry_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Retry Reasons",
+          "type": "array"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "provider_requests": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Requests"
+        },
+        "query_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Query Attempts",
+          "type": "integer"
+        },
+        "reasoning_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Tokens"
+        },
+        "retrieval_requests": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Retrieval Requests",
+          "type": "integer"
+        },
+        "sql_retries": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Sql Retries",
+          "type": "integer"
+        },
+        "sql_retry_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sql Retry Reasons",
+          "type": "array"
+        },
+        "tool_order_compliant": {
+          "default": true,
+          "title": "Tool Order Compliant",
+          "type": "boolean"
+        },
+        "tool_sequence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool Sequence",
+          "type": "array"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        },
+        "trace_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trace Ids",
+          "type": "array"
+        }
+      },
+      "title": "OperationalMetrics",
+      "type": "object"
+    },
     "QualityExpectations": {
       "additionalProperties": false,
       "properties": {
@@ -548,6 +771,9 @@
           "title": "History Used",
           "type": "boolean"
         },
+        "operational": {
+          "$ref": "#/$defs/OperationalMetrics"
+        },
         "provenance": {
           "$ref": "#/$defs/FixtureProvenance"
         },
@@ -595,7 +821,8 @@
         "canonical_rows",
         "retrieved_ids",
         "report",
-        "provenance"
+        "provenance",
+        "operational"
       ],
       "title": "QualityReplay",
       "type": "object"

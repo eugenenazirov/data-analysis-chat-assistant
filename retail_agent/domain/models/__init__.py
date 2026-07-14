@@ -22,6 +22,7 @@ from retail_agent.domain.models.conversation import (
     UserProfile,
     UserQuestion,
 )
+from retail_agent.domain.models.operations import OperationalMetrics, merge_operational_metrics
 from retail_agent.domain.models.query import (
     GoldenExample,
     GoldenTrio,
@@ -49,6 +50,8 @@ __all__ = [
     "ExecutionFailure",
     "GoldenExample",
     "GoldenTrio",
+    "OperationalMetrics",
+    "merge_operational_metrics",
     "QueryResult",
     "RetrievedTrio",
     "SafeSql",

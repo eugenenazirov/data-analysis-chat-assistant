@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 
 from retail_agent import agent
 from retail_agent.bigquery import (
@@ -76,11 +77,23 @@ class FailingChartExecutor:
 
 
 class FakeBigQueryRunner:
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
     def describe_allowed_tables(self) -> str:
         return "- `bigquery-public-data.thelook_ecommerce.order_items`: id INTEGER"
 
     def execute(self, sql: str, trace_id: str) -> QueryResult:
-        return QueryResult(sql=sql, rows=[{"order_count": 42}], total_rows=1)
+        self.calls.append((sql, trace_id))
+        return QueryResult(
+            sql=sql,
+            rows=[{"order_count": 42}],
+            total_rows=1,
+            dry_run_bytes=1024,
+            total_bytes_billed=1024,
+            job_id=f"job-{trace_id}",
+            cache_hit=False,
+        )
 
 
 @dataclass
@@ -91,8 +104,14 @@ class FakeRunResult:
     def new_messages(self) -> list[ModelMessage]:
         return self.messages
 
-    def usage(self) -> dict[str, int]:
-        return {"requests": 1}
+    def usage(self) -> RunUsage:
+        return RunUsage(
+            requests=1,
+            input_tokens=100,
+            cache_read_tokens=20,
+            output_tokens=30,
+            details={"reasoning_tokens": 5},
+        )
 
 
 class FakeAnalysisAgent:
@@ -198,6 +217,48 @@ def test_run_question_defers_golden_retrieval_to_the_model(test_config, tmp_path
     assert started[0]["reference_date"] == turn.reference_date.isoformat()
     assert started[0]["persona_version"] == "prototype-config-v1"
     assert started[0]["golden_index_version"] == "test_trios"
+
+
+def test_run_question_returns_attributed_operational_metrics(test_config, tmp_path):
+    bigquery = FakeBigQueryRunner()
+
+    async def callback(prompt, *, deps, **kwargs):
+        await agent.run_sql_query(
+            SimpleNamespace(deps=deps, retry=0, max_retries=2),
+            "SELECT 42 AS order_count",
+        )
+        return FakeRunResult(
+            output=AnalysisReport(question="How many orders?", answer="There were 42 orders."),
+            messages=[_message("orders")],
+        )
+
+    turn = asyncio.run(
+        agent.run_question(
+            "How many orders?",
+            config=test_config,
+            bigquery=bigquery,
+            golden_store=FakeGoldenStore(),
+            logger=EventLogger(tmp_path / "runs.jsonl"),
+            user_id="manager_a",
+            analysis_agent=FakeAnalysisAgent(callback),
+        )
+    )
+
+    assert turn.trace_id is not None
+    assert turn.operational.trace_ids == [turn.trace_id]
+    assert turn.operational.provider_requests == 1
+    assert turn.operational.query_attempts == 1
+    assert turn.operational.bigquery_dry_runs == 1
+    assert turn.operational.bigquery_executions == 1
+    assert turn.operational.bigquery_job_ids == [f"job-{turn.trace_id}"]
+    assert turn.operational.input_tokens == 100
+    assert turn.operational.cached_input_tokens == 20
+    assert turn.operational.reasoning_tokens == 5
+    assert turn.operational.output_tokens == 30
+    assert turn.operational.total_tokens == 130
+    assert turn.operational.dry_run_bytes == 1024
+    assert turn.operational.billed_bytes == 1024
+    assert turn.operational.tool_order_compliant is True
 
 
 def test_run_question_continues_when_golden_knowledge_is_unavailable(test_config, tmp_path):
@@ -601,9 +662,7 @@ def test_native_agent_continues_after_retrieval_degrades(test_config, tmp_path):
     assert deps.last_query_result is not None
 
 
-def test_required_retrieval_unlocks_sql_without_spending_retry_budget(
-    test_config, tmp_path
-):
+def test_required_retrieval_unlocks_sql_without_spending_retry_budget(test_config, tmp_path):
     deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
     deps.retrieval_required = True
     calls = 0
@@ -632,9 +691,7 @@ def test_required_retrieval_unlocks_sql_without_spending_retry_budget(
             tool for tool in info.output_tools if tool.name.endswith("DataAnalysisResult")
         )
         return ModelResponse(
-            parts=[
-                ToolCallPart(output_tool.name, {"direct_answer": "There were 42 orders."})
-            ]
+            parts=[ToolCallPart(output_tool.name, {"direct_answer": "There were 42 orders."})]
         )
 
     result = asyncio.run(
@@ -683,6 +740,9 @@ def test_output_validator_retries_unsupported_claim_then_accepts_evidence(test_c
     assert isinstance(result.output, DataAnalysisResult)
     assert result.output.direct_answer == "There were 42 orders."
     assert deps.output_validation_retries == 1
+    assert deps.output_retry_reasons == ["unsupported_numeric_claim"]
+    assert len(deps.bigquery.calls) == 1
+    assert deps.bigquery_job_ids == ["job-native-agent-trace"]
     assert calls == 3
 
 

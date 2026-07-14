@@ -56,3 +56,4 @@ class QueryResult(BaseModel):
     dry_run_bytes: int | None = None
     total_bytes_billed: int | None = None
     job_id: str | None = None
+    cache_hit: bool | None = None

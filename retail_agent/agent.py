@@ -71,6 +71,7 @@ from retail_agent.models import (
     DataAnalysisResult,
     ExecutionFailure,
     FailureCode,
+    OperationalMetrics,
     QueryResult,
     RetrievedTrio,
     SchemaExplanationResult,
@@ -93,9 +94,9 @@ class ChartToolResult(BaseModel):
     error_code: str | None = None
 
 
-type ChartFailureCode = ChartExecutionFailureCode | Literal[
-    "executor_unavailable", "verified_query_required"
-]
+type ChartFailureCode = (
+    ChartExecutionFailureCode | Literal["executor_unavailable", "verified_query_required"]
+)
 
 
 @dataclass
@@ -121,6 +122,13 @@ class AgentDependencies:
     output_validation_retries: int = 0
     last_chart_artifact: ChartArtifact | None = None
     last_chart_failure_code: ChartFailureCode | None = None
+    sql_retry_reasons: list[str] = field(default_factory=list)
+    output_retry_reasons: list[str] = field(default_factory=list)
+    bigquery_job_ids: list[str] = field(default_factory=list)
+    dry_run_bytes: int = 0
+    billed_bytes: int = 0
+    cache_hits: list[bool] = field(default_factory=list)
+    bigquery_dry_runs: int = 0
 
 
 @dataclass(frozen=True)
@@ -183,6 +191,8 @@ class TurnResult:
     sql_tool_invoked: bool = False
     chart_artifact: ChartArtifact | None = None
     reference_date: date | None = None
+    trace_id: str | None = None
+    operational: OperationalMetrics = field(default_factory=OperationalMetrics)
 
 
 async def add_runtime_context(ctx: RunContext[AgentDependencies]) -> str:
@@ -254,6 +264,13 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
             sql,
             ctx.deps.trace_id,
         )
+        ctx.deps.bigquery_dry_runs += 1
+        if result.job_id is not None:
+            ctx.deps.bigquery_job_ids.append(result.job_id)
+        ctx.deps.dry_run_bytes += result.dry_run_bytes or 0
+        ctx.deps.billed_bytes += result.total_bytes_billed or 0
+        if result.cache_hit is not None:
+            ctx.deps.cache_hits.append(result.cache_hit)
         if result.total_rows == 0:
             _record_tool_event(ctx, "run_sql_query", "empty", started)
             _record_tool_failure(ctx, "retry_exhausted", retryable=False)
@@ -272,13 +289,16 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         _record_tool_event(ctx, "run_sql_query", "succeeded", started)
         return result
     except QueryCostExceeded as exc:
+        ctx.deps.bigquery_dry_runs += 1
         _record_tool_event(ctx, "run_sql_query", "rejected", started)
         _record_tool_failure(ctx, "retry_exhausted", retryable=False)
         _log_sql_retry_feedback(ctx, failure_class=exc.__class__.__name__, error=str(exc))
         raise ModelRetry(str(exc)) from exc
     except QueryOutcomeUnknownError as exc:
+        ctx.deps.bigquery_dry_runs += 1
         _record_tool_event(ctx, "run_sql_query", "failed", started)
         _record_tool_failure(ctx, "warehouse_outcome_unknown", retryable=False)
+        ctx.deps.bigquery_job_ids.append(exc.job_id)
         ctx.deps.logger.event(
             ctx.deps.trace_id,
             "sql_terminal_failure",
@@ -289,6 +309,7 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         )
         raise
     except QueryPreExecutionError as exc:
+        ctx.deps.bigquery_dry_runs += 1
         _record_tool_event(ctx, "run_sql_query", "failed", started)
         _record_tool_failure(ctx, "warehouse_unavailable", retryable=True)
         _log_sql_retry_feedback(ctx, failure_class=exc.__class__.__name__, error=str(exc))
@@ -434,6 +455,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
         query_result = ctx.deps.last_query_result
         if query_result is None:
             ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.output_retry_reasons.append("data_answer_without_query")
             ctx.deps.logger.event(
                 ctx.deps.trace_id,
                 "output_validation_retry",
@@ -451,6 +473,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
         )
         if not evidence.is_supported:
             ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.output_retry_reasons.append("unsupported_numeric_claim")
             ctx.deps.logger.event(
                 ctx.deps.trace_id,
                 "output_validation_retry",
@@ -470,6 +493,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
         )
         if narrative_violation is not None:
             ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.output_retry_reasons.append(narrative_violation)
             ctx.deps.logger.event(
                 ctx.deps.trace_id,
                 "output_validation_retry",
@@ -483,6 +507,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
             or output.chart_artifact != ctx.deps.last_chart_artifact
         ):
             ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.output_retry_reasons.append("unverified_chart_artifact")
             ctx.deps.logger.event(
                 ctx.deps.trace_id,
                 "output_validation_retry",
@@ -576,6 +601,12 @@ async def run_question(
             tool_failure_retryable=deps.last_tool_failure_retryable,
         )
         degraded = deps.last_query_result is not None
+        duration_ms = _duration_ms(started)
+        operational = _operational_metrics(
+            deps,
+            duration_ms=duration_ms,
+            usage=None,
+        )
         logger.event(
             trace_id,
             "agent_run_failed",
@@ -600,7 +631,8 @@ async def run_question(
                 if deps.last_chart_artifact is not None
                 else None
             ),
-            duration_ms=_duration_ms(started),
+            duration_ms=duration_ms,
+            operational=operational.model_dump(),
             error=str(exc),
         )
         next_state = state.fail_turn(
@@ -631,6 +663,8 @@ async def run_question(
             sql_tool_invoked=deps.sql_tool_invoked,
             chart_artifact=deps.last_chart_artifact,
             reference_date=reference_date,
+            trace_id=trace_id,
+            operational=operational,
         )
 
     response = _to_analysis_response(
@@ -645,6 +679,13 @@ async def run_question(
         max_turns=config.conversation.max_history_turns,
         max_bytes=config.conversation.max_history_bytes,
     )
+    usage = _usage(result)
+    duration_ms = _duration_ms(started)
+    operational = _operational_metrics(
+        deps,
+        duration_ms=duration_ms,
+        usage=usage,
+    )
     logger.event(
         trace_id,
         "agent_run_completed",
@@ -658,14 +699,13 @@ async def run_question(
         retrieval_degraded=deps.retrieval_degraded,
         tool_sequence=deps.tool_sequence,
         tool_events=deps.tool_events,
-        usage=_usage(result),
+        usage=usage,
         output_validation_retries=deps.output_validation_retries,
         chart_artifact=(
-            deps.last_chart_artifact.model_dump()
-            if deps.last_chart_artifact is not None
-            else None
+            deps.last_chart_artifact.model_dump() if deps.last_chart_artifact is not None else None
         ),
-        duration_ms=_duration_ms(started),
+        duration_ms=duration_ms,
+        operational=operational.model_dump(),
         prompt_version=build_analysis_prompt().version,
         persona_version=config.persona_version,
         golden_index_version=config.retrieval.collection,
@@ -678,12 +718,15 @@ async def run_question(
         sql_tool_invoked=deps.sql_tool_invoked,
         chart_artifact=deps.last_chart_artifact,
         reference_date=reference_date,
+        trace_id=trace_id,
+        operational=operational,
     )
 
 
 def _log_sql_retry_feedback(
     ctx: RunContext[AgentDependencies], *, failure_class: str, error: str
 ) -> None:
+    ctx.deps.sql_retry_reasons.append(failure_class)
     ctx.deps.logger.event(
         ctx.deps.trace_id,
         "sql_retry_feedback",
@@ -714,11 +757,7 @@ def _to_analysis_response(
     if isinstance(output, AnalysisReport):
         report = output.model_copy(
             update={
-                "sql": (
-                    deps.last_query_result.sql
-                    if deps.last_query_result is not None
-                    else None
-                ),
+                "sql": (deps.last_query_result.sql if deps.last_query_result is not None else None),
                 "chart_artifact": deps.last_chart_artifact,
             }
         )
@@ -956,6 +995,77 @@ def _new_messages(result: Any) -> list[ModelMessage]:
 def _usage(result: Any) -> Any:
     value = getattr(result, "usage", None)
     return value() if callable(value) else value
+
+
+def _operational_metrics(
+    deps: AgentDependencies,
+    *,
+    duration_ms: int,
+    usage: Any,
+) -> OperationalMetrics:
+    retrieval_events = [
+        event for event in deps.tool_events if event["tool"] == "retrieve_golden_examples"
+    ]
+    query_events = [event for event in deps.tool_events if event["tool"] == "run_sql_query"]
+    successful_queries = sum(event["status"] == "succeeded" for event in query_events)
+    chart_events = [event for event in deps.tool_events if event["tool"] == "generate_chart"]
+    input_tokens = getattr(usage, "input_tokens", None)
+    cached_input_tokens = getattr(usage, "cache_read_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    details = getattr(usage, "details", {}) or {}
+    reasoning_tokens = details.get("reasoning_tokens")
+    total_tokens = getattr(usage, "total_tokens", None)
+    if callable(total_tokens):
+        total_tokens = total_tokens()
+    return OperationalMetrics(
+        trace_ids=[deps.trace_id],
+        duration_ms=duration_ms,
+        provider_requests=getattr(usage, "requests", 1),
+        retrieval_requests=len(retrieval_events),
+        query_attempts=len(query_events),
+        sql_retries=max(0, len(query_events) - 1),
+        sql_retry_reasons=deps.sql_retry_reasons,
+        output_retries=deps.output_validation_retries,
+        output_retry_reasons=deps.output_retry_reasons,
+        bigquery_dry_runs=deps.bigquery_dry_runs,
+        bigquery_executions=len(deps.bigquery_job_ids),
+        bigquery_job_ids=deps.bigquery_job_ids,
+        duplicate_warehouse_executions=max(0, successful_queries - 1),
+        tool_sequence=deps.tool_sequence,
+        tool_order_compliant=_tool_order_is_compliant(deps.tool_events),
+        input_tokens=input_tokens,
+        cached_input_tokens=cached_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        dry_run_bytes=deps.dry_run_bytes,
+        billed_bytes=deps.billed_bytes,
+        cache_hit=any(deps.cache_hits) if deps.cache_hits else None,
+        chart_duration_ms=(
+            sum(event["duration_ms"] for event in chart_events) if chart_events else None
+        ),
+        chart_artifact_bytes=(
+            deps.last_chart_artifact.size_bytes if deps.last_chart_artifact is not None else None
+        ),
+    )
+
+
+def _tool_order_is_compliant(tool_events: list[dict[str, Any]]) -> bool:
+    names = [event["tool"] for event in tool_events]
+    successful_sql = [
+        index
+        for index, event in enumerate(tool_events)
+        if event["tool"] == "run_sql_query" and event["status"] == "succeeded"
+    ]
+    if len(successful_sql) > 1:
+        return False
+    if "retrieve_golden_examples" in names and "run_sql_query" in names:
+        if names.index("retrieve_golden_examples") > names.index("run_sql_query"):
+            return False
+    if "generate_chart" in names:
+        if not successful_sql or names.index("generate_chart") < successful_sql[0]:
+            return False
+    return True
 
 
 def _duration_ms(started: float) -> int:

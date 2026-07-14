@@ -8,6 +8,7 @@ from evals.datasets.build_replay_fixtures import (
     DEVELOPMENT_SCENARIOS,
     HOLDOUT_SCENARIOS,
     MULTI_TURN_SCENARIOS,
+    REGRESSION_SCENARIOS,
     _render,
 )
 from evals.quality import (
@@ -25,6 +26,7 @@ HOLDOUT_PATH = Path("evals/datasets/release_holdout.jsonl")
 MULTI_TURN_PATH = Path("evals/datasets/multi_turn.jsonl")
 DEVELOPMENT_PATH = Path("evals/datasets/development.jsonl")
 ADVERSARIAL_PATH = Path("evals/datasets/adversarial.jsonl")
+REGRESSION_PATH = Path("evals/datasets/regression.jsonl")
 GOLDEN_PATH = Path("data/golden_trios.jsonl")
 
 
@@ -62,6 +64,7 @@ def test_generalization_suites_have_no_golden_knowledge_overlap():
         MULTI_TURN_PATH,
         DEVELOPMENT_PATH,
         ADVERSARIAL_PATH,
+        REGRESSION_PATH,
     ):
         governance = inspect_dataset_governance(load_quality_cases(path), GOLDEN_PATH)
 
@@ -81,6 +84,18 @@ def test_generated_replay_fixtures_are_current():
     assert ADVERSARIAL_PATH.read_text(encoding="utf-8") == _render(
         ADVERSARIAL_SCENARIOS, "adversarial"
     )
+    assert REGRESSION_PATH.read_text(encoding="utf-8") == _render(
+        REGRESSION_SCENARIOS, "regression"
+    )
+
+
+def test_regression_partition_locks_observed_failures(test_config):
+    cases = load_quality_cases(REGRESSION_PATH)
+    result = run_quality_replay_evals(test_config, REGRESSION_PATH)
+
+    assert len(cases) == 3
+    assert result.automated_passed is True
+    assert result.critical_failures == []
 
 
 def test_retrieval_portfolio_covers_unseen_and_degraded_behavior(test_config):
@@ -163,6 +178,7 @@ def test_live_clarification_does_not_require_query_result(test_config, tmp_path,
         return TurnResult(
             response=AnalysisReport(question=question, answer=case.replay.report.answer),
             conversation=conversation,
+            operational=case.replay.operational,
         )
 
     monkeypatch.setattr("evals.quality.run_question", fake_run_question)

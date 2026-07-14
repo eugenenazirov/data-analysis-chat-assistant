@@ -39,9 +39,7 @@ def test_eval_runner_rejects_unknown_command():
     assert "quality" in help_result.output
 
 
-def test_quality_automated_only_accepts_pending_human_review(
-    test_config, monkeypatch
-):
+def test_quality_automated_only_accepts_pending_human_review(test_config, monkeypatch):
     case = load_quality_cases(cli.DEFAULT_CASES_PATH)[0]
     replay = case.replay.model_copy(update={"usefulness_score": None})
     pending = summarize_quality_results(
@@ -66,3 +64,18 @@ def test_quality_automated_only_accepts_pending_human_review(
 
 def test_default_quality_dataset_is_evaluation_only():
     assert cli.DEFAULT_CASES_PATH == Path("evals/datasets/smoke.jsonl")
+
+
+def test_repetitions_are_live_only_and_bounded():
+    replay = CliRunner().invoke(
+        cli.app,
+        ["quality", "--mode", "replay", "--repetitions", "2"],
+    )
+    unbounded = CliRunner().invoke(
+        cli.app,
+        ["quality", "--mode", "live", "--repetitions", "11"],
+    )
+
+    assert replay.exit_code != 0
+    assert "applies only" in replay.output
+    assert unbounded.exit_code != 0
