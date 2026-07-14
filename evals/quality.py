@@ -36,6 +36,7 @@ type EvaluationSuite = Literal[
 ]
 type EvaluationRisk = Literal["low", "medium", "high", "critical"]
 type ExpectedBehavior = Literal["answer", "clarify", "refuse", "degrade"]
+type ResultUnit = Literal["currency", "percentage", "count", "identifier", "text", "date"]
 type EvaluatorName = Literal[
     "intent",
     "calculation",
@@ -85,6 +86,21 @@ class QualityExpectations(EvaluationModel):
     numeric_tolerance: float = 0.001
 
 
+class ResultContract(EvaluationModel):
+    key_columns: list[str] = Field(default_factory=list)
+    measure_columns: list[str] = Field(default_factory=list)
+    column_mapping: dict[str, str]
+    ordered: bool = False
+    numeric_tolerance: float = Field(default=0.001, ge=0, le=0.1)
+    units: dict[str, ResultUnit] = Field(default_factory=dict)
+
+
+class AnswerContract(EvaluationModel):
+    required_facts: list[str] = Field(default_factory=list)
+    forbidden_claims: list[str] = Field(default_factory=list)
+    pii_forbidden: bool = True
+
+
 class FixtureProvenance(EvaluationModel):
     canonical_sql_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     reference_date: date
@@ -131,6 +147,8 @@ class QualityEvalCase(EvaluationModel):
     evaluators: set[EvaluatorName]
     canonical_sql: str
     expectations: QualityExpectations
+    result_contract: ResultContract
+    answer_contract: AnswerContract
     replay: QualityReplay
     critical: bool = False
 
@@ -163,6 +181,19 @@ class QualityEvalCase(EvaluationModel):
             self.canonical_sql, self.replay
         ):
             raise ValueError("fixture content hash does not match replay content")
+        canonical_columns = set(provenance.result_schema)
+        declared_columns = {
+            *self.result_contract.key_columns,
+            *self.result_contract.measure_columns,
+        }
+        if not declared_columns.issubset(canonical_columns):
+            raise ValueError("result contract references unknown canonical columns")
+        if not canonical_columns.issubset(self.result_contract.column_mapping):
+            raise ValueError("result contract must map every canonical result column")
+        if not set(self.result_contract.units).issubset(canonical_columns):
+            raise ValueError("result units reference unknown canonical columns")
+        if self.result_contract.numeric_tolerance != self.expectations.numeric_tolerance:
+            raise ValueError("result and SQL expectation tolerances must match")
         return self
 
 
@@ -174,6 +205,22 @@ class QualityScores(EvaluationModel):
     faithfulness: float | None
     multi_turn: float | None
     usefulness: float | None
+
+
+class ConstraintDiagnostic(EvaluationModel):
+    name: str
+    passed: bool
+    detail: str
+
+
+class IntentAssessment(EvaluationModel):
+    score: float
+    constraints: list[ConstraintDiagnostic]
+
+
+class ResultAssessment(EvaluationModel):
+    score: float
+    violations: list[str] = Field(default_factory=list)
 
 
 class QualityDiagnostics(EvaluationModel):
@@ -188,6 +235,10 @@ class QualityDiagnostics(EvaluationModel):
     report_degraded: bool = False
     report_refused: bool = False
     reference_date: date | None = None
+    constraint_results: list[ConstraintDiagnostic] = Field(default_factory=list)
+    result_contract_violations: list[str] = Field(default_factory=list)
+    unsupported_qualitative_claims: list[str] = Field(default_factory=list)
+    verified_sql_attached: bool = False
 
 
 class QualityEvalResult(EvaluationModel):
@@ -460,8 +511,8 @@ async def _run_live_turn(
 def evaluate_quality_case(
     config: AgentConfig, case: QualityEvalCase, replay: QualityReplay
 ) -> QualityEvalResult:
-    intent = (
-        _intent_score(
+    intent_assessment = (
+        _intent_assessment(
             config,
             replay.candidate_sql,
             case.canonical_sql,
@@ -470,15 +521,17 @@ def evaluate_quality_case(
         if "intent" in case.evaluators
         else None
     )
-    calculation = (
-        _row_score(
+    intent = intent_assessment.score if intent_assessment is not None else None
+    result_assessment = (
+        _row_assessment(
             replay.candidate_rows,
             replay.canonical_rows,
-            case.expectations.numeric_tolerance,
+            case.result_contract,
         )
         if "calculation" in case.evaluators
         else None
     )
+    calculation = result_assessment.score if result_assessment is not None else None
     retrieval, retrieval_mrr = (
         _retrieval_scores(replay.retrieved_ids, case.expectations.expected_retrieval_ids)
         if "retrieval" in case.evaluators
@@ -488,10 +541,15 @@ def evaluate_quality_case(
         replay.report,
         replay.candidate_rows,
         replay.candidate_sql,
-        case.expectations.numeric_tolerance,
+        case.result_contract.numeric_tolerance,
         reference_date=replay.reference_date,
     )
-    faithfulness = evidence.score if "faithfulness" in case.evaluators else None
+    unsupported_qualitative_claims = _answer_contract_violations(
+        replay.report, case.answer_contract
+    )
+    faithfulness = (
+        evidence.score if not unsupported_qualitative_claims else 0.0
+    ) if "faithfulness" in case.evaluators else None
     unsupported_claims = list(evidence.unsupported_numeric_claims)
     multi_turn = (
         1.0 if replay.history_used and intent == 1.0 else 0.0
@@ -541,13 +599,19 @@ def evaluate_quality_case(
     report_status = (
         "degraded" if replay.report.degraded else "refused" if replay.report.refused else "complete"
     )
+    failed_constraints = (
+        [constraint.name for constraint in intent_assessment.constraints if not constraint.passed]
+        if intent_assessment is not None
+        else []
+    )
     detail = (
         f"intent={_format_score(intent)}, calculation={_format_score(calculation)}, "
         f"recall@3={_format_score(retrieval)}, mrr={_format_score(retrieval_mrr)}, "
         f"faithfulness={_format_score(faithfulness)}, "
         f"multi_turn={_format_score(multi_turn)}, usefulness={usefulness_detail}, "
         f"report={report_status}, "
-        f"sql_source={'verified' if executed_sql_attached else 'unverified'}"
+        f"sql_source={'verified' if executed_sql_attached else 'unverified'}, "
+        f"failed_constraints={','.join(failed_constraints) if failed_constraints else 'none'}"
     )
     return QualityEvalResult(
         name=case.id,
@@ -573,6 +637,14 @@ def evaluate_quality_case(
             report_degraded=replay.report.degraded,
             report_refused=replay.report.refused,
             reference_date=replay.reference_date,
+            constraint_results=(
+                intent_assessment.constraints if intent_assessment is not None else []
+            ),
+            result_contract_violations=(
+                result_assessment.violations if result_assessment is not None else []
+            ),
+            unsupported_qualitative_claims=unsupported_qualitative_claims,
+            verified_sql_attached=executed_sql_attached,
         ),
     )
 
@@ -647,12 +719,49 @@ def load_human_scores(path: Path | None) -> dict[str, float]:
     return {str(name): float(score) for name, score in raw.items()}
 
 
+def _answer_contract_violations(
+    report: AnalysisReport, contract: AnswerContract
+) -> list[str]:
+    narrative = "\n".join(
+        [
+            report.answer,
+            *report.highlights,
+            *report.assumptions,
+            *report.caveats,
+            *report.followups,
+        ]
+    )
+    normalized = " ".join(narrative.casefold().split())
+    violations = [
+        f"missing_required_fact:{fact}"
+        for fact in contract.required_facts
+        if " ".join(fact.casefold().split()) not in normalized
+    ]
+    for pattern in contract.forbidden_claims:
+        try:
+            matched = re.search(pattern, narrative, flags=re.IGNORECASE) is not None
+        except re.error:
+            matched = pattern.casefold() in narrative.casefold()
+        if matched:
+            violations.append(f"forbidden_claim:{pattern}")
+    return violations
+
+
 def _intent_score(
     config: AgentConfig,
     sql: str,
     canonical_sql: str,
     expectations: QualityExpectations,
 ) -> float:
+    return _intent_assessment(config, sql, canonical_sql, expectations).score
+
+
+def _intent_assessment(
+    config: AgentConfig,
+    sql: str,
+    canonical_sql: str,
+    expectations: QualityExpectations,
+) -> IntentAssessment:
     try:
         validation = validate_and_prepare_sql(sql, config)
         canonical_validation = validate_and_prepare_sql(canonical_sql, config)
@@ -660,51 +769,146 @@ def _intent_score(
         canonical_expression = sqlglot.parse_one(canonical_validation.safe_sql, read="bigquery")
         candidate_signature = _intent_signature(candidate_expression)
         canonical_signature = _intent_signature(canonical_expression)
-    except (ValueError, SqlglotError):
-        return 0.0
+    except (ValueError, SqlglotError) as exc:
+        return IntentAssessment(
+            score=0.0,
+            constraints=[
+                ConstraintDiagnostic(
+                    name="safe_sql",
+                    passed=False,
+                    detail=f"{exc.__class__.__name__}: candidate SQL could not be validated",
+                )
+            ],
+        )
     normalized = " ".join(validation.safe_sql.lower().split())
-    required_tables = set(expectations.required_tables)
-    tables_ok = required_tables.issubset(set(validation.tables))
-    fragments_ok = all(
-        fragment.lower() in normalized for fragment in expectations.required_sql_fragments
-    )
-    forbidden_ok = all(
-        fragment.lower() not in normalized for fragment in expectations.forbidden_sql_fragments
-    )
+    actual_tables = set(validation.tables)
     structure_ok = candidate_signature.satisfies(canonical_signature)
     joins_ok = _joins_are_allowed(candidate_expression, expectations.allowed_joins)
-    return 1.0 if tables_ok and fragments_ok and forbidden_ok and structure_ok and joins_ok else 0.0
+    constraints = [
+        ConstraintDiagnostic(name="safe_sql", passed=True, detail="candidate SQL is safe"),
+        *[
+            ConstraintDiagnostic(
+                name=f"required_table:{table}",
+                passed=table in actual_tables,
+                detail=("present" if table in actual_tables else "missing"),
+            )
+            for table in expectations.required_tables
+        ],
+        *[
+            ConstraintDiagnostic(
+                name=f"required_sql:{fragment}",
+                passed=fragment.lower() in normalized,
+                detail=("present" if fragment.lower() in normalized else "missing"),
+            )
+            for fragment in expectations.required_sql_fragments
+        ],
+        *[
+            ConstraintDiagnostic(
+                name=f"forbidden_sql:{fragment}",
+                passed=fragment.lower() not in normalized,
+                detail=("absent" if fragment.lower() not in normalized else "present"),
+            )
+            for fragment in expectations.forbidden_sql_fragments
+        ],
+        ConstraintDiagnostic(
+            name="semantic_structure",
+            passed=structure_ok,
+            detail="matches canonical intent" if structure_ok else "differs from canonical intent",
+        ),
+        ConstraintDiagnostic(
+            name="allowed_joins",
+            passed=joins_ok,
+            detail="join keys allowed" if joins_ok else "missing or disallowed join key",
+        ),
+    ]
+    return IntentAssessment(
+        score=1.0 if all(constraint.passed for constraint in constraints) else 0.0,
+        constraints=constraints,
+    )
 
 
 def _row_score(
     candidate_rows: list[dict[str, Any]],
     canonical_rows: list[dict[str, Any]],
     tolerance: float,
+    contract: ResultContract | None = None,
 ) -> float:
+    if contract is None:
+        contract = ResultContract(
+            column_mapping={},
+            numeric_tolerance=tolerance,
+        )
+    return _row_assessment(candidate_rows, canonical_rows, contract).score
+
+
+def _row_assessment(
+    candidate_rows: list[dict[str, Any]],
+    canonical_rows: list[dict[str, Any]],
+    contract: ResultContract,
+) -> ResultAssessment:
     if not canonical_rows:
-        return 1.0 if not candidate_rows else 0.0
+        return ResultAssessment(
+            score=1.0 if not candidate_rows else 0.0,
+            violations=[] if not candidate_rows else ["expected_empty_result"],
+        )
+    violations = _result_contract_violations(candidate_rows, contract)
+    if contract.ordered:
+        matched = sum(
+            _rows_equal(candidate, expected, contract.numeric_tolerance, contract)
+            for candidate, expected in zip(candidate_rows, canonical_rows, strict=False)
+        )
+        if len(candidate_rows) != len(canonical_rows):
+            violations.append("row_count_mismatch")
+        score = matched / max(len(canonical_rows), len(candidate_rows))
+        return ResultAssessment(score=score if not violations else 0.0, violations=violations)
     matched = 0
     unused = list(candidate_rows)
-    for expected in canonical_rows:
+    for row_index, expected in enumerate(canonical_rows):
         match_index = next(
             (
                 index
                 for index, candidate in enumerate(unused)
-                if _rows_equal(candidate, expected, tolerance)
+                if _rows_equal(
+                    candidate,
+                    expected,
+                    contract.numeric_tolerance,
+                    contract,
+                )
             ),
             None,
         )
         if match_index is not None:
             matched += 1
             unused.pop(match_index)
-    return matched / max(len(canonical_rows), len(candidate_rows))
+        else:
+            violations.append(f"unmatched_canonical_row:{row_index}")
+    if unused:
+        violations.append(f"extra_candidate_rows:{len(unused)}")
+    score = matched / max(len(canonical_rows), len(candidate_rows))
+    return ResultAssessment(
+        score=score if not _has_contract_type_violation(violations) else 0.0,
+        violations=violations,
+    )
 
 
-def _rows_equal(candidate: dict[str, Any], expected: dict[str, Any], tolerance: float) -> bool:
+def _rows_equal(
+    candidate: dict[str, Any],
+    expected: dict[str, Any],
+    tolerance: float,
+    contract: ResultContract | None = None,
+) -> bool:
     if len(candidate) < len(expected):
         return False
     unused = list(candidate.items())
     for expected_key, expected_value in expected.items():
+        mapped_key = contract.column_mapping.get(expected_key) if contract is not None else None
+        if mapped_key is not None:
+            if mapped_key not in candidate:
+                return False
+            if not _values_equal(candidate[mapped_key], expected_value, tolerance):
+                return False
+            unused = [(key, value) for key, value in unused if key != mapped_key]
+            continue
         exact_index = next(
             (index for index, (key, _) in enumerate(unused) if key == expected_key),
             None,
@@ -728,6 +932,50 @@ def _rows_equal(candidate: dict[str, Any], expected: dict[str, Any], tolerance: 
             return False
         unused.pop(value_index)
     return True
+
+
+def _result_contract_violations(
+    candidate_rows: list[dict[str, Any]], contract: ResultContract
+) -> list[str]:
+    violations: list[str] = []
+    for row_index, row in enumerate(candidate_rows):
+        for canonical_column in contract.key_columns:
+            candidate_column = contract.column_mapping[canonical_column]
+            if row.get(candidate_column) is None:
+                violations.append(f"missing_key:{row_index}:{candidate_column}")
+        for canonical_column, unit in contract.units.items():
+            candidate_column = contract.column_mapping[canonical_column]
+            value = row.get(candidate_column)
+            if value is not None and not _unit_value_valid(value, unit):
+                violations.append(
+                    f"invalid_unit:{row_index}:{candidate_column}:{unit}"
+                )
+    return violations
+
+
+def _has_contract_type_violation(violations: list[str]) -> bool:
+    return any(
+        violation.startswith(("missing_key:", "invalid_unit:")) for violation in violations
+    )
+
+
+def _unit_value_valid(value: Any, unit: ResultUnit) -> bool:
+    if unit in {"currency", "percentage"}:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if unit == "count":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            or isinstance(value, float)
+            and value.is_integer()
+        )
+    if unit == "identifier":
+        return isinstance(value, (int, str)) and not isinstance(value, bool)
+    if unit == "text":
+        return isinstance(value, str)
+    if unit == "date":
+        return isinstance(value, (date, str))
+    return False
 
 
 def _values_equal(candidate: Any, expected: Any, tolerance: float) -> bool:

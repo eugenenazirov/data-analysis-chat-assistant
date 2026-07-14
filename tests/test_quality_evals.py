@@ -172,7 +172,10 @@ def test_quality_eval_rejects_unit_incompatible_numeric_claim(
     ],
 )
 def test_quality_eval_accepts_unit_compatible_numeric_claim(test_config, answer, rows):
-    case = load_quality_cases(CASES_PATH)[0]
+    source_case = load_quality_cases(CASES_PATH)[0]
+    case = source_case.model_copy(
+        update={"evaluators": source_case.evaluators - {"calculation"}}
+    )
     replay = case.replay.model_copy(
         update={
             "candidate_rows": rows,

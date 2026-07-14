@@ -99,6 +99,32 @@
       "title": "AnalysisReport",
       "type": "object"
     },
+    "AnswerContract": {
+      "additionalProperties": false,
+      "properties": {
+        "forbidden_claims": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Claims",
+          "type": "array"
+        },
+        "pii_forbidden": {
+          "default": true,
+          "title": "Pii Forbidden",
+          "type": "boolean"
+        },
+        "required_facts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Facts",
+          "type": "array"
+        }
+      },
+      "title": "AnswerContract",
+      "type": "object"
+    },
     "ChartArtifact": {
       "properties": {
         "code_digest": {
@@ -431,10 +457,74 @@
       ],
       "title": "QualityReplay",
       "type": "object"
+    },
+    "ResultContract": {
+      "additionalProperties": false,
+      "properties": {
+        "column_mapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Column Mapping",
+          "type": "object"
+        },
+        "key_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Key Columns",
+          "type": "array"
+        },
+        "measure_columns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Measure Columns",
+          "type": "array"
+        },
+        "numeric_tolerance": {
+          "default": 0.001,
+          "maximum": 0.1,
+          "minimum": 0,
+          "title": "Numeric Tolerance",
+          "type": "number"
+        },
+        "ordered": {
+          "default": false,
+          "title": "Ordered",
+          "type": "boolean"
+        },
+        "units": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ResultUnit"
+          },
+          "title": "Units",
+          "type": "object"
+        }
+      },
+      "required": [
+        "column_mapping"
+      ],
+      "title": "ResultContract",
+      "type": "object"
+    },
+    "ResultUnit": {
+      "enum": [
+        "currency",
+        "percentage",
+        "count",
+        "identifier",
+        "text",
+        "date"
+      ],
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "properties": {
+    "answer_contract": {
+      "$ref": "#/$defs/AnswerContract"
+    },
     "canonical_sql": {
       "title": "Canonical Sql",
       "type": "string"
@@ -493,6 +583,9 @@
     "replay": {
       "$ref": "#/$defs/QualityReplay"
     },
+    "result_contract": {
+      "$ref": "#/$defs/ResultContract"
+    },
     "risk": {
       "$ref": "#/$defs/EvaluationRisk"
     },
@@ -522,6 +615,8 @@
     "evaluators",
     "canonical_sql",
     "expectations",
+    "result_contract",
+    "answer_contract",
     "replay"
   ],
   "title": "QualityEvalCase",
