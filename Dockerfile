@@ -50,7 +50,7 @@ FROM runtime AS evaluation
 
 USER root
 COPY --from=evaluation-builder /app/.venv /app/.venv
-COPY evals ./evals
+COPY --chown=appuser:appuser evals ./evals
 USER appuser
 
 ENTRYPOINT ["python", "-m", "evals.run"]

@@ -1,28 +1,43 @@
-name: Live answer-quality evaluation
+name: Live answer-quality candidate
 
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
-      human_scores:
-        description: "Optional JSON object mapping case IDs to analyst scores (0-5)"
-        required: false
-        type: string
+      tier:
+        description: "Canary, or a frozen release candidate for later analyst approval"
+        required: true
+        default: canary
+        type: choice
+        options:
+          - canary
+          - release-candidate
 
 permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: live-quality-${{ github.ref }}-${{ github.event_name == 'schedule' && 'canary' || inputs.tier }}
+  cancel-in-progress: false
+
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     services:
       qdrant:
         image: qdrant/qdrant:v1.12.4
         ports:
           - 6333:6333
+    env:
+      EVAL_TIER: ${{ github.event_name == 'schedule' && 'canary' || inputs.tier }}
+      EMBEDDING_PROVIDER: gemini
+      BQ_MAX_BYTES_BILLED: "50000000"
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+      GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
+      QDRANT_URL: http://localhost:6333
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -44,65 +59,79 @@ jobs:
         run: |
           uv python install
           uv sync --frozen --all-groups
+          uv pip check
 
       - name: Index approved Golden Knowledge
-        env:
-          EMBEDDING_PROVIDER: gemini
-          GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
-          QDRANT_URL: http://localhost:6333
         run: uv run python -m retail_agent index-golden --recreate
 
-      - name: Store supplied analyst scores
-        if: inputs.human_scores != ''
-        env:
-          HUMAN_SCORES: ${{ inputs.human_scores }}
+      - name: Select bounded evaluation tier
+        id: tier
         run: |
           mkdir -p artifacts
-          printf '%s' "$HUMAN_SCORES" > artifacts/human-scores.json
+          if [[ "$EVAL_TIER" == "release-candidate" ]]; then
+            cp evals/datasets/smoke.jsonl artifacts/release-cases.jsonl
+            sed -e '$a\' evals/datasets/release_holdout.jsonl >> artifacts/release-cases.jsonl
+            echo "cases=artifacts/release-cases.jsonl" >> "$GITHUB_OUTPUT"
+            echo "repetitions=5" >> "$GITHUB_OUTPUT"
+            echo "report=artifacts/quality-eval-live-release.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "cases=evals/datasets/smoke.jsonl" >> "$GITHUB_OUTPUT"
+            echo "repetitions=3" >> "$GITHUB_OUTPUT"
+            echo "report=artifacts/quality-eval-live-canary.json" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Run live quality evaluation without analyst scores
-        if: inputs.human_scores == ''
-        id: live_eval
-        continue-on-error: true
-        env:
-          EMBEDDING_PROVIDER: gemini
-          GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
-          QDRANT_URL: http://localhost:6333
+      - name: Run bounded live evaluation
         run: >-
           uv run python -m evals.run quality
           --mode live
           --automated-only
-          --output artifacts/quality-eval-live.json
+          --cases "${{ steps.tier.outputs.cases }}"
+          --repetitions "${{ steps.tier.outputs.repetitions }}"
+          --output "${{ steps.tier.outputs.report }}"
 
-      - name: Run analyst-scored live quality evaluation
-        if: inputs.human_scores != ''
-        id: scored_live_eval
-        continue-on-error: true
-        env:
-          EMBEDDING_PROVIDER: gemini
-          GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
-          QDRANT_URL: http://localhost:6333
+      - name: Create frozen analyst review packet
+        if: env.EVAL_TIER == 'release-candidate'
         run: >-
-          uv run python -m evals.run quality
-          --mode live
-          --human-scores artifacts/human-scores.json
-          --output artifacts/quality-eval-live.json
+          uv run python -m evals.run human-review-form
+          --report "${{ steps.tier.outputs.report }}"
+          --cases "${{ steps.tier.outputs.cases }}"
+          --seed "${{ github.sha }}-${{ github.run_id }}"
+          --form-output artifacts/human-review-form.json
+          --key-output artifacts/human-review-key.json
 
-      - name: Upload evaluation report for analyst scoring
+      - name: Record candidate provenance and file digests
+        env:
+          REPORT_PATH: ${{ steps.tier.outputs.report }}
+        run: |
+          uv run python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          artifact_dir = Path("artifacts")
+          files = sorted(path for path in artifact_dir.iterdir() if path.is_file())
+          metadata = {
+              "tier": os.environ["EVAL_TIER"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "head_sha": os.environ["GITHUB_SHA"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "report": os.environ["REPORT_PATH"],
+              "files": {
+                  path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files
+              },
+          }
+          (artifact_dir / "candidate-metadata.json").write_text(
+              json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload immutable evaluation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: quality-eval-live
-          path: artifacts/quality-eval-live.json
+          name: live-eval-${{ env.EVAL_TIER }}-${{ github.run_id }}
+          path: artifacts
           if-no-files-found: error
-
-      - name: Require analyst-scored release rerun
-        if: >-
-          steps.live_eval.outcome == 'failure' ||
-          steps.scored_live_eval.outcome == 'failure'
-        run: |
-          echo "Automated quality gates failed, or the analyst-scored release rerun failed."
-          exit 1
+          retention-days: ${{ env.EVAL_TIER == 'release-candidate' && 90 || 14 }}

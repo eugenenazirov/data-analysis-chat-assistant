@@ -35,23 +35,24 @@ jobs:
       - name: Verify installed dependencies
         run: uv pip check
 
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Test with branch coverage
-        run: >-
-          uv run pytest
-          --cov=retail_agent
-          --cov-branch
-          --cov-report=term-missing
-          --cov-report=xml
-          --cov-fail-under=85
-
-      - name: Run guardrail evaluations
-        run: uv run python -m evals.run guardrails
-
-      - name: Run answer-quality replay evaluations
-        run: uv run python -m evals.run quality --mode replay
+      - name: Run complete offline verification
+        run: |
+          uv run ruff check .
+          uv run pytest --cov=retail_agent --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=85
+          uv run python -m evals.datasets.build_replay_fixtures --check
+          uv run python -m evals.run validate-dataset
+          uv run python -m evals.run validate-dataset --cases evals/datasets/release_holdout.jsonl
+          uv run python -m evals.run validate-dataset --cases evals/datasets/multi_turn.jsonl
+          uv run python -m evals.run validate-dataset --cases evals/datasets/development.jsonl
+          uv run python -m evals.run validate-dataset --cases evals/datasets/adversarial.jsonl
+          uv run python -m evals.run validate-dataset --cases evals/datasets/regression.jsonl
+          uv run python -m evals.run guardrails
+          uv run python -m evals.run quality --mode replay
+          uv run python -m evals.run quality --mode replay --cases evals/datasets/release_holdout.jsonl --automated-only
+          uv run python -m evals.run quality --mode replay --cases evals/datasets/multi_turn.jsonl --automated-only
+          uv run python -m evals.run quality --mode replay --cases evals/datasets/development.jsonl --automated-only
+          uv run python -m evals.run quality --mode replay --cases evals/datasets/adversarial.jsonl --automated-only
+          uv run python -m evals.run quality --mode replay --cases evals/datasets/regression.jsonl --automated-only
 
       - name: Compile package
         run: uv run python -m compileall -q retail_agent evals
@@ -74,3 +75,4 @@ jobs:
           docker build --target evaluation --tag retail-agent-eval:ci .
           docker run --rm retail-agent-eval:ci guardrails
           docker run --rm retail-agent-eval:ci quality --mode replay
+          docker run --rm retail-agent-eval:ci quality --mode replay --cases evals/datasets/regression.jsonl --automated-only

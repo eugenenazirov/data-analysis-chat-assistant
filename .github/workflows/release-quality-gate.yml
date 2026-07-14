@@ -1,0 +1,123 @@
+name: Approve live quality candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: "Successful release-candidate workflow run ID"
+        required: true
+        type: string
+      human_reviews:
+        description: "Completed structured human review JSON; no secrets or personal data"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: quality-release-approval
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: quality-release
+    steps:
+      - name: Validate candidate run and resolve immutable revision
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "candidate_run_id must be numeric"; exit 1; }
+          IFS=$'\t' read -r workflow_name head_sha conclusion < <(
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+              --jq '[.name, .head_sha, .conclusion] | @tsv'
+          )
+          [[ "$workflow_name" == "Live answer-quality candidate" ]]
+          [[ "$conclusion" == "success" ]]
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out evaluated revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ steps.candidate.outputs.head_sha }}
+
+      - name: Download frozen candidate evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.candidate_run_id }}
+        run: >-
+          gh run download "$RUN_ID"
+          --name "live-eval-release-candidate-$RUN_ID"
+          --dir artifacts/candidate
+
+      - name: Verify candidate provenance and digests
+        env:
+          EXPECTED_HEAD_SHA: ${{ steps.candidate.outputs.head_sha }}
+          EXPECTED_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          artifact_dir = Path("artifacts/candidate")
+          metadata = json.loads((artifact_dir / "candidate-metadata.json").read_text())
+          assert metadata["tier"] == "release-candidate"
+          assert metadata["head_sha"] == os.environ["EXPECTED_HEAD_SHA"]
+          assert metadata["run_id"] == int(os.environ["EXPECTED_RUN_ID"])
+          for name, expected in metadata["files"].items():
+              actual = hashlib.sha256((artifact_dir / name).read_bytes()).hexdigest()
+              assert actual == expected, f"digest mismatch: {name}"
+          PY
+
+      - name: Install frozen evaluation dependencies
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.10.8"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python environment
+        run: |
+          uv python install
+          uv sync --frozen --all-groups
+          uv pip check
+
+      - name: Store completed analyst reviews
+        env:
+          HUMAN_REVIEWS: ${{ inputs.human_reviews }}
+        run: |
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          Path("artifacts/human-reviews.json").write_text(
+              os.environ["HUMAN_REVIEWS"], encoding="utf-8"
+          )
+          PY
+
+      - name: Make release decision from frozen evidence
+        run: >-
+          uv run python -m evals.run release-decision
+          --report artifacts/candidate/quality-eval-live-release.json
+          --reviews artifacts/human-reviews.json
+          --key artifacts/candidate/human-review-key.json
+          --output artifacts/release-decision.json
+
+      - name: Upload release decision evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-release-decision-${{ inputs.candidate_run_id }}-${{ github.run_id }}
+          path: |
+            artifacts/candidate/candidate-metadata.json
+            artifacts/candidate/quality-eval-live-release.json
+            artifacts/release-decision.json
+          if-no-files-found: warn
+          retention-days: 90
