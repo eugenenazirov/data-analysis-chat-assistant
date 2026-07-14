@@ -2,166 +2,236 @@
 
 ## Reproducible Environment
 
-```bash
-uv lock --check
-uv sync --frozen --all-groups
-uv pip check
-```
-
 Python 3.12 and uv 0.10.8 are pinned. `pyproject.toml` is the dependency source
 of truth and `uv.lock` is consumed with `--frozen` locally, in CI, and in Docker.
 The runtime uses `pydantic-ai-slim[google]`; `pydantic-evals` belongs only to the
 `eval` dependency group.
 
-## Offline Test Gate
+```bash
+just setup
+```
+
+## Complete Credential-Free Gate
 
 ```bash
-uv run ruff check .
-uv run pytest \
-  --cov=retail_agent \
-  --cov-branch \
-  --cov-report=term-missing \
-  --cov-fail-under=85
+just check
 ```
+
+This one command checks the lockfile and installed packages, runs Ruff, executes
+the branch-aware test suite, verifies generated fixture fingerprints and dataset
+governance, then runs guardrails and every replay partition.
 
 The credential-free suite covers:
 
 - architecture import direction and absence of evaluation imports in runtime;
-- settings precedence, validation, secret masking, and prompt resources;
-- conversation isolation, retention, complete multi-turn history, and tool
-  summary compaction;
-- model-selected retrieval/SQL paths using `TestModel` and `FunctionModel`;
-- retrieval degradation, SQL retries, usage limits, structured output retries,
-  evidence validation, and user-safe provider failures;
-- SQL parsing, table/column scope, row projection, PII, limits, cost dry runs,
-  stable job IDs, timeout, and post-submission outcome handling;
-- chart tool visibility, verified-row binding, subprocess success, timeout,
-  cleanup, environment minimization, source/output/capture caps, PNG/SVG
-  validation, and CLI artifact rendering;
-- application use cases, adapters, CLI continuity, guardrails, and quality
-  scoring.
+- settings precedence, validation, secret masking, and packaged prompts;
+- conversation isolation, bounded complete history, trajectory metrics, and
+  tool-summary compaction;
+- model-selected retrieval/SQL paths, valid empty results, bounded retries,
+  provider/warehouse failure boundaries, and duplicate-work prevention;
+- SQL AST, table/column/join scope, PII, projection, row, cost, timeout, stable
+  job-ID, unknown-outcome, and safe-division controls;
+- evidence-bound output, expected refusal/clarification/degradation, explicit
+  no-data disclosure, recursive redaction, and verified chart binding;
+- chart success, timeout, cleanup, environment minimization, source/output caps,
+  PNG/SVG validation, and CLI rendering;
+- evaluation contracts, deterministic scoring, reliability statistics, human
+  calibration, release decisions, CI definitions, and image separation.
 
-The current verified baseline is 229 tests with 89.81% branch-aware runtime
-coverage, above the 85% gate.
+Verified on 2026-07-14: 319 tests passed with 90.84% branch-aware runtime
+coverage, above the 85% gate. The dated execution record is maintained in
+[`live-test-findings.md`](live-test-findings.md).
 
-## Evaluation Gates
+## Evaluation Dataset Contract
 
-Evaluation code and data live under `evals/`, outside `retail_agent/`.
+Fixture generation is deterministic and checked rather than trusted:
+
+```bash
+uv run python -m evals.datasets.build_replay_fixtures --check
+just dataset
+```
+
+Every case declares its suite, category, risk, reference date, expected
+behavior, applicable evaluators, canonical SQL, exact result/answer contract,
+operational budget, and human rubric. Replay provenance binds the canonical SQL
+digest, source tables, schema, row count, capture time, evaluator/prompt/persona/
+model/index versions, and a content fingerprint. The loader fails closed on a
+stale evaluator version, changed content, duplicates, malformed rows, and
+undeclared train/release overlap.
+
+| Partition | Cases | Purpose |
+|---|---:|---|
+| `smoke.jsonl` | 4 | Fast critical answer, privacy, retrieval, and follow-up sentinels |
+| `release_holdout.jsonl` | 30 | Held-out temporal, aggregation, join, zero-row, policy, and limit coverage |
+| `multi_turn.jsonl` | 10 | Reference resolution, corrections, comparison context, and trajectory budgets |
+| `development.jsonl` | 9 | Unseen-wording retrieval ranking, usefulness, degradation, and harmful precedent |
+| `adversarial.jsonl` | 11 | PII, re-identification, prompt injection, destructive SQL, secret, and chart abuse |
+| `regression.jsonl` | 3 | Minimized cases for previously observed evaluator/runtime failures |
+
+The 67 cases are all exercised by `just check`; release holdout is separately
+validated to have no accidental question or SQL overlap.
+
+## Deterministic Evaluation Gates
 
 ### Guardrails
 
 ```bash
-uv run python -m evals.run guardrails
+just guardrails
 ```
 
-The guardrail suite must pass 100%. It checks safe aggregate SQL, PII and
-whole-row projection blocking, destructive SQL rejection, table scope,
-excessive limits, malformed SQL feedback, output redaction, and automatic row
-limits.
+The guardrail suite must pass 100%. It checks read-only aggregate SQL, explicit
+safe columns and joins, PII and whole-row blocking, destructive or stacked SQL,
+table scope, limits, malformed feedback, recursive output redaction, and
+division-by-zero protection. BigQuery calculations use `SAFE_DIVIDE` or an
+equivalent explicit zero guard, consistent with the
+[BigQuery mathematical functions reference](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/mathematical_functions).
 
 ### Answer-quality replay
 
 ```bash
-uv run python -m evals.run quality --mode replay
+just eval
 ```
 
-`evals/datasets/quality_eval_cases.jsonl` contains questions, optional history,
-canonical SQL, semantic expectations, expected retrieval IDs, canonical and
-candidate rows, reports, and analyst usefulness scores.
+The evaluator checks:
 
-The evaluator scores:
+- parsed SQL intent, required tables/fragments/functions, equivalent periods,
+  and declared join keys;
+- canonical result-set calculation accuracy with declared column mappings,
+  ordering, units, and numeric tolerance;
+- Retrieval Recall@3, MRR, NDCG@3, downstream usefulness, and harmful-example
+  influence;
+- numeric faithfulness through the runtime evidence policy;
+- multi-turn intent resolution and use of prior context;
+- expected answer, clarification, refusal, or degraded behavior;
+- exact verified SQL attachment, no unsupported row dump, and report integrity;
+- provider/tool/query/token/byte/latency budgets and compliant tool ordering;
+- analyst usefulness when human scores are available.
 
-- parsed SQL intent, required tables/fragments/functions, equivalent time
-  intervals, and declared join keys;
-- exact canonical row-set calculation accuracy, penalizing extra rows;
-- retrieval Recall@3 and mean reciprocal rank;
-- numeric faithfulness through the same runtime evidence policy used by the
-  agent output validator;
-- multi-turn intent resolution;
-- analyst usefulness on a five-point scale;
-- attachment of the exact verified SQL and absence of degraded/refused output.
+Replay is reproducible evidence, not proof of current model or warehouse
+behavior. Release cases therefore remain `AUTO PASS` until live and structured
+human gates are complete.
 
-Release thresholds are 100% safety scenarios, at least 0.95 intent and
-calculation, at least 0.90 retrieval and multi-turn, MRR at least 0.80, zero
-unsupported numeric claims, mean analyst usefulness at least 4/5, no score below
-3/5, and no critical-case failure.
+## Credentialed Live Evaluation
 
-### Credentialed live quality
+Prepare Qdrant and current credentials, and keep a conservative byte cap:
 
 ```bash
 docker compose up -d qdrant
 QDRANT_URL=http://localhost:6333 uv run python -m retail_agent index-golden --recreate
+export BQ_MAX_BYTES_BILLED=50000000
+```
+
+A local canary can then run three independent attempts per smoke case:
+
+```bash
 QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
   --mode live \
   --automated-only \
-  --output artifacts/quality-eval-live.json
+  --cases evals/datasets/smoke.jsonl \
+  --repetitions 3 \
+  --output artifacts/quality-eval-live-canary.json
 ```
 
-Live mode executes generated and canonical BigQuery SQL against the same current
-data. A transient retryable failure is retried with bounded backoff only when no
-SQL tool completed, so the evaluator cannot duplicate warehouse work.
+Live mode snapshots the canonical result once per case, not once per repeated
+candidate attempt. Candidate-agent and reference-query executions, bytes, job
+IDs, and cache rates are accounted separately. Conversation cases merge history
+and final-turn telemetry before applying per-trajectory budgets. Reports include
+first-attempt, eventual, and per-attempt pass rates, a 95% pass-rate interval,
+p50/p95 duration, score variance, worst scores, and explicit flaky cases.
 
-`--automated-only` is a regression gate, not release approval. The final release
-rerun supplies a JSON object mapping case IDs to analyst scores from 0 through 5:
+Transient retries are allowed only before verified warehouse work completes.
+Successful empty results are retained and require an explicit no-matching-data
+answer; they do not trigger broader SQL. Unknown post-submission outcomes remain
+non-retryable.
+
+## CI Tiers And Immutable Evidence
+
+The workflows separate three decisions:
+
+1. `CI` runs `just check`-equivalent offline verification and container checks
+   on pushes and pull requests.
+2. `Live answer-quality candidate` runs only on the default branch in the
+   protected `quality-live-evaluation` environment with workload identity. The
+   daily canary uses smoke × 3; the manually selected release candidate uses
+   smoke plus holdout × 5.
+3. `Approve live quality candidate` accepts a successful candidate run ID,
+   checks the workflow, event, default branch, exact revision, provenance, and
+   every recorded SHA-256 digest, then decides from the downloaded artifact and
+   submitted reviews without invoking Gemini or BigQuery.
+
+GitHub artifacts are the handoff boundary between runs, matching GitHub's
+[workflow artifact guidance](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts).
+Canary evidence is retained for 14 days and release/decision evidence for 90
+days.
+
+## Human Review And Release Decision
+
+A five-repetition release report produces three restricted materials:
 
 ```bash
-QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
-  --mode live \
-  --human-scores path/to/human-scores.json \
-  --output artifacts/quality-eval-live.json
+uv run python -m evals.run human-review-form \
+  --report artifacts/quality-eval-live-release.json \
+  --cases artifacts/release-cases.jsonl \
+  --seed release-specific-seed \
+  --pairwise-output artifacts/human-pairwise-form.json \
+  --form-output artifacts/human-review-form.json \
+  --key-output artifacts/human-review-key.json
 ```
 
-The scheduled/manual GitHub workflow uses workload identity federation, uploads
-the JSON report, and requires the analyst-scored rerun for release.
+The review coordinator must distribute only the blinded pairwise packet first.
+After the A/B choices are submitted, distribute the pointwise packet. Never
+distribute the assignment key to reviewers. Two pseudonymous reviewers score
+correctness, faithfulness, usefulness, clarity, limitations, and privacy/policy
+on the versioned 1–5 rubric, with notes free of secrets and personal data.
+
+The final decision is computed, not inferred from comments:
+
+```bash
+uv run python -m evals.run release-decision \
+  --report artifacts/quality-eval-live-release.json \
+  --reviews path/to/completed-human-reviews.json \
+  --key artifacts/human-review-key.json \
+  --output artifacts/release-decision.json
+```
+
+Release requires all of the following:
+
+- five live repetitions and no flaky or critical-case failure;
+- complete reviews from at least two reviewers for every required case;
+- mean usefulness at least 4/5 and every case at least 3/5;
+- every dimension at least 3/5, with correctness, faithfulness, and
+  privacy/policy at least 4/5;
+- major reviewer disagreements and reject recommendations carry explicit
+  resolution notes;
+- blinded candidate noninferiority to the accepted baseline of at least 80%;
+- no automated, operational, provenance, or structured-review blocker.
+
+`--automated-only` is therefore a regression signal, never release approval.
 
 ## Container Separation Gate
 
-Build and verify both surfaces:
-
 ```bash
-docker build --target runtime -t retail-agent:runtime .
-docker run --rm --entrypoint python retail-agent:runtime -c \
-  "import importlib.util, pathlib; \
-assert importlib.util.find_spec('pydantic_evals') is None; \
-assert not pathlib.Path('/app/evals').exists()"
-
-docker build --target evaluation -t retail-agent:evaluation .
-docker run --rm retail-agent:evaluation guardrails
-docker run --rm retail-agent:evaluation quality --mode replay
+just container-check
 ```
 
-The runtime image includes only runtime code, configuration, and Golden
-Knowledge seed data. The evaluation target adds `pydantic-evals`, `evals/`, and
-the quality dataset.
+The production runtime image includes runtime code, configuration, and Golden
+Knowledge seed data only. It excludes `evals/`, its datasets, and
+`pydantic-evals`. The evaluation image adds those assets with ownership readable
+by the non-root application user and runs both guardrail and replay smoke tests.
 
-## Manual Resilience And Acceptance Checks
+## Manual Resilience Checks
 
-1. Ask a revenue question, then follow with “compare that with the prior month”
-   and “plot it”; verify one conversation ID, increasing turn indexes, prior
-   verified SQL context, and automatic chart creation.
-2. Simulate Gemini failure before SQL; verify a typed retryable failure without
-   traceback and that chat accepts the next message.
-3. Simulate model failure after query execution; verify the redacted degraded
-   table/SQL and no query replay.
-4. Exercise SQL retry budgets 0, 1, and 2; verify the effective tool retry count.
-5. Stop Qdrant; verify the retrieval tool returns degraded status and a SQL-only
-   answer can still complete.
-6. Attempt to call the chart tool before SQL; verify it is absent from the model
-   tool catalogue.
+1. Ask a revenue question, follow with “compare that with the prior month” and
+   “plot it”; verify one conversation, prior verified context, and a chart.
+2. Simulate Gemini failure before SQL; verify a typed retryable failure and that
+   the next chat turn remains usable.
+3. Simulate model failure after query execution; verify a redacted degraded
+   report and no query replay.
+4. Return a successful zero-row query; verify one warehouse execution and an
+   explicit no-matching-data response.
+5. Stop Qdrant; verify typed retrieval degradation while SQL-only analysis can
+   still complete when precedent is optional.
+6. Attempt retrieval after SQL or chart generation before successful SQL; verify
+   the trajectory is rejected.
 7. Run chart code that times out, omits output, emits active SVG content, or
-   exceeds configured sizes; verify typed errors and temporary cleanup.
-
-## Reviewer Acceptance Commands
-
-```bash
-uv lock --check
-uv sync --frozen --all-groups
-uv pip check
-uv run ruff check .
-uv run pytest --cov=retail_agent --cov-branch --cov-fail-under=85
-uv run python -m evals.run guardrails
-uv run python -m evals.run quality --mode replay
-docker build --target runtime -t retail-agent:runtime .
-docker build --target evaluation -t retail-agent:evaluation .
-docker run --rm retail-agent:evaluation guardrails
-```
+   exceeds size limits; verify typed errors and temporary cleanup.

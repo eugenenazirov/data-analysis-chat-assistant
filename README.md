@@ -140,9 +140,13 @@ Evaluation code, its dataset, and `pydantic-evals` are separate from the runtime
 package and image.
 
 ```bash
-uv run python -m evals.run guardrails
-uv run python -m evals.run quality --mode replay
+just eval
 ```
+
+The offline gate validates immutable fixture provenance and overlap policy, then
+runs guardrails plus 67 replay cases across smoke, held-out analytical,
+multi-turn, retrieval, adversarial, and regression partitions. Individual
+commands remain available through `just quality-*` recipes.
 
 The dedicated container target provides the same entrypoint:
 
@@ -152,8 +156,17 @@ docker run --rm retail-agent-evaluation:local guardrails
 docker run --rm retail-agent-evaluation:local quality --mode replay
 ```
 
-See [docs/qa.md](docs/qa.md) for live evaluation, analyst scoring, thresholds,
-and the complete acceptance matrix.
+Credentialed evaluation is tiered. The daily canary repeats the smoke set three
+times; a manually selected release candidate repeats smoke plus the held-out set
+five times. Both run only from the default branch in the protected
+`quality-live-evaluation` environment, use workload identity, enforce a
+per-query BigQuery cap, record reference-query cost separately, and upload
+content-addressed evidence. Release approval consumes that frozen evidence
+without rerunning the model or warehouse.
+
+See [docs/qa.md](docs/qa.md) for the dataset contract, live tiers, separate
+blinded A/B and pointwise analyst packets, release thresholds, and the complete
+acceptance matrix.
 
 ## Configuration
 
@@ -195,14 +208,8 @@ and time limits.
 ## Verification
 
 ```bash
-uv lock --check
-uv pip check
-uv run ruff check .
-uv run pytest --cov=retail_agent --cov-branch --cov-fail-under=85
-uv run python -m evals.run guardrails
-uv run python -m evals.run quality --mode replay
-docker build --target runtime -t retail-agent:runtime .
-docker build --target evaluation -t retail-agent:evaluation .
+just check
+just container-check
 ```
 
 The runtime image intentionally excludes `evals/`, its datasets, and
@@ -220,8 +227,11 @@ Implemented in the prototype:
 - multi-turn conversation state with compacted verified tool context;
 - SQL AST guardrails, safe-column allowlists, cost caps, stable job IDs, and
   post-submission outcome protection;
-- structured output, evidence validation, PII redaction, degraded dependency
-  handling, and structured telemetry;
+- structured output, evidence validation, explicit no-data disclosure without
+  broadening or replaying a valid empty query, PII redaction, degraded
+  dependency handling, and structured telemetry;
+- partitioned replay/live evaluations, repeated-run reliability statistics,
+  calibrated human review, immutable release evidence, and separate approval;
 - local automatic chart execution and separate runtime/evaluation images.
 
 The production design—not this CLI prototype—covers durable OIDC-authenticated

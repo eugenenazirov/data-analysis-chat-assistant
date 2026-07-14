@@ -100,8 +100,10 @@ credentials, filesystem, network, CPU, memory, and time controls.
 
 Implemented:
 
-- SQL validation, dry-run, cost, and empty-result feedback use a configurable
-  0-3 tool retry budget.
+- SQL validation, pre-submission dry-run, and cost failures use a configurable
+  0-3 tool retry budget. A successfully executed empty result is not a failure:
+  it is preserved, counted once, and must be disclosed explicitly without
+  broadening or replaying the query.
 - Every submitted query receives a stable trace/SQL-derived BigQuery job ID.
   An unknown post-submission outcome is non-retryable and never returned to the
   model retry loop.
@@ -122,12 +124,24 @@ Kubernetes concurrency, backups, and tested recovery objectives.
   degradation, chart execution, CLI rendering, and evaluator behavior.
 - Branch-aware runtime coverage is gated at 85%.
 - `python -m evals.run guardrails` runs deterministic safety cases.
-- `python -m evals.run quality --mode replay` scores committed traces.
-- Live quality mode runs Gemini and BigQuery and compares generated and canonical
-  results from the same current data.
-- Quality scoring covers SQL intent, exact row calculations, Retrieval Recall@3
-  and MRR, numeric faithfulness, multi-turn intent, and analyst usefulness.
-- A release live run cannot pass until analyst usefulness scores are supplied.
+- Partitioned replay suites cover smoke, 30-case release holdout, multi-turn,
+  retrieval, adversarial, and minimized regression cases. Fixtures carry a
+  canonical SQL digest, reference date, source/schema metadata, evaluator and
+  prompt versions, and a content fingerprint that is regenerated and checked.
+- Live quality mode runs Gemini and BigQuery and compares generated output with
+  one canonical snapshot per case from the same evaluation run. Candidate and
+  reference-query costs are reported separately.
+- Quality scoring covers SQL intent, exact row calculations, Retrieval Recall@3,
+  MRR, NDCG@3, retrieval usefulness/harm, numeric faithfulness, multi-turn
+  intent, expected behavior, operational budgets, and analyst usefulness.
+- Repeated live runs report first-attempt, eventual, and per-attempt success,
+  p50/p95 latency, confidence intervals, score variance, and flaky cases.
+- A release candidate requires five live repetitions, complete two-reviewer
+  structured scoring, critical-dimension floors, resolved disagreements and
+  rejections, and blinded baseline noninferiority before it can pass.
+- Live candidates run only on the default branch in a protected environment;
+  approval verifies immutable artifact provenance and makes the release decision
+  without rerunning Gemini or BigQuery.
 - Runtime and evaluation Docker targets prove evaluation dependencies and data
   do not ship in the application image.
 

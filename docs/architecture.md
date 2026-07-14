@@ -406,8 +406,24 @@ configuration by versioned ConfigMaps and secrets through External Secrets
 Operator. Deploy with rolling updates, minimum availability, readiness gates,
 and a small canary before full rollout.
 
-Code image, model, prompt, persona, and Golden index versions are independent and
-recorded on every turn. A release is promoted only after unit/integration tests,
-guardrail evals, answer-quality replay evals, credentialed live evals, and analyst
-usefulness review pass. Rollback restores the prior image and configuration
-pointers; Golden rollback switches the Qdrant alias without rebuilding data.
+Code image, model, prompt, persona, Golden index, dataset, evaluator, and rubric
+versions are independent and recorded in runtime or evaluation evidence as
+appropriate. The credential-free gate validates fixture fingerprints and
+partition policy before unit/integration tests, guardrails, and every replay
+partition.
+
+Credentialed evaluation runs on the default branch in a protected environment
+using federated identity. A three-repetition smoke canary provides daily drift
+detection. A five-repetition release candidate combines smoke and held-out cases,
+freezes candidate/reference telemetry plus file digests, and creates separate
+blind A/B and pointwise analyst packets. The assignment key stays restricted.
+Approval accepts a specific successful candidate-run ID, verifies workflow,
+branch, revision, event, artifact provenance, and hashes, then combines the
+frozen report with two-reviewer structured scores. It never reruns the model or
+warehouse during approval.
+
+A release is promoted only when automated thresholds, stability, operational
+budgets, human dimension floors, resolved disagreements/rejections, and blinded
+baseline noninferiority all pass. Rollback restores the prior image and
+configuration pointers; Golden rollback switches the Qdrant alias without
+rebuilding data.

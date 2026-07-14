@@ -78,7 +78,9 @@ docker compose run --rm app chat --user manager_a
    presents an outage as an ordinary empty match set.
 7. SQL passes `sqlglot` validation, table/column allowlists, row limits, BigQuery
    dry run, byte cap, and stable job-ID execution. Failures after submission are
-   non-retryable to avoid duplicate warehouse work.
+   non-retryable to avoid duplicate warehouse work. A valid empty result is
+   preserved; output validation requires an explicit no-matching-data statement
+   instead of asking the model to broaden and rerun the query.
 8. Chart code, when requested, receives the verified rows through `input.json`
    and must create a fixed PNG or SVG filename in a temporary directory.
 9. Structured output is one of data analysis, schema explanation,
@@ -160,8 +162,17 @@ must replace it with a separately isolated worker.
 `evals/` is outside the production package:
 
 - `guardrails.py`: `pydantic-evals` dataset for SQL/privacy controls;
-- `quality.py`: replay and credentialed live scoring;
-- `datasets/quality_eval_cases.jsonl`: evaluation-only cases and expected data;
+- `quality.py`: deterministic replay, credentialed repeated-live scoring,
+  trajectory telemetry, reliability intervals, and reference-query accounting;
+- `human.py` and `rubrics/`: separate blinded A/B and pointwise review packets,
+  structured reviewer calibration, and final release decisions;
+- `datasets/smoke.jsonl`: four fast release sentinels;
+- `datasets/release_holdout.jsonl`: 30 held-out analytical cases;
+- `datasets/multi_turn.jsonl`, `development.jsonl`, `adversarial.jsonl`, and
+  `regression.jsonl`: conversation, retrieval, abuse-resistance, and minimized
+  failure coverage;
+- `datasets/build_replay_fixtures.py`: deterministic fixture generation and
+  provenance verification;
 - `run.py`: dedicated evaluation CLI.
 
 The runtime dependency uses `pydantic-ai-slim[google]`; `pydantic-evals` is in
@@ -208,7 +219,7 @@ dataset, while the Docker `evaluation` target adds both.
 | Automatic charts | Dynamic post-query tool and local bounded executor | Isolated chart worker with separate credentials/resources |
 | Resilience | Typed failures, safe retry boundary, degraded verified-row report | Circuit breakers, HA storage, recovery objectives |
 | Observability | Trace/session IDs, versions, tool timings, usage, retries, degradation | OpenTelemetry metrics/logs/traces and alerts |
-| Quality assurance | 229 offline tests, guardrail suite, four-case replay suite, runtime/evaluation image checks | Credentialed live suite and analyst-scored release gate |
+| Quality assurance | 319 offline tests, guardrails, 67 partitioned replay cases, repeated-live and human-gate tests, runtime/evaluation image checks | Scheduled canary plus protected release-candidate and analyst approval workflows |
 | Saved reports/personas | HLD only | OIDC, PostgreSQL, confirmations, audit, admin UI |
 
 ## Configuration And Versions
@@ -230,7 +241,8 @@ BigQuery, Qdrant, Gemini, sqlglot, Matplotlib, Rich, and Typer.
   Golden candidate promotion are production-design-only.
 - The local chart subprocess cannot defend against determined malicious code.
 - Live Gemini/BigQuery behavior requires credentials and is covered by a
-  separate scheduled/manual workflow.
+  default-branch-only protected scheduled/manual workflow. Release approval
+  verifies and consumes the frozen candidate artifact without another live run.
 
 Those boundaries are deliberate and do not change the inward dependency rule or
 the reusable application use cases demonstrated by the prototype.

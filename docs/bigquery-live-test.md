@@ -100,8 +100,9 @@ only to create and bill/query jobs.
 
 ## Cost Control
 
-Google documents that on-demand BigQuery includes the first 1 TiB of query data
-processed per month for free. The prototype still protects each query with:
+Billing and free-tier terms can change, so check the current Google Cloud terms
+for the project running the demo. Independently of account pricing, the
+prototype protects each query with:
 
 - BigQuery dry-run before execution.
 - `maximum_bytes_billed` from `BQ_MAX_BYTES_BILLED`.
