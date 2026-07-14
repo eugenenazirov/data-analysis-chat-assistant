@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import Any, Literal
 
 from retail_agent.domain.models.analysis import NARRATIVE_OUTPUT_RULE as NARRATIVE_OUTPUT_RULE
@@ -66,9 +67,19 @@ def _line_reproduces_row(
 def _value_token(value: Any) -> str | None:
     if value is None or isinstance(value, bool):
         return None
-    token = format(value, "g") if isinstance(value, (int, float)) else str(value)
+    token = _numeric_token(value) if isinstance(value, (int, float, Decimal)) else str(value)
     token = token.strip().casefold()
     return token if len(token) >= 2 else None
+
+
+def _numeric_token(value: int | float | Decimal) -> str:
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    if not decimal_value.is_finite():
+        return ""
+    token = format(decimal_value, "f")
+    if "." in token:
+        token = token.rstrip("0").rstrip(".")
+    return "0" if token == "-0" else token
 
 
 def _token_in_text(token: str, text: str) -> bool:

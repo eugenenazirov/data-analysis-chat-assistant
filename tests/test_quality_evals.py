@@ -58,6 +58,43 @@ def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
     assert result.scores.faithfulness == 0
 
 
+@pytest.mark.parametrize("field", ["assumptions", "caveats", "followups"])
+def test_faithfulness_checks_every_rendered_narrative_field(field):
+    report = AnalysisReport(
+        question="How many orders?",
+        answer="There were 42 orders.",
+        **{field: ["Revenue was 999."]},
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"orders": 42}],
+        "SELECT 42 AS orders",
+    )
+
+    assert assessment.is_supported is False
+    assert assessment.unsupported_numeric_claims == (999.0,)
+
+
+def test_faithfulness_parses_scientific_notation_as_one_claim():
+    report = AnalysisReport(question="Revenue?", answer="Revenue was $1.2e6.")
+
+    unsupported = assess_report_evidence(
+        report,
+        [{"revenue": 1.2}],
+        "SELECT 1.2 AS revenue",
+    )
+    supported = assess_report_evidence(
+        report,
+        [{"revenue": 1_200_000}],
+        "SELECT 1200000 AS revenue",
+    )
+
+    assert unsupported.is_supported is False
+    assert unsupported.unsupported_numeric_claims == (1_200_000.0,)
+    assert supported.is_supported is True
+
+
 @pytest.mark.parametrize(
     "answer",
     [

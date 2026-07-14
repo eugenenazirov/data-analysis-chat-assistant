@@ -38,6 +38,9 @@ def maybe_configure_logfire(enable: bool) -> None:
         import logfire
 
         logfire.configure()
-        logfire.instrument_pydantic_ai()
+        logfire.instrument_pydantic_ai(
+            include_content=False,
+            include_binary_content=False,
+        )
     except Exception:
         return

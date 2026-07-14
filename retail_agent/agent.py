@@ -47,7 +47,7 @@ from retail_agent.bigquery import (
     QueryPreExecutionError,
 )
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
-from retail_agent.domain.errors import ChartExecutionError
+from retail_agent.domain.errors import ChartExecutionError, ChartExecutionFailureCode
 from retail_agent.domain.policies.analysis_output import (
     NARRATIVE_OUTPUT_RULE,
     narrative_output_violation,
@@ -93,6 +93,11 @@ class ChartToolResult(BaseModel):
     error_code: str | None = None
 
 
+type ChartFailureCode = ChartExecutionFailureCode | Literal[
+    "executor_unavailable", "verified_query_required"
+]
+
+
 @dataclass
 class AgentDependencies:
     config: AgentConfig
@@ -115,6 +120,7 @@ class AgentDependencies:
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     output_validation_retries: int = 0
     last_chart_artifact: ChartArtifact | None = None
+    last_chart_failure_code: ChartFailureCode | None = None
 
 
 @dataclass(frozen=True)
@@ -328,10 +334,16 @@ async def generate_chart(
     digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
     if ctx.deps.last_query_result is None:
         _record_tool_event(ctx, "generate_chart", "rejected", started)
-        return ChartToolResult(status="error", error_code="verified_query_required")
+        error_code: ChartFailureCode = "verified_query_required"
+        ctx.deps.last_chart_artifact = None
+        ctx.deps.last_chart_failure_code = error_code
+        return ChartToolResult(status="error", error_code=error_code)
     if ctx.deps.chart_executor is None:
         _record_tool_event(ctx, "generate_chart", "unavailable", started)
-        return ChartToolResult(status="error", error_code="executor_unavailable")
+        error_code = "executor_unavailable"
+        ctx.deps.last_chart_artifact = None
+        ctx.deps.last_chart_failure_code = error_code
+        return ChartToolResult(status="error", error_code=error_code)
 
     request = ChartRequest(
         code=code,
@@ -342,6 +354,8 @@ async def generate_chart(
         artifact = await ctx.deps.chart_executor.execute(request)
     except ChartExecutionError as exc:
         _record_tool_event(ctx, "generate_chart", "failed", started)
+        ctx.deps.last_chart_artifact = None
+        ctx.deps.last_chart_failure_code = exc.code
         ctx.deps.logger.event(
             ctx.deps.trace_id,
             "chart_execution_failed",
@@ -351,6 +365,7 @@ async def generate_chart(
         return ChartToolResult(status="error", error_code=exc.code)
 
     ctx.deps.last_chart_artifact = artifact
+    ctx.deps.last_chart_failure_code = None
     _record_tool_event(ctx, "generate_chart", "succeeded", started)
     ctx.deps.logger.event(
         ctx.deps.trace_id,
@@ -598,6 +613,7 @@ async def run_question(
                 deps.last_query_result,
                 trace_id,
                 chart_artifact=deps.last_chart_artifact,
+                chart_failure_code=deps.last_chart_failure_code,
             )
         else:
             response = AgentFailure(
@@ -706,8 +722,7 @@ def _to_analysis_response(
                 "chart_artifact": deps.last_chart_artifact,
             }
         )
-        return _sanitize_report(report, trace_id)
-    if isinstance(output, DataAnalysisResult):
+    elif isinstance(output, DataAnalysisResult):
         if deps.last_query_result is None:
             return AgentFailure(
                 question=question,
@@ -716,40 +731,28 @@ def _to_analysis_response(
                 trace_id=trace_id,
                 retryable=False,
             )
-        return _sanitize_report(
-            _data_result_to_report(
-                question,
-                output,
-                deps.last_query_result,
-                chart_artifact=deps.last_chart_artifact,
-            ),
-            trace_id,
+        report = _data_result_to_report(
+            question,
+            output,
+            deps.last_query_result,
+            chart_artifact=deps.last_chart_artifact,
         )
-    if isinstance(output, SchemaExplanationResult):
-        return _sanitize_report(
-            AnalysisReport(
-                question=question,
-                answer=output.explanation,
-                caveats=output.caveats,
-                followups=output.followups,
-            ),
-            trace_id,
+    elif isinstance(output, SchemaExplanationResult):
+        report = AnalysisReport(
+            question=question,
+            answer=output.explanation,
+            caveats=output.caveats,
+            followups=output.followups,
         )
-    if isinstance(output, ClarificationRequest):
-        return _sanitize_report(
-            AnalysisReport(question=question, answer=output.question),
-            trace_id,
+    elif isinstance(output, ClarificationRequest):
+        report = AnalysisReport(question=question, answer=output.question)
+    elif isinstance(output, UnsupportedRequest):
+        report = AnalysisReport(
+            question=question,
+            answer=output.reason,
+            refused=True,
         )
-    if isinstance(output, UnsupportedRequest):
-        return _sanitize_report(
-            AnalysisReport(
-                question=question,
-                answer=output.reason,
-                refused=True,
-            ),
-            trace_id,
-        )
-    if isinstance(output, ExecutionFailure):
+    elif isinstance(output, ExecutionFailure):
         failure_code: FailureCode = "model_unavailable" if output.retryable else "internal_error"
         return AgentFailure(
             question=question,
@@ -758,7 +761,9 @@ def _to_analysis_response(
             trace_id=trace_id,
             retryable=output.retryable,
         )
-    raise TypeError(f"Unsupported analysis output: {type(output)!r}")
+    else:
+        raise TypeError(f"Unsupported analysis output: {type(output)!r}")
+    return _finalize_report(report, deps, trace_id)
 
 
 def _data_result_to_report(
@@ -778,6 +783,35 @@ def _data_result_to_report(
         followups=output.followups,
         chart_artifact=chart_artifact,
     )
+
+
+def _finalize_report(
+    report: AnalysisReport,
+    deps: AgentDependencies,
+    trace_id: str,
+) -> AnalysisReport:
+    report = report.model_copy(
+        update={
+            "caveats": _with_chart_failure_caveat(
+                report.caveats,
+                deps.last_chart_failure_code,
+            )
+        }
+    )
+    return _sanitize_report(report, trace_id)
+
+
+def _with_chart_failure_caveat(
+    caveats: list[str],
+    failure_code: ChartFailureCode | None,
+) -> list[str]:
+    if failure_code is None:
+        return caveats
+    warning = (
+        f"Chart generation was unavailable ({failure_code}); "
+        "the verified analysis is still available."
+    )
+    return caveats if warning in caveats else [*caveats, warning]
 
 
 def _usage_limits(config: AgentConfig) -> UsageLimits:
@@ -845,6 +879,7 @@ def _build_degraded_report(
     trace_id: str,
     *,
     chart_artifact: ChartArtifact | None = None,
+    chart_failure_code: ChartFailureCode | None = None,
 ) -> AnalysisReport:
     return _sanitize_report(
         AnalysisReport(
@@ -855,7 +890,10 @@ def _build_degraded_report(
             ),
             table=query_result.rows,
             sql=query_result.sql,
-            caveats=["Narrative interpretation is unavailable; retry for a full report."],
+            caveats=_with_chart_failure_caveat(
+                ["Narrative interpretation is unavailable; retry for a full report."],
+                chart_failure_code,
+            ),
             degraded=True,
             chart_artifact=chart_artifact,
         ),

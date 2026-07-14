@@ -31,6 +31,7 @@ from retail_agent.bigquery import (
     QueryOutcomeUnknownError,
     QueryPreExecutionError,
 )
+from retail_agent.domain.errors import ChartExecutionError
 from retail_agent.infrastructure.charts import LocalPythonChartExecutor
 from retail_agent.models import (
     AgentFailure,
@@ -67,6 +68,11 @@ class FakeGoldenStore:
 class FailingGoldenStore:
     def search(self, question: str, trace_id: str, limit: int = 3):
         raise RuntimeError("Qdrant collection is unavailable")
+
+
+class FailingChartExecutor:
+    async def execute(self, request):
+        raise ChartExecutionError("chart process failed", code="process_failed")
 
 
 class FakeBigQueryRunner:
@@ -802,6 +808,7 @@ def test_chart_tool_becomes_available_only_after_verified_query(test_config, tmp
         tmp_path,
         chart_executor=chart_executor,
     )
+    deps.last_chart_failure_code = "timeout"
     visible_tools: list[set[str]] = []
     calls = 0
     chart_code = """
@@ -868,10 +875,48 @@ Path("chart.svg").write_text(
 
     assert isinstance(response, AnalysisReport)
     assert response.chart_artifact is not None
+    assert deps.last_chart_failure_code is None
     assert Path(response.chart_artifact.path).is_file()
     assert deps.tool_sequence == ["run_sql_query", "generate_chart"]
     assert "generate_chart" not in visible_tools[0]
     assert "generate_chart" in visible_tools[1]
+
+
+def test_chart_failure_is_added_to_final_report(test_config, tmp_path):
+    deps = _agent_dependencies(
+        test_config,
+        tmp_path,
+        chart_executor=FailingChartExecutor(),
+    )
+    deps.last_query_result = QueryResult(
+        sql="SELECT 42 AS order_count",
+        rows=[{"order_count": 42}],
+        total_rows=1,
+    )
+
+    tool_result = asyncio.run(
+        agent.generate_chart(
+            SimpleNamespace(deps=deps),
+            "raise RuntimeError('boom')",
+        )
+    )
+    response = agent._to_analysis_response(
+        "Plot the order count",
+        DataAnalysisResult(direct_answer="There were 42 orders."),
+        deps,
+        "trace",
+    )
+
+    assert tool_result.status == "error"
+    assert tool_result.error_code == "process_failed"
+    assert deps.last_chart_artifact is None
+    assert deps.last_chart_failure_code == "process_failed"
+    assert isinstance(response, AnalysisReport)
+    assert response.chart_artifact is None
+    assert response.caveats == [
+        "Chart generation was unavailable (process_failed); "
+        "the verified analysis is still available."
+    ]
 
 
 def test_output_validator_rejects_unverified_chart_reference(test_config, tmp_path):

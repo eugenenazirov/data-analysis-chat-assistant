@@ -12,8 +12,9 @@ from retail_agent.domain.models import AnalysisReport
 
 NUMBER_PATTERN = re.compile(
     r"(?<![\w.])(?:(?:EUR|GBP|JPY|USD|[$€£¥])\s*)?"
-    r"[-+]?\d[\d,]*(?:\.\d+)?"
-    r"(?:\s*(?:%|[KMBkmb](?![A-Za-z])|thousand|million|billion))?",
+    r"(?>[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+    r"(?:\s*(?:%|[KMBkmb](?![A-Za-z])|thousand|million|billion))?"
+    r"(?!\w)",
     re.IGNORECASE,
 )
 MAX_DERIVATION_VALUES_PER_MEASURE = 100
@@ -86,7 +87,15 @@ def _faithfulness_details(
     tolerance: float,
     reference_date: date,
 ) -> tuple[float, list[float]]:
-    text = " ".join([report.answer, *report.highlights])
+    text = " ".join(
+        [
+            report.answer,
+            *report.highlights,
+            *report.assumptions,
+            *report.caveats,
+            *report.followups,
+        ]
+    )
     claim_matches = list(NUMBER_PATTERN.finditer(text))
     if not claim_matches:
         return 1.0, []
