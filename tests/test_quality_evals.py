@@ -53,7 +53,7 @@ def test_smoke_replay_suite_remains_comparable(test_config):
     assert result.results[0].scores.multi_turn is None
     assert result.results[-1].scores.multi_turn == 1
     assert result.versions.dataset_sha256 != "unknown"
-    assert result.versions.prompt == "analysis-v3"
+    assert result.versions.prompt == "analysis-v4"
 
 
 def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
@@ -595,6 +595,28 @@ def test_row_comparison_accepts_semantically_equivalent_aliases():
     canonical = [{"region": "New York", "lost_revenue": 300}]
 
     assert _row_score(candidate, canonical, tolerance=0.001) == 1
+
+
+def test_result_contract_accepts_unambiguous_semantic_live_aliases():
+    case = load_quality_cases(CASES_PATH)[-1]
+    candidate = [
+        {"state": "California", "lost_revenue_to_returns": 4695.7},
+        {"state": "New York", "lost_revenue_to_returns": 1697.71},
+    ]
+    canonical = [
+        {"region": "California", "lost_revenue": 4695.700005531311},
+        {"region": "New York", "lost_revenue": 1697.7099933624268},
+    ]
+
+    assert (
+        _row_score(
+            candidate,
+            canonical,
+            tolerance=case.result_contract.numeric_tolerance,
+            contract=case.result_contract,
+        )
+        == 1
+    )
 
 
 def test_row_comparison_penalizes_additional_candidate_rows():

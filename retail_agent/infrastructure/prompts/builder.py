@@ -7,7 +7,7 @@ from importlib import resources
 from retail_agent.domain.policies.analysis_output import NARRATIVE_OUTPUT_RULE
 from retail_agent.domain.policies.retrieval import RETRIEVAL_ROUTING_RULE
 
-PROMPT_VERSION = "analysis-v3"
+PROMPT_VERSION = "analysis-v4"
 PROMPT_RESOURCE = f"{PROMPT_VERSION}.md"
 
 SAFETY_RULES = (

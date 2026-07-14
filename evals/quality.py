@@ -68,7 +68,7 @@ type ScoreName = Literal[
     "operational",
 ]
 
-EVALUATOR_VERSION = "quality-v5"
+EVALUATOR_VERSION = "quality-v6"
 _AUTOMATED_EVALUATORS: tuple[EvaluatorName, ...] = (
     "intent",
     "calculation",
@@ -1468,9 +1468,7 @@ def _rows_equal(
     unused = list(candidate.items())
     for expected_key, expected_value in expected.items():
         mapped_key = contract.column_mapping.get(expected_key) if contract is not None else None
-        if mapped_key is not None:
-            if mapped_key not in candidate:
-                return False
+        if mapped_key is not None and mapped_key in candidate:
             if not _values_equal(candidate[mapped_key], expected_value, tolerance):
                 return False
             unused = [(key, value) for key, value in unused if key != mapped_key]
@@ -1506,15 +1504,31 @@ def _result_contract_violations(
     violations: list[str] = []
     for row_index, row in enumerate(candidate_rows):
         for canonical_column in contract.key_columns:
-            candidate_column = contract.column_mapping[canonical_column]
-            if row.get(candidate_column) is None:
-                violations.append(f"missing_key:{row_index}:{candidate_column}")
+            candidate_column = _resolve_contract_column(row, canonical_column, contract)
+            if candidate_column is None or row.get(candidate_column) is None:
+                violations.append(f"missing_key:{row_index}:{canonical_column}")
         for canonical_column, unit in contract.units.items():
-            candidate_column = contract.column_mapping[canonical_column]
+            candidate_column = _resolve_contract_column(row, canonical_column, contract)
+            if candidate_column is None:
+                continue
             value = row.get(candidate_column)
             if value is not None and not _unit_value_valid(value, unit):
                 violations.append(f"invalid_unit:{row_index}:{candidate_column}:{unit}")
     return violations
+
+
+def _resolve_contract_column(
+    row: dict[str, Any], canonical_column: str, contract: ResultContract
+) -> str | None:
+    preferred = contract.column_mapping[canonical_column]
+    if preferred in row:
+        return preferred
+    compatible = [
+        candidate_column
+        for candidate_column in row
+        if _column_names_compatible(candidate_column, canonical_column)
+    ]
+    return compatible[0] if len(compatible) == 1 else None
 
 
 def _has_contract_type_violation(violations: list[str]) -> bool:

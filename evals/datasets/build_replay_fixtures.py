@@ -17,6 +17,7 @@ from evals.quality import (
     _result_schema,
     _sha256_text,
 )
+from retail_agent.infrastructure.prompts.builder import PROMPT_VERSION
 
 DATASET = "bigquery-public-data.thelook_ecommerce"
 CAPTURED_AT = "2026-07-14T15:00:00Z"
@@ -858,7 +859,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "row_count": len(scenario.rows) if answer_case else 0,
             "captured_at": CAPTURED_AT,
             "evaluator_version": EVALUATOR_VERSION,
-            "prompt_version": "analysis-v3",
+            "prompt_version": PROMPT_VERSION,
             "persona_version": "prototype-config-v1",
             "model": "google-cloud:gemini-2.5-flash",
             "embedding_model": "gemini-embedding-001",

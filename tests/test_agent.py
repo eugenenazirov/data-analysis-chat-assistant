@@ -213,7 +213,7 @@ def test_run_question_defers_golden_retrieval_to_the_model(test_config, tmp_path
     assert "Golden Knowledge analyst precedents" not in fake_agent.calls[0]["prompt"]
     assert "Call only the tools needed" in fake_agent.calls[0]["prompt"]
     started = [event for event in _events(log_path) if event["event"] == "agent_run_started"]
-    assert started[0]["prompt_version"] == "analysis-v3"
+    assert started[0]["prompt_version"] == "analysis-v4"
     assert started[0]["reference_date"] == turn.reference_date.isoformat()
     assert started[0]["persona_version"] == "prototype-config-v1"
     assert started[0]["golden_index_version"] == "test_trios"

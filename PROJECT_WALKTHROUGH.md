@@ -227,7 +227,7 @@ dataset, while the Docker `evaluation` target adds both.
 `config/agent.yaml` is the readable baseline. Environment and `.env` aliases
 override it; explicit initialization has highest priority. Credentials use
 `SecretStr`. Prompt content is packaged at
-`retail_agent/infrastructure/prompts/templates/analysis-v3.md`, and its version
+`retail_agent/infrastructure/prompts/templates/analysis-v4.md`, and its version
 is recorded in telemetry.
 
 The locked stack uses Python 3.12, uv 0.10.8, PydanticAI 2.9, Pydantic Settings,
