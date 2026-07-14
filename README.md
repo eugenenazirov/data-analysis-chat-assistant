@@ -8,6 +8,23 @@ history, evidence validation, and automatic chart generation.
 For a reviewer-oriented code tour, start with
 [PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md).
 
+## Command Shortcuts
+
+If [`just`](https://just.systems/) is installed, the root `justfile` provides
+shortcuts for the common developer and reviewer workflows. Run `just` to list
+every available recipe.
+
+```bash
+just setup
+just check
+just review
+just ask "Plot monthly revenue by category"
+```
+
+`just check` is the complete credential-free local gate. `just review` also
+builds and verifies the runtime and evaluation images. The sections below keep
+the underlying commands available for readers who do not use `just`.
+
 ## Runtime Architecture
 
 ```text
