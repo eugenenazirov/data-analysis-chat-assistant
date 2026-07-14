@@ -866,6 +866,20 @@ def test_intent_score_rejects_wrong_cross_table_join_key(test_config):
     assert score == 0
 
 
+def test_intent_score_accepts_declared_cte_join_key(test_config):
+    case = load_quality_cases(Path("evals/datasets/release_holdout.jsonl"))[17]
+
+    score = _intent_score(
+        test_config,
+        case.replay.candidate_sql,
+        case.canonical_sql,
+        case.expectations,
+    )
+
+    assert case.id == "new_vs_repeat_revenue_mix"
+    assert score == 1
+
+
 def test_intent_score_normalizes_equivalent_quarter_intervals(test_config):
     case = load_quality_cases(CASES_PATH)[3]
     equivalent_sql = case.canonical_sql.replace(

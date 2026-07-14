@@ -160,6 +160,112 @@
       ],
       "type": "string"
     },
+    "ConversationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "effective_period": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effective Period"
+        },
+        "expect_history_used": {
+          "default": true,
+          "title": "Expect History Used",
+          "type": "boolean"
+        },
+        "referenced_entities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Referenced Entities",
+          "type": "array"
+        },
+        "retained_constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retained Constraints",
+          "type": "array"
+        },
+        "superseded_constraints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Superseded Constraints",
+          "type": "array"
+        }
+      },
+      "title": "ConversationContract",
+      "type": "object"
+    },
+    "EvaluationBudgets": {
+      "additionalProperties": false,
+      "properties": {
+        "max_bigquery_jobs": {
+          "default": 2,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Max Bigquery Jobs",
+          "type": "integer"
+        },
+        "max_bytes_processed": {
+          "default": 50000000,
+          "minimum": 0,
+          "title": "Max Bytes Processed",
+          "type": "integer"
+        },
+        "max_duration_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "title": "Max Duration Seconds",
+          "type": "number"
+        },
+        "max_output_retries": {
+          "default": 1,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Max Output Retries",
+          "type": "integer"
+        },
+        "max_provider_requests": {
+          "default": 4,
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Max Provider Requests",
+          "type": "integer"
+        },
+        "max_query_attempts": {
+          "default": 1,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Max Query Attempts",
+          "type": "integer"
+        },
+        "max_retrieval_requests": {
+          "default": 1,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Max Retrieval Requests",
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "default": 16000,
+          "minimum": 0,
+          "title": "Max Total Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "EvaluationBudgets",
+      "type": "object"
+    },
     "EvaluationRisk": {
       "enum": [
         "low",
@@ -305,6 +411,42 @@
       "title": "FixtureProvenance",
       "type": "object"
     },
+    "HistoryTurnReplay": {
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sql"
+        },
+        "succeeded": {
+          "title": "Succeeded",
+          "type": "boolean"
+        },
+        "trusted": {
+          "title": "Trusted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "question",
+        "succeeded",
+        "trusted"
+      ],
+      "title": "HistoryTurnReplay",
+      "type": "object"
+    },
     "JoinKey": {
       "additionalProperties": false,
       "properties": {
@@ -399,6 +541,13 @@
             "type": "object"
           },
           "title": "Canonical Rows",
+          "type": "array"
+        },
+        "history_turns": {
+          "items": {
+            "$ref": "#/$defs/HistoryTurnReplay"
+          },
+          "title": "History Turns",
           "type": "array"
         },
         "history_used": {
@@ -525,6 +674,9 @@
     "answer_contract": {
       "$ref": "#/$defs/AnswerContract"
     },
+    "budgets": {
+      "$ref": "#/$defs/EvaluationBudgets"
+    },
     "canonical_sql": {
       "title": "Canonical Sql",
       "type": "string"
@@ -532,6 +684,17 @@
     "category": {
       "title": "Category",
       "type": "string"
+    },
+    "conversation_contract": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ConversationContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "critical": {
       "default": false,
@@ -558,6 +721,10 @@
       },
       "title": "History",
       "type": "array"
+    },
+    "human_rubric": {
+      "title": "Human Rubric",
+      "type": "string"
     },
     "id": {
       "title": "Id",
@@ -617,6 +784,8 @@
     "expectations",
     "result_contract",
     "answer_contract",
+    "budgets",
+    "human_rubric",
     "replay"
   ],
   "title": "QualityEvalCase",

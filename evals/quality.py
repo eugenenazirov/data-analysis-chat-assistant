@@ -101,6 +101,32 @@ class AnswerContract(EvaluationModel):
     pii_forbidden: bool = True
 
 
+class ConversationContract(EvaluationModel):
+    expect_history_used: bool = True
+    retained_constraints: list[str] = Field(default_factory=list)
+    superseded_constraints: list[str] = Field(default_factory=list)
+    referenced_entities: list[str] = Field(default_factory=list)
+    effective_period: str | None = None
+
+
+class EvaluationBudgets(EvaluationModel):
+    max_query_attempts: int = Field(default=1, ge=0, le=10)
+    max_output_retries: int = Field(default=1, ge=0, le=10)
+    max_provider_requests: int = Field(default=4, ge=0, le=50)
+    max_retrieval_requests: int = Field(default=1, ge=0, le=10)
+    max_bigquery_jobs: int = Field(default=2, ge=0, le=20)
+    max_bytes_processed: int = Field(default=50_000_000, ge=0)
+    max_duration_seconds: float = Field(default=30, gt=0, le=600)
+    max_total_tokens: int = Field(default=16_000, ge=0)
+
+
+class HistoryTurnReplay(EvaluationModel):
+    question: str
+    succeeded: bool
+    trusted: bool
+    sql: str | None = None
+
+
 class FixtureProvenance(EvaluationModel):
     canonical_sql_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     reference_date: date
@@ -127,6 +153,7 @@ class QualityReplay(EvaluationModel):
     retrieved_ids: list[str]
     report: AnalysisReport
     history_used: bool = False
+    history_turns: list[HistoryTurnReplay] = Field(default_factory=list)
     usefulness_score: float | None = Field(default=None, ge=0, le=5)
     reference_date: date | None = None
     provenance: FixtureProvenance
@@ -149,6 +176,9 @@ class QualityEvalCase(EvaluationModel):
     expectations: QualityExpectations
     result_contract: ResultContract
     answer_contract: AnswerContract
+    conversation_contract: ConversationContract | None = None
+    budgets: EvaluationBudgets
+    human_rubric: str
     replay: QualityReplay
     critical: bool = False
 
@@ -158,12 +188,20 @@ class QualityEvalCase(EvaluationModel):
             raise ValueError("case id must be stable snake_case")
         if not self.title.strip() or not self.category.strip():
             raise ValueError("title and category must not be blank")
+        if not self.human_rubric.strip():
+            raise ValueError("human rubric must not be blank")
         if "replay" not in self.modes:
             raise ValueError("every committed case must support replay mode")
         if "multi_turn" in self.evaluators and not self.history:
             raise ValueError("multi_turn evaluator requires conversation history")
         if self.history and "multi_turn" not in self.evaluators:
             raise ValueError("conversation history requires the multi_turn evaluator")
+        if bool(self.history) != (self.conversation_contract is not None):
+            raise ValueError("conversation history and contract must be declared together")
+        if self.history and len(self.replay.history_turns) != len(self.history):
+            raise ValueError("replay history turns must cover every history question")
+        if self.history and [turn.question for turn in self.replay.history_turns] != self.history:
+            raise ValueError("replay history turn questions must match case history")
         if self.critical and self.risk not in {"high", "critical"}:
             raise ValueError("critical cases must declare high or critical risk")
         if self.replay.reference_date not in {None, self.reference_date}:
@@ -175,7 +213,9 @@ class QualityEvalCase(EvaluationModel):
             raise ValueError("fixture canonical SQL hash does not match canonical_sql")
         if provenance.row_count != len(self.replay.canonical_rows):
             raise ValueError("fixture row count does not match canonical rows")
-        if provenance.result_schema != _result_schema(self.replay.canonical_rows):
+        if self.replay.canonical_rows and provenance.result_schema != _result_schema(
+            self.replay.canonical_rows
+        ):
             raise ValueError("fixture result schema does not match canonical rows")
         if provenance.content_sha256 != _fixture_content_sha256(
             self.canonical_sql, self.replay
@@ -239,6 +279,8 @@ class QualityDiagnostics(EvaluationModel):
     result_contract_violations: list[str] = Field(default_factory=list)
     unsupported_qualitative_claims: list[str] = Field(default_factory=list)
     verified_sql_attached: bool = False
+    expected_behavior_met: bool = False
+    conversation_results: list[ConstraintDiagnostic] = Field(default_factory=list)
 
 
 class QualityEvalResult(EvaluationModel):
@@ -434,25 +476,32 @@ async def run_quality_live_evals(
             max_safe_attempts=max_safe_attempts,
             retry_delay_seconds=retry_delay_seconds,
         )
-        if isinstance(turn.response, AgentFailure) or turn.query_result is None:
+        if isinstance(turn.response, AgentFailure) or (
+            case.expected_behavior == "answer" and turn.query_result is None
+        ):
             results.append(
                 _failed_live_result(case, "candidate agent run failed")
             )
             continue
 
-        try:
-            canonical = bigquery.execute(case.canonical_sql, new_trace_id())
-        except Exception as exc:
-            results.append(
-                _failed_live_result(case, f"canonical query failed: {exc.__class__.__name__}")
-            )
-            continue
+        canonical_rows: list[dict[str, Any]] = []
+        if case.expected_behavior == "answer":
+            try:
+                canonical = bigquery.execute(case.canonical_sql, new_trace_id())
+                canonical_rows = canonical.rows
+            except Exception as exc:
+                results.append(
+                    _failed_live_result(
+                        case, f"canonical query failed: {exc.__class__.__name__}"
+                    )
+                )
+                continue
 
         replay = case.replay.model_copy(
             update={
-                "candidate_sql": turn.query_result.sql,
-                "candidate_rows": turn.query_result.rows,
-                "canonical_rows": canonical.rows,
+                "candidate_sql": turn.query_result.sql if turn.query_result is not None else "",
+                "candidate_rows": turn.query_result.rows if turn.query_result is not None else [],
+                "canonical_rows": canonical_rows,
                 "retrieved_ids": list(turn.retrieved_trio_ids),
                 "report": turn.response,
                 "history_used": bool(case.history and conversation.completed_turns),
@@ -551,8 +600,13 @@ def evaluate_quality_case(
         evidence.score if not unsupported_qualitative_claims else 0.0
     ) if "faithfulness" in case.evaluators else None
     unsupported_claims = list(evidence.unsupported_numeric_claims)
+    conversation_results = (
+        _conversation_assessment(case, replay)
+        if "multi_turn" in case.evaluators
+        else []
+    )
     multi_turn = (
-        1.0 if replay.history_used and intent == 1.0 else 0.0
+        1.0 if all(result.passed for result in conversation_results) else 0.0
     ) if "multi_turn" in case.evaluators else None
     usefulness = (
         replay.usefulness_score / 5
@@ -564,6 +618,11 @@ def evaluate_quality_case(
         replay.report,
         replay.candidate_sql,
     )
+    expected_behavior_met = _expected_behavior_matches(
+        case.expected_behavior,
+        replay,
+        executed_sql_attached=executed_sql_attached,
+    )
     automated_passed = (
         _applicable_score_passes("intent", intent)
         and _applicable_score_passes("calculation", calculation)
@@ -571,9 +630,7 @@ def evaluate_quality_case(
         and _applicable_score_passes("retrieval_mrr", retrieval_mrr)
         and _applicable_score_passes("faithfulness", faithfulness)
         and _applicable_score_passes("multi_turn", multi_turn)
-        and executed_sql_attached
-        and not replay.report.degraded
-        and not replay.report.refused
+        and expected_behavior_met
     )
     passed = (
         automated_passed
@@ -611,6 +668,7 @@ def evaluate_quality_case(
         f"multi_turn={_format_score(multi_turn)}, usefulness={usefulness_detail}, "
         f"report={report_status}, "
         f"sql_source={'verified' if executed_sql_attached else 'unverified'}, "
+        f"behavior={'matched' if expected_behavior_met else 'mismatched'}, "
         f"failed_constraints={','.join(failed_constraints) if failed_constraints else 'none'}"
     )
     return QualityEvalResult(
@@ -645,6 +703,8 @@ def evaluate_quality_case(
             ),
             unsupported_qualitative_claims=unsupported_qualitative_claims,
             verified_sql_attached=executed_sql_attached,
+            expected_behavior_met=expected_behavior_met,
+            conversation_results=conversation_results,
         ),
     )
 
@@ -745,6 +805,117 @@ def _answer_contract_violations(
         if matched:
             violations.append(f"forbidden_claim:{pattern}")
     return violations
+
+
+def _expected_behavior_matches(
+    expected: ExpectedBehavior,
+    replay: QualityReplay,
+    *,
+    executed_sql_attached: bool,
+) -> bool:
+    report = replay.report
+    if expected == "answer":
+        return (
+            bool(replay.candidate_sql)
+            and executed_sql_attached
+            and not report.refused
+            and not report.degraded
+        )
+    if expected == "clarify":
+        return not replay.candidate_sql and report.sql is None and not report.refused
+    if expected == "refuse":
+        return not replay.candidate_sql and report.sql is None and report.refused
+    return report.degraded
+
+
+def _conversation_assessment(
+    case: QualityEvalCase, replay: QualityReplay
+) -> list[ConstraintDiagnostic]:
+    contract = case.conversation_contract
+    if contract is None:
+        return [
+            ConstraintDiagnostic(
+                name="conversation_contract",
+                passed=False,
+                detail="missing conversation contract",
+            )
+        ]
+    normalized_sql = " ".join(replay.candidate_sql.casefold().split())
+    narrative = " ".join(
+        [replay.report.answer, *replay.report.highlights, *replay.report.caveats]
+    ).casefold()
+    lineage_valid = bool(replay.history_turns) and all(
+        turn.succeeded == turn.trusted for turn in replay.history_turns
+    )
+    results = [
+        ConstraintDiagnostic(
+            name="history_used",
+            passed=replay.history_used == contract.expect_history_used,
+            detail=(
+                "history usage matched expectation"
+                if replay.history_used == contract.expect_history_used
+                else "history usage differed from expectation"
+            ),
+        ),
+        ConstraintDiagnostic(
+            name="tool_result_lineage",
+            passed=lineage_valid,
+            detail=(
+                "only successful turns are trusted"
+                if lineage_valid
+                else "failed or successful turn has incorrect trust state"
+            ),
+        ),
+        *[
+            ConstraintDiagnostic(
+                name=f"retained:{constraint}",
+                passed=constraint.casefold() in normalized_sql,
+                detail=(
+                    "retained"
+                    if constraint.casefold() in normalized_sql
+                    else "missing from final SQL"
+                ),
+            )
+            for constraint in contract.retained_constraints
+        ],
+        *[
+            ConstraintDiagnostic(
+                name=f"superseded:{constraint}",
+                passed=constraint.casefold() not in normalized_sql,
+                detail=(
+                    "removed"
+                    if constraint.casefold() not in normalized_sql
+                    else "leaked into final SQL"
+                ),
+            )
+            for constraint in contract.superseded_constraints
+        ],
+        *[
+            ConstraintDiagnostic(
+                name=f"entity:{entity}",
+                passed=entity.casefold() in f"{normalized_sql} {narrative}",
+                detail=(
+                    "resolved"
+                    if entity.casefold() in f"{normalized_sql} {narrative}"
+                    else "not resolved"
+                ),
+            )
+            for entity in contract.referenced_entities
+        ],
+    ]
+    if contract.effective_period is not None:
+        results.append(
+            ConstraintDiagnostic(
+                name="effective_period",
+                passed=contract.effective_period.casefold() in normalized_sql,
+                detail=(
+                    "stable period retained"
+                    if contract.effective_period.casefold() in normalized_sql
+                    else "effective period missing"
+                ),
+            )
+        )
+    return results
 
 
 def _intent_score(
@@ -1284,6 +1455,24 @@ def _joins_are_allowed(expression: exp.Expression, allowed_joins: list[JoinKey])
         return True
 
     aliases = normalized_table_aliases(expression)
+    aliases.update(
+        {
+            cte.alias.lower(): cte.alias.lower()
+            for cte in expression.find_all(exp.CTE)
+            if cte.alias
+        }
+    )
+    cte_names = {
+        cte.alias.lower() for cte in expression.find_all(exp.CTE) if cte.alias
+    }
+    aliases.update(
+        {
+            join.this.alias_or_name.lower(): join.this.name.lower()
+            for join in joins
+            if isinstance(join.this, exp.Table)
+            and join.this.name.lower() in cte_names
+        }
+    )
     allowed = {join.normalized() for join in allowed_joins}
     for join in joins:
         join_keys = {

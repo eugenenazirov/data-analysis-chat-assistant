@@ -31,14 +31,25 @@ guardrails:
 
 # Validate evaluation data contracts, provenance, partitions, and overlap policy.
 dataset:
+    uv run python -m evals.datasets.build_replay_fixtures --check
     uv run python -m evals.run validate-dataset
+    uv run python -m evals.run validate-dataset --cases evals/datasets/release_holdout.jsonl
+    uv run python -m evals.run validate-dataset --cases evals/datasets/multi_turn.jsonl
 
 # Run the credential-free answer-quality replay evaluation.
 quality:
     uv run python -m evals.run quality --mode replay
 
+# Run the held-out analytical replay gate without substituting for human review.
+quality-holdout:
+    uv run python -m evals.run quality --mode replay --cases evals/datasets/release_holdout.jsonl --automated-only
+
+# Run the multi-turn trajectory replay gate without substituting for human review.
+quality-multi-turn:
+    uv run python -m evals.run quality --mode replay --cases evals/datasets/multi_turn.jsonl --automated-only
+
 # Run all credential-free evaluation suites.
-eval: dataset guardrails quality
+eval: dataset guardrails quality quality-holdout quality-multi-turn
 
 # Run linting, tests, and offline evaluations.
 _local-check: lint test eval
