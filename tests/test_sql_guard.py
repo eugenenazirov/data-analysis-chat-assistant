@@ -149,3 +149,62 @@ def test_validate_blocks_tables_outside_allowed_dataset(test_config, sql):
 def test_validate_wraps_malformed_sql_as_safety_error(test_config):
     with pytest.raises(SQLSafetyError, match="SQL parse failed"):
         validate_and_prepare_sql("SELECT FROM", test_config)
+
+
+@pytest.mark.parametrize(
+    "join_sql",
+    [
+        "CROSS JOIN `bigquery-public-data.thelook_ecommerce.users` AS u",
+        "JOIN `bigquery-public-data.thelook_ecommerce.users` AS u",
+    ],
+)
+def test_validate_blocks_cartesian_or_keyless_joins(test_config, join_sql):
+    with pytest.raises(SQLSafetyError, match="join condition"):
+        validate_and_prepare_sql(
+            f"""
+            SELECT o.order_id
+            FROM `bigquery-public-data.thelook_ecommerce.orders` AS o
+            {join_sql}
+            LIMIT 5
+            """,
+            test_config,
+        )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "sale_price / id",
+        "SUM(sale_price) / COUNTIF(status = 'Returned')",
+    ],
+)
+def test_validate_blocks_unguarded_division(test_config, expression):
+    with pytest.raises(SQLSafetyError, match="SAFE_DIVIDE"):
+        validate_and_prepare_sql(
+            f"""
+            SELECT {expression} AS ratio
+            FROM `bigquery-public-data.thelook_ecommerce.order_items`
+            LIMIT 5
+            """,
+            test_config,
+        )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "SAFE_DIVIDE(SUM(sale_price), COUNTIF(status = 'Returned'))",
+        "SUM(sale_price) / NULLIF(COUNTIF(status = 'Returned'), 0)",
+    ],
+)
+def test_validate_allows_guarded_division(test_config, expression):
+    validation = validate_and_prepare_sql(
+        f"""
+        SELECT {expression} AS ratio
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        LIMIT 5
+        """,
+        test_config,
+    )
+
+    assert "LIMIT 5" in validation.safe_sql

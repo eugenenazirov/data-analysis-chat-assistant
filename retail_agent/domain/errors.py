@@ -8,6 +8,7 @@ type ChartExecutionFailureCode = Literal[
     "process_failed",
     "source_too_large",
     "timeout",
+    "unsafe_source",
 ]
 
 

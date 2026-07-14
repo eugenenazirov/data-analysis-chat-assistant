@@ -27,6 +27,7 @@ from retail_agent.domain.policies.report_evidence import (
 from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger, new_trace_id
+from retail_agent.pii import redact_text
 from retail_agent.ports import AnalysisAgentPort
 from retail_agent.sql_guard import normalized_table_aliases, validate_and_prepare_sql
 
@@ -50,12 +51,16 @@ type ScoreName = Literal[
     "calculation",
     "retrieval",
     "retrieval_mrr",
+    "retrieval_ndcg",
+    "retrieval_usefulness",
+    "retrieval_harm",
+    "retrieval_degradation",
     "faithfulness",
     "multi_turn",
     "usefulness",
 ]
 
-EVALUATOR_VERSION = "quality-v2"
+EVALUATOR_VERSION = "quality-v3"
 _AUTOMATED_EVALUATORS: tuple[EvaluatorName, ...] = (
     "intent",
     "calculation",
@@ -82,8 +87,25 @@ class QualityExpectations(EvaluationModel):
     allowed_joins: list[JoinKey] = Field(default_factory=list)
     required_sql_fragments: list[str] = Field(default_factory=list)
     forbidden_sql_fragments: list[str] = Field(default_factory=list)
-    expected_retrieval_ids: list[str] = Field(default_factory=list)
     numeric_tolerance: float = 0.001
+
+
+class RetrievalContract(EvaluationModel):
+    relevant_ids: list[str] = Field(default_factory=list)
+    acceptable_ids: list[str] = Field(default_factory=list)
+    forbidden_ids: list[str] = Field(default_factory=list)
+    useful_sql_fragments: list[str] = Field(default_factory=list)
+    harmful_sql_fragments: list[str] = Field(default_factory=list)
+    unavailable: bool = False
+    required: bool = False
+    disclosure_fragments: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_relevance_sets(self) -> RetrievalContract:
+        groups = [set(self.relevant_ids), set(self.acceptable_ids), set(self.forbidden_ids)]
+        if any(groups[index] & groups[other] for index in range(3) for other in range(index)):
+            raise ValueError("retrieval relevance ID sets must be disjoint")
+        return self
 
 
 class ResultContract(EvaluationModel):
@@ -174,6 +196,7 @@ class QualityEvalCase(EvaluationModel):
     evaluators: set[EvaluatorName]
     canonical_sql: str
     expectations: QualityExpectations
+    retrieval: RetrievalContract
     result_contract: ResultContract
     answer_contract: AnswerContract
     conversation_contract: ConversationContract | None = None
@@ -217,9 +240,7 @@ class QualityEvalCase(EvaluationModel):
             self.replay.canonical_rows
         ):
             raise ValueError("fixture result schema does not match canonical rows")
-        if provenance.content_sha256 != _fixture_content_sha256(
-            self.canonical_sql, self.replay
-        ):
+        if provenance.content_sha256 != _fixture_content_sha256(self.canonical_sql, self.replay):
             raise ValueError("fixture content hash does not match replay content")
         canonical_columns = set(provenance.result_schema)
         declared_columns = {
@@ -234,6 +255,13 @@ class QualityEvalCase(EvaluationModel):
             raise ValueError("result units reference unknown canonical columns")
         if self.result_contract.numeric_tolerance != self.expectations.numeric_tolerance:
             raise ValueError("result and SQL expectation tolerances must match")
+        if self.retrieval.unavailable and self.replay.retrieved_ids:
+            raise ValueError("unavailable retrieval cannot contain replayed retrieval IDs")
+        if self.retrieval.required and self.retrieval.unavailable:
+            if self.expected_behavior != "refuse":
+                raise ValueError("required unavailable retrieval must refuse safely")
+        elif self.retrieval.unavailable and self.expected_behavior != "degrade":
+            raise ValueError("optional unavailable retrieval must degrade explicitly")
         return self
 
 
@@ -242,6 +270,10 @@ class QualityScores(EvaluationModel):
     calculation: float | None
     retrieval: float | None
     retrieval_mrr: float | None
+    retrieval_ndcg: float | None
+    retrieval_usefulness: float | None
+    retrieval_harm: float | None
+    retrieval_degradation: float | None
     faithfulness: float | None
     multi_turn: float | None
     usefulness: float | None
@@ -263,6 +295,16 @@ class ResultAssessment(EvaluationModel):
     violations: list[str] = Field(default_factory=list)
 
 
+class RetrievalAssessment(EvaluationModel):
+    recall_at_three: float | None
+    mrr: float | None
+    ndcg_at_three: float | None
+    irrelevant_rate: float
+    usefulness: float
+    harm_rate: float
+    degradation: float | None
+
+
 class QualityDiagnostics(EvaluationModel):
     unsupported_numeric_claims: list[float] = Field(default_factory=list)
     candidate_sql: str
@@ -281,6 +323,8 @@ class QualityDiagnostics(EvaluationModel):
     verified_sql_attached: bool = False
     expected_behavior_met: bool = False
     conversation_results: list[ConstraintDiagnostic] = Field(default_factory=list)
+    retrieval_irrelevant_rate: float | None = None
+    retrieval_harm_rate: float | None = None
 
 
 class QualityEvalResult(EvaluationModel):
@@ -359,10 +403,7 @@ def _result_schema(rows: list[dict[str, Any]]) -> dict[str, str]:
     for row in rows:
         for field, value in row.items():
             field_types.setdefault(field, set()).add(_value_type_name(value))
-    return {
-        field: " | ".join(sorted(types))
-        for field, types in sorted(field_types.items())
-    }
+    return {field: " | ".join(sorted(types)) for field, types in sorted(field_types.items())}
 
 
 def _value_type_name(value: Any) -> str:
@@ -459,9 +500,7 @@ async def run_quality_live_evals(
                 break
 
         if not history_succeeded:
-            results.append(
-                _failed_live_result(case, "history turn failed")
-            )
+            results.append(_failed_live_result(case, "history turn failed"))
             continue
 
         turn = await _run_live_turn(
@@ -479,9 +518,7 @@ async def run_quality_live_evals(
         if isinstance(turn.response, AgentFailure) or (
             case.expected_behavior == "answer" and turn.query_result is None
         ):
-            results.append(
-                _failed_live_result(case, "candidate agent run failed")
-            )
+            results.append(_failed_live_result(case, "candidate agent run failed"))
             continue
 
         canonical_rows: list[dict[str, Any]] = []
@@ -491,9 +528,7 @@ async def run_quality_live_evals(
                 canonical_rows = canonical.rows
             except Exception as exc:
                 results.append(
-                    _failed_live_result(
-                        case, f"canonical query failed: {exc.__class__.__name__}"
-                    )
+                    _failed_live_result(case, f"canonical query failed: {exc.__class__.__name__}")
                 )
                 continue
 
@@ -581,10 +616,22 @@ def evaluate_quality_case(
         else None
     )
     calculation = result_assessment.score if result_assessment is not None else None
-    retrieval, retrieval_mrr = (
-        _retrieval_scores(replay.retrieved_ids, case.expectations.expected_retrieval_ids)
-        if "retrieval" in case.evaluators
-        else (None, None)
+    retrieval_assessment = (
+        _retrieval_assessment(replay, case.retrieval) if "retrieval" in case.evaluators else None
+    )
+    retrieval = retrieval_assessment.recall_at_three if retrieval_assessment is not None else None
+    retrieval_mrr = retrieval_assessment.mrr if retrieval_assessment is not None else None
+    retrieval_ndcg = (
+        retrieval_assessment.ndcg_at_three if retrieval_assessment is not None else None
+    )
+    retrieval_usefulness = (
+        retrieval_assessment.usefulness if retrieval_assessment is not None else None
+    )
+    retrieval_harm = (
+        1.0 - retrieval_assessment.harm_rate if retrieval_assessment is not None else None
+    )
+    retrieval_degradation = (
+        retrieval_assessment.degradation if retrieval_assessment is not None else None
     )
     evidence = assess_report_evidence(
         replay.report,
@@ -597,17 +644,19 @@ def evaluate_quality_case(
         replay.report, case.answer_contract
     )
     faithfulness = (
-        evidence.score if not unsupported_qualitative_claims else 0.0
-    ) if "faithfulness" in case.evaluators else None
+        (evidence.score if not unsupported_qualitative_claims else 0.0)
+        if "faithfulness" in case.evaluators
+        else None
+    )
     unsupported_claims = list(evidence.unsupported_numeric_claims)
     conversation_results = (
-        _conversation_assessment(case, replay)
-        if "multi_turn" in case.evaluators
-        else []
+        _conversation_assessment(case, replay) if "multi_turn" in case.evaluators else []
     )
     multi_turn = (
-        1.0 if all(result.passed for result in conversation_results) else 0.0
-    ) if "multi_turn" in case.evaluators else None
+        (1.0 if all(result.passed for result in conversation_results) else 0.0)
+        if "multi_turn" in case.evaluators
+        else None
+    )
     usefulness = (
         replay.usefulness_score / 5
         if "usefulness" in case.evaluators and replay.usefulness_score is not None
@@ -628,6 +677,10 @@ def evaluate_quality_case(
         and _applicable_score_passes("calculation", calculation)
         and _applicable_score_passes("retrieval", retrieval)
         and _applicable_score_passes("retrieval_mrr", retrieval_mrr)
+        and _applicable_score_passes("retrieval_ndcg", retrieval_ndcg)
+        and _applicable_score_passes("retrieval_usefulness", retrieval_usefulness)
+        and _applicable_score_passes("retrieval_harm", retrieval_harm)
+        and _applicable_score_passes("retrieval_degradation", retrieval_degradation)
         and _applicable_score_passes("faithfulness", faithfulness)
         and _applicable_score_passes("multi_turn", multi_turn)
         and expected_behavior_met
@@ -642,6 +695,10 @@ def evaluate_quality_case(
         calculation=calculation,
         retrieval=retrieval,
         retrieval_mrr=retrieval_mrr,
+        retrieval_ndcg=retrieval_ndcg,
+        retrieval_usefulness=retrieval_usefulness,
+        retrieval_harm=retrieval_harm,
+        retrieval_degradation=retrieval_degradation,
         faithfulness=faithfulness,
         multi_turn=multi_turn,
         usefulness=usefulness,
@@ -661,9 +718,15 @@ def evaluate_quality_case(
         if intent_assessment is not None
         else []
     )
+    retrieval_harm_rate = (
+        retrieval_assessment.harm_rate if retrieval_assessment is not None else None
+    )
     detail = (
         f"intent={_format_score(intent)}, calculation={_format_score(calculation)}, "
         f"recall@3={_format_score(retrieval)}, mrr={_format_score(retrieval_mrr)}, "
+        f"ndcg@3={_format_score(retrieval_ndcg)}, "
+        f"retrieval_use={_format_score(retrieval_usefulness)}, "
+        f"retrieval_harm={_format_rate(retrieval_harm_rate)}, "
         f"faithfulness={_format_score(faithfulness)}, "
         f"multi_turn={_format_score(multi_turn)}, usefulness={usefulness_detail}, "
         f"report={report_status}, "
@@ -705,6 +768,12 @@ def evaluate_quality_case(
             verified_sql_attached=executed_sql_attached,
             expected_behavior_met=expected_behavior_met,
             conversation_results=conversation_results,
+            retrieval_irrelevant_rate=(
+                retrieval_assessment.irrelevant_rate if retrieval_assessment is not None else None
+            ),
+            retrieval_harm_rate=(
+                retrieval_assessment.harm_rate if retrieval_assessment is not None else None
+            ),
         ),
     )
 
@@ -779,9 +848,7 @@ def load_human_scores(path: Path | None) -> dict[str, float]:
     return {str(name): float(score) for name, score in raw.items()}
 
 
-def _answer_contract_violations(
-    report: AnalysisReport, contract: AnswerContract
-) -> list[str]:
+def _answer_contract_violations(report: AnalysisReport, contract: AnswerContract) -> list[str]:
     narrative = "\n".join(
         [
             report.answer,
@@ -804,6 +871,10 @@ def _answer_contract_violations(
             matched = pattern.casefold() in narrative.casefold()
         if matched:
             violations.append(f"forbidden_claim:{pattern}")
+    if contract.pii_forbidden:
+        _, redactions = redact_text(narrative)
+        if redactions:
+            violations.append(f"pii_leakage:{redactions}")
     return violations
 
 
@@ -1118,16 +1189,12 @@ def _result_contract_violations(
             candidate_column = contract.column_mapping[canonical_column]
             value = row.get(candidate_column)
             if value is not None and not _unit_value_valid(value, unit):
-                violations.append(
-                    f"invalid_unit:{row_index}:{candidate_column}:{unit}"
-                )
+                violations.append(f"invalid_unit:{row_index}:{candidate_column}:{unit}")
     return violations
 
 
 def _has_contract_type_violation(violations: list[str]) -> bool:
-    return any(
-        violation.startswith(("missing_key:", "invalid_unit:")) for violation in violations
-    )
+    return any(violation.startswith(("missing_key:", "invalid_unit:")) for violation in violations)
 
 
 def _unit_value_valid(value: Any, unit: ResultUnit) -> bool:
@@ -1188,6 +1255,83 @@ def _retrieval_scores(retrieved: list[str], expected: list[str]) -> tuple[float,
     return recall, mrr
 
 
+def _retrieval_assessment(
+    replay: QualityReplay, contract: RetrievalContract
+) -> RetrievalAssessment:
+    normalized_sql = " ".join(replay.candidate_sql.casefold().split())
+    narrative = " ".join(
+        [replay.report.answer, *replay.report.caveats, *replay.report.highlights]
+    ).casefold()
+    usefulness = float(
+        all(fragment.casefold() in normalized_sql for fragment in contract.useful_sql_fragments)
+    )
+    harmful_matches = sum(
+        fragment.casefold() in normalized_sql for fragment in contract.harmful_sql_fragments
+    )
+    harm_rate = (
+        harmful_matches / len(contract.harmful_sql_fragments)
+        if contract.harmful_sql_fragments
+        else 0.0
+    )
+    disclosure_met = all(
+        fragment.casefold() in narrative for fragment in contract.disclosure_fragments
+    )
+    if contract.unavailable:
+        expected_state = replay.report.refused if contract.required else replay.report.degraded
+        return RetrievalAssessment(
+            recall_at_three=None,
+            mrr=None,
+            ndcg_at_three=None,
+            irrelevant_rate=0.0,
+            usefulness=usefulness,
+            harm_rate=harm_rate,
+            degradation=float(expected_state and disclosure_met),
+        )
+
+    top_three = replay.retrieved_ids[:3]
+    relevant = set(contract.relevant_ids)
+    acceptable = set(contract.acceptable_ids)
+    recognized = relevant | acceptable
+    recall = len(set(top_three) & relevant) / len(relevant) if relevant else 1.0
+    first_relevant_rank = next(
+        (rank for rank, item_id in enumerate(top_three, start=1) if item_id in relevant),
+        None,
+    )
+    mrr = (
+        1 / first_relevant_rank
+        if first_relevant_rank is not None
+        else 1.0
+        if not relevant and not top_three
+        else 0.0
+    )
+    grades = [2.0 if item in relevant else 1.0 if item in acceptable else 0.0 for item in top_three]
+    ideal_grades = sorted(
+        [*[2.0] * len(relevant), *[1.0] * len(acceptable)],
+        reverse=True,
+    )[:3]
+    ndcg = (
+        _discounted_gain(grades) / _discounted_gain(ideal_grades)
+        if ideal_grades
+        else (1.0 if not top_three else 0.0)
+    )
+    irrelevant_rate = (
+        sum(item not in recognized for item in top_three) / len(top_three) if top_three else 0.0
+    )
+    return RetrievalAssessment(
+        recall_at_three=recall,
+        mrr=mrr,
+        ndcg_at_three=ndcg,
+        irrelevant_rate=irrelevant_rate,
+        usefulness=usefulness,
+        harm_rate=harm_rate,
+        degradation=None,
+    )
+
+
+def _discounted_gain(grades: list[float]) -> float:
+    return sum((2**grade - 1) / math.log2(rank + 1) for rank, grade in enumerate(grades, start=1))
+
+
 def _failed_live_result(case: QualityEvalCase, detail: str) -> QualityEvalResult:
     return QualityEvalResult(
         name=case.id,
@@ -1199,9 +1343,7 @@ def _failed_live_result(case: QualityEvalCase, detail: str) -> QualityEvalResult
         automated_passed=False,
         scores=QualityScores(
             **{
-                score_name: 0.0
-                if _score_evaluator(score_name) in case.evaluators
-                else None
+                score_name: 0.0 if _score_evaluator(score_name) in case.evaluators else None
                 for score_name in QualityScores.model_fields
             }
         ),
@@ -1217,6 +1359,10 @@ def _zero_scores() -> QualityScores:
         calculation=None,
         retrieval=None,
         retrieval_mrr=None,
+        retrieval_ndcg=None,
+        retrieval_usefulness=None,
+        retrieval_harm=None,
+        retrieval_degradation=None,
         faithfulness=None,
         multi_turn=None,
         usefulness=None,
@@ -1227,8 +1373,12 @@ def _format_score(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}"
 
 
+def _format_rate(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2%}"
+
+
 def _score_evaluator(score_name: str) -> EvaluatorName:
-    return "retrieval" if score_name == "retrieval_mrr" else score_name  # type: ignore[return-value]
+    return "retrieval" if score_name.startswith("retrieval_") else score_name  # type: ignore[return-value]
 
 
 def _applicable_score_passes(score_name: ScoreName, value: float | None) -> bool:
@@ -1239,6 +1389,10 @@ def _applicable_score_passes(score_name: ScoreName, value: float | None) -> bool
         "calculation": 0.95,
         "retrieval": 0.9,
         "retrieval_mrr": 1 / 3,
+        "retrieval_ndcg": 0.5,
+        "retrieval_usefulness": 1.0,
+        "retrieval_harm": 1.0,
+        "retrieval_degradation": 1.0,
         "faithfulness": 1.0,
         "multi_turn": 1.0,
         "usefulness": 0.6,
@@ -1250,7 +1404,11 @@ def _applicable_results(
     results: list[QualityEvalResult], score_name: str
 ) -> list[QualityEvalResult]:
     evaluator = _score_evaluator(score_name)
-    return [result for result in results if evaluator in result.evaluators]
+    return [
+        result
+        for result in results
+        if evaluator in result.evaluators and getattr(result.scores, score_name) is not None
+    ]
 
 
 def _applicable_mean(results: list[QualityEvalResult], score_name: str) -> float | None:
@@ -1262,14 +1420,10 @@ def _applicable_mean(results: list[QualityEvalResult], score_name: str) -> float
     return mean(values) if values else None
 
 
-def _metric_summary(
-    results: list[QualityEvalResult], score_name: str
-) -> MetricSummary:
+def _metric_summary(results: list[QualityEvalResult], score_name: str) -> MetricSummary:
     applicable = _applicable_results(results, score_name)
     values = [
-        value
-        for result in applicable
-        if (value := getattr(result.scores, score_name)) is not None
+        value for result in applicable if (value := getattr(result.scores, score_name)) is not None
     ]
     return MetricSummary(
         applicable_cases=len(applicable),
@@ -1422,15 +1576,13 @@ def _is_cosmetic_round(function: exp.Func) -> bool:
         parent = parent.parent
         if isinstance(parent, exp.Select):
             clauses = [
-                parent.args.get(name)
-                for name in ("group", "having", "order", "qualify", "where")
+                parent.args.get(name) for name in ("group", "having", "order", "qualify", "where")
             ]
             clauses.extend(parent.args.get("joins") or [])
             if any(
                 isinstance(clause, exp.Expression)
                 and any(
-                    column.name.lower() == alias.lower()
-                    for column in clause.find_all(exp.Column)
+                    column.name.lower() == alias.lower() for column in clause.find_all(exp.Column)
                 )
                 for clause in clauses
             ):
@@ -1456,21 +1608,14 @@ def _joins_are_allowed(expression: exp.Expression, allowed_joins: list[JoinKey])
 
     aliases = normalized_table_aliases(expression)
     aliases.update(
-        {
-            cte.alias.lower(): cte.alias.lower()
-            for cte in expression.find_all(exp.CTE)
-            if cte.alias
-        }
+        {cte.alias.lower(): cte.alias.lower() for cte in expression.find_all(exp.CTE) if cte.alias}
     )
-    cte_names = {
-        cte.alias.lower() for cte in expression.find_all(exp.CTE) if cte.alias
-    }
+    cte_names = {cte.alias.lower() for cte in expression.find_all(exp.CTE) if cte.alias}
     aliases.update(
         {
             join.this.alias_or_name.lower(): join.this.name.lower()
             for join in joins
-            if isinstance(join.this, exp.Table)
-            and join.this.name.lower() in cte_names
+            if isinstance(join.this, exp.Table) and join.this.name.lower() in cte_names
         }
     )
     allowed = {join.normalized() for join in allowed_joins}

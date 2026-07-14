@@ -20,3 +20,4 @@ def test_guardrail_dataset_covers_security_regressions():
         "malformed_sql_retryable",
         "user_pii_sql_blocked",
     } <= names
+    assert len(dataset.cases) >= 25

@@ -476,13 +476,6 @@
           "title": "Allowed Joins",
           "type": "array"
         },
-        "expected_retrieval_ids": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Expected Retrieval Ids",
-          "type": "array"
-        },
         "forbidden_sql_fragments": {
           "items": {
             "type": "string"
@@ -667,6 +660,65 @@
         "date"
       ],
       "type": "string"
+    },
+    "RetrievalContract": {
+      "additionalProperties": false,
+      "properties": {
+        "acceptable_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptable Ids",
+          "type": "array"
+        },
+        "disclosure_fragments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Disclosure Fragments",
+          "type": "array"
+        },
+        "forbidden_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Ids",
+          "type": "array"
+        },
+        "harmful_sql_fragments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Harmful Sql Fragments",
+          "type": "array"
+        },
+        "relevant_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Relevant Ids",
+          "type": "array"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "unavailable": {
+          "default": false,
+          "title": "Unavailable",
+          "type": "boolean"
+        },
+        "useful_sql_fragments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Useful Sql Fragments",
+          "type": "array"
+        }
+      },
+      "title": "RetrievalContract",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -753,6 +805,9 @@
     "result_contract": {
       "$ref": "#/$defs/ResultContract"
     },
+    "retrieval": {
+      "$ref": "#/$defs/RetrievalContract"
+    },
     "risk": {
       "$ref": "#/$defs/EvaluationRisk"
     },
@@ -782,6 +837,7 @@
     "evaluators",
     "canonical_sql",
     "expectations",
+    "retrieval",
     "result_contract",
     "answer_contract",
     "budgets",

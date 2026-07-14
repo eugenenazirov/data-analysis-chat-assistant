@@ -83,7 +83,13 @@ def test_sql_mutations_only_lower_intent_metric(test_config, mutation, failed_co
     mutated = evaluate_quality_case(test_config, case, replay)
 
     assert mutated.scores.intent == 0
-    assert _changed_scores(baseline, mutated) == {"intent"}
+    expected_changed = {"intent"}
+    if failed_constraint == "semantic_structure" and any(
+        fragment.casefold() not in replay.candidate_sql.casefold()
+        for fragment in case.retrieval.useful_sql_fragments
+    ):
+        expected_changed.add("retrieval_usefulness")
+    assert _changed_scores(baseline, mutated) == expected_changed
     assert any(
         item.name == failed_constraint and not item.passed
         for item in mutated.diagnostics.constraint_results
@@ -97,8 +103,7 @@ def test_sql_mutations_only_lower_intent_metric(test_config, mutation, failed_co
         pytest.param(lambda rows: rows[:-1], id="missing-row"),
         pytest.param(
             lambda rows: [
-                {**row, "revenue": row["orders"], "orders": row["revenue"]}
-                for row in rows
+                {**row, "revenue": row["orders"], "orders": row["revenue"]} for row in rows
             ],
             id="swapped-measures",
         ),
@@ -129,17 +134,19 @@ def test_row_mutations_only_lower_calculation_metric(test_config, mutate_rows):
 @pytest.mark.parametrize(
     "rank,expected_changed",
     [
-        pytest.param(2, {"retrieval_mrr"}, id="rank-2"),
-        pytest.param(3, {"retrieval_mrr"}, id="rank-3"),
-        pytest.param(4, {"retrieval", "retrieval_mrr"}, id="rank-4"),
+        pytest.param(2, {"retrieval_mrr", "retrieval_ndcg"}, id="rank-2"),
+        pytest.param(3, {"retrieval_mrr", "retrieval_ndcg"}, id="rank-3"),
+        pytest.param(
+            4,
+            {"retrieval", "retrieval_mrr", "retrieval_ndcg"},
+            id="rank-4",
+        ),
     ],
 )
-def test_retrieval_rank_mutations_only_lower_retrieval_metrics(
-    test_config, rank, expected_changed
-):
+def test_retrieval_rank_mutations_only_lower_retrieval_metrics(test_config, rank, expected_changed):
     case = load_quality_cases(CASES_PATH)[0]
     baseline = evaluate_quality_case(test_config, case, case.replay)
-    relevant = case.expectations.expected_retrieval_ids[0]
+    relevant = case.retrieval.relevant_ids[0]
     retrieved = [f"irrelevant_{index}" for index in range(1, rank)] + [relevant]
     replay = case.replay.model_copy(update={"retrieved_ids": retrieved})
 
@@ -153,9 +160,7 @@ def test_retrieval_rank_mutations_only_lower_retrieval_metrics(
     [
         pytest.param("Revenue was 99999999.", id="unsupported-number"),
         pytest.param("There were $50,091.67 orders.", id="wrong-unit"),
-        pytest.param(
-            "The result was caused by product quality.", id="unsupported-causal-claim"
-        ),
+        pytest.param("The result was caused by product quality.", id="unsupported-causal-claim"),
     ],
 )
 def test_narrative_mutations_only_lower_faithfulness_metric(test_config, answer):

@@ -35,6 +35,8 @@ dataset:
     uv run python -m evals.run validate-dataset
     uv run python -m evals.run validate-dataset --cases evals/datasets/release_holdout.jsonl
     uv run python -m evals.run validate-dataset --cases evals/datasets/multi_turn.jsonl
+    uv run python -m evals.run validate-dataset --cases evals/datasets/development.jsonl
+    uv run python -m evals.run validate-dataset --cases evals/datasets/adversarial.jsonl
 
 # Run the credential-free answer-quality replay evaluation.
 quality:
@@ -48,8 +50,16 @@ quality-holdout:
 quality-multi-turn:
     uv run python -m evals.run quality --mode replay --cases evals/datasets/multi_turn.jsonl --automated-only
 
+# Run unseen-wording retrieval relevance and downstream-utility replay cases.
+quality-retrieval:
+    uv run python -m evals.run quality --mode replay --cases evals/datasets/development.jsonl --automated-only
+
+# Run privacy, injection, and unsafe-request replay cases.
+quality-adversarial:
+    uv run python -m evals.run quality --mode replay --cases evals/datasets/adversarial.jsonl --automated-only
+
 # Run all credential-free evaluation suites.
-eval: dataset guardrails quality quality-holdout quality-multi-turn
+eval: dataset guardrails quality quality-holdout quality-multi-turn quality-retrieval quality-adversarial
 
 # Run linting, tests, and offline evaluations.
 _local-check: lint test eval

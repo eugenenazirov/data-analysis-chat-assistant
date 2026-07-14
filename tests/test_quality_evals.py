@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from evals.quality import (
+    RetrievalContract,
     _intent_score,
     _intent_signature,
+    _retrieval_assessment,
     _retrieval_scores,
     _row_score,
     evaluate_quality_case,
@@ -36,6 +38,9 @@ def test_smoke_replay_suite_remains_comparable(test_config):
     assert result.aggregate.calculation == 1
     assert result.aggregate.retrieval == 1
     assert result.aggregate.retrieval_mrr == 1
+    assert result.aggregate.retrieval_ndcg == 1
+    assert result.aggregate.retrieval_usefulness == 1
+    assert result.aggregate.retrieval_harm == 1
     assert result.aggregate.faithfulness == 1
     assert result.aggregate.multi_turn == 1
     assert result.aggregate.usefulness is not None
@@ -53,11 +58,7 @@ def test_smoke_replay_suite_remains_comparable(test_config):
 def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
     case = load_quality_cases(CASES_PATH)[0]
     replay = case.replay.model_copy(
-        update={
-            "report": case.replay.report.model_copy(
-                update={"answer": "Revenue was 99999999."}
-            )
-        }
+        update={"report": case.replay.report.model_copy(update={"answer": "Revenue was 99999999."})}
     )
 
     result = evaluate_quality_case(test_config, case, replay)
@@ -145,9 +146,7 @@ def test_quality_eval_rejects_sql_context_value_as_revenue(test_config, answer):
         ("Revenue was $2.", [{"revenue": 500}, {"revenue": 250}]),
     ],
 )
-def test_quality_eval_rejects_unit_incompatible_numeric_claim(
-    test_config, answer, rows
-):
+def test_quality_eval_rejects_unit_incompatible_numeric_claim(test_config, answer, rows):
     case = load_quality_cases(CASES_PATH)[0]
     replay = case.replay.model_copy(
         update={
@@ -173,9 +172,7 @@ def test_quality_eval_rejects_unit_incompatible_numeric_claim(
 )
 def test_quality_eval_accepts_unit_compatible_numeric_claim(test_config, answer, rows):
     source_case = load_quality_cases(CASES_PATH)[0]
-    case = source_case.model_copy(
-        update={"evaluators": source_case.evaluators - {"calculation"}}
-    )
+    case = source_case.model_copy(update={"evaluators": source_case.evaluators - {"calculation"}})
     replay = case.replay.model_copy(
         update={
             "candidate_rows": rows,
@@ -191,9 +188,7 @@ def test_quality_eval_accepts_unit_compatible_numeric_claim(test_config, answer,
 
 
 @pytest.mark.parametrize("marker", ["~", "≈"])
-def test_quality_eval_accepts_symbol_rounded_live_regional_report(
-    test_config, marker
-):
+def test_quality_eval_accepts_symbol_rounded_live_regional_report(test_config, marker):
     case = load_quality_cases(CASES_PATH)[-1]
     rows = [
         {"region": "California", "lost_revenue": 5_225.15},
@@ -202,9 +197,7 @@ def test_quality_eval_accepts_symbol_rounded_live_regional_report(
     report = case.replay.report.model_copy(
         update={
             "answer": "California lost $5,225.15 versus New York's $2,774.17.",
-            "highlights": [
-                f"California's $5,225.15 loss was {marker}1.9x New York's."
-            ],
+            "highlights": [f"California's $5,225.15 loss was {marker}1.9x New York's."],
         }
     )
     replay = case.replay.model_copy(
@@ -231,17 +224,13 @@ def test_quality_eval_accepts_symbol_rounded_live_regional_report(
         "customer ID #67493",
     ],
 )
-def test_quality_eval_accepts_structurally_bound_live_customer_id(
-    test_config, identifier_text
-):
+def test_quality_eval_accepts_structurally_bound_live_customer_id(test_config, identifier_text):
     case = load_quality_cases(CASES_PATH)[1]
     rows = [{"customer_id": 67_493, "orders": 2, "total_spend": 1_549.39}]
     report = case.replay.report.model_copy(
         update={
             "answer": "Here is our top spending customer:",
-            "highlights": [
-                f"Our top spending {identifier_text} spent $1549.39 across 2 orders."
-            ],
+            "highlights": [f"Our top spending {identifier_text} spent $1549.39 across 2 orders."],
         }
     )
     replay = case.replay.model_copy(
@@ -272,13 +261,9 @@ def test_faithfulness_rejects_ambiguous_generic_numeric_id():
 
 
 def test_faithfulness_accepts_counts_derived_from_returned_dimensions():
-    rows = [
-        {"product_name": f"Jeans product {index}", "category": "Jeans"}
-        for index in range(9)
-    ]
+    rows = [{"product_name": f"Jeans product {index}", "category": "Jeans"} for index in range(9)]
     rows.extend(
-        {"product_name": f"Socks product {index}", "category": "Socks"}
-        for index in range(6)
+        {"product_name": f"Socks product {index}", "category": "Socks"} for index in range(6)
     )
     report = AnalysisReport(
         question="question",
@@ -453,9 +438,7 @@ def _single_case_file(tmp_path, index: int = 0) -> Path:
     return path
 
 
-def test_live_quality_eval_compares_agent_and_canonical_results(
-    test_config, tmp_path, monkeypatch
-):
+def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp_path, monkeypatch):
     case = load_quality_cases(CASES_PATH)[0]
     calls = 0
 
@@ -474,9 +457,7 @@ def test_live_quality_eval_compares_agent_and_canonical_results(
             )
         return TurnResult(
             response=case.replay.report,
-            conversation=conversation.complete_turn(
-                messages=[], max_turns=6
-            ),
+            conversation=conversation.complete_turn(messages=[], max_turns=6),
             retrieved_trio_ids=tuple(case.replay.retrieved_ids),
             query_result=CanonicalWarehouse(case.replay.candidate_rows).execute(
                 case.replay.candidate_sql, "trace"
@@ -542,9 +523,7 @@ def test_live_quality_eval_reports_failed_history_turn(test_config, tmp_path, mo
     assert calls == 1
 
 
-def test_live_quality_eval_reports_canonical_query_failure(
-    test_config, tmp_path, monkeypatch
-):
+def test_live_quality_eval_reports_canonical_query_failure(test_config, tmp_path, monkeypatch):
     case = load_quality_cases(CASES_PATH)[0]
 
     async def fake_run_question(question, *, conversation, **kwargs):
@@ -631,10 +610,7 @@ def test_faithfulness_accepts_top_n_and_current_date_context():
     current_year = datetime.now(UTC).year
     report = AnalysisReport(
         question="question",
-        answer=(
-            f"The top 10 result for calendar year {current_year} "
-            "produced 100 in revenue."
-        ),
+        answer=(f"The top 10 result for calendar year {current_year} produced 100 in revenue."),
     )
 
     score = _faithfulness_score(
@@ -689,8 +665,7 @@ def test_faithfulness_accepts_top_n_before_numeric_identifier_dimension():
         ),
         (
             "Revenue was 100 over the last 3 months.",
-            "SELECT revenue FROM table WHERE day >= "
-            "DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)",
+            "SELECT revenue FROM table WHERE day >= DATE_SUB(CURRENT_DATE(), INTERVAL 3 MONTH)",
         ),
         (
             "The query returned 10 results with revenue of 100.",
@@ -823,9 +798,7 @@ def test_faithfulness_numeric_claim_cases(answer, rows, sql, expected):
 def test_quality_eval_rejects_unverified_report_sql(test_config):
     case = load_quality_cases(CASES_PATH)[0]
     replay = case.replay.model_copy(
-        update={
-            "report": case.replay.report.model_copy(update={"sql": "SELECT 1"})
-        }
+        update={"report": case.replay.report.model_copy(update={"sql": "SELECT 1"})}
     )
 
     result = evaluate_quality_case(test_config, case, replay)
@@ -836,9 +809,7 @@ def test_quality_eval_rejects_unverified_report_sql(test_config):
 
 def test_intent_score_rejects_wrong_join_structure(test_config):
     case = load_quality_cases(CASES_PATH)[0]
-    wrong_join = case.replay.candidate_sql.replace(
-        "oi.product_id = p.id", "p.id = p.id"
-    )
+    wrong_join = case.replay.candidate_sql.replace("oi.product_id = p.id", "p.id = p.id")
 
     score = _intent_score(
         test_config,
@@ -852,9 +823,7 @@ def test_intent_score_rejects_wrong_join_structure(test_config):
 
 def test_intent_score_rejects_wrong_cross_table_join_key(test_config):
     case = load_quality_cases(CASES_PATH)[0]
-    wrong_join = case.replay.candidate_sql.replace(
-        "oi.product_id = p.id", "oi.order_id = p.id"
-    )
+    wrong_join = case.replay.candidate_sql.replace("oi.product_id = p.id", "oi.order_id = p.id")
 
     score = _intent_score(
         test_config,
@@ -882,9 +851,7 @@ def test_intent_score_accepts_declared_cte_join_key(test_config):
 
 def test_intent_score_normalizes_equivalent_quarter_intervals(test_config):
     case = load_quality_cases(CASES_PATH)[3]
-    equivalent_sql = case.canonical_sql.replace(
-        "INTERVAL 1 QUARTER", "INTERVAL 3 MONTH"
-    )
+    equivalent_sql = case.canonical_sql.replace("INTERVAL 1 QUARTER", "INTERVAL 3 MONTH")
 
     score = _intent_score(
         test_config,
@@ -897,12 +864,8 @@ def test_intent_score_normalizes_equivalent_quarter_intervals(test_config):
 
 
 def test_intent_signature_normalizes_equivalent_date_casts():
-    date_function = _intent_signature(
-        "SELECT DATE(created_at) AS day FROM dataset.table"
-    )
-    date_cast = _intent_signature(
-        "SELECT CAST(created_at AS DATE) AS day FROM dataset.table"
-    )
+    date_function = _intent_signature("SELECT DATE(created_at) AS day FROM dataset.table")
+    date_cast = _intent_signature("SELECT CAST(created_at AS DATE) AS day FROM dataset.table")
 
     assert date_function.functions == date_cast.functions == frozenset({"to_date"})
 
@@ -912,8 +875,7 @@ def test_intent_signature_allows_additional_aggregates():
         "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region"
     )
     candidate = _intent_signature(
-        "SELECT region, SUM(revenue) AS revenue, COUNT(*) AS orders "
-        "FROM table GROUP BY region"
+        "SELECT region, SUM(revenue) AS revenue, COUNT(*) AS orders FROM table GROUP BY region"
     )
 
     assert candidate.satisfies(canonical)
@@ -934,9 +896,7 @@ def test_intent_signature_preserves_grouped_rounding_semantics():
     canonical = _intent_signature(
         "SELECT ROUND(price, 2) AS bucket, COUNT(*) FROM table GROUP BY bucket"
     )
-    raw_candidate = _intent_signature(
-        "SELECT price AS bucket, COUNT(*) FROM table GROUP BY bucket"
-    )
+    raw_candidate = _intent_signature("SELECT price AS bucket, COUNT(*) FROM table GROUP BY bucket")
     wrong_precision = _intent_signature(
         "SELECT ROUND(price, 1) AS bucket, COUNT(*) FROM table GROUP BY bucket"
     )
@@ -951,8 +911,7 @@ def test_intent_signature_preserves_rounding_used_by_having():
         "GROUP BY region HAVING revenue > 10"
     )
     candidate = _intent_signature(
-        "SELECT region, SUM(revenue) AS revenue FROM table "
-        "GROUP BY region HAVING revenue > 10"
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region HAVING revenue > 10"
     )
 
     assert not candidate.satisfies(canonical)
@@ -963,3 +922,56 @@ def test_retrieval_scores_include_recall_at_three_and_mrr():
 
     assert recall == 1
     assert mrr == 0.5
+
+
+def test_retrieval_assessment_separates_relevance_utility_and_harm():
+    case = load_quality_cases(CASES_PATH)[0]
+    contract = RetrievalContract(
+        relevant_ids=["relevant"],
+        acceptable_ids=["acceptable"],
+        forbidden_ids=["distractor"],
+        useful_sql_fragments=["group by"],
+        harmful_sql_fragments=["select email"],
+    )
+    replay = case.replay.model_copy(
+        update={"retrieved_ids": ["acceptable", "distractor", "relevant"]}
+    )
+
+    assessment = _retrieval_assessment(replay, contract)
+
+    assert assessment.recall_at_three == 1
+    assert assessment.mrr == pytest.approx(1 / 3)
+    assert assessment.ndcg_at_three == pytest.approx(0.68852888)
+    assert assessment.irrelevant_rate == pytest.approx(1 / 3)
+    assert assessment.usefulness == 1
+    assert assessment.harm_rate == 0
+
+
+def test_retrieval_harm_detects_distractor_constraint_in_candidate_sql():
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={"candidate_sql": f"{case.replay.candidate_sql} SELECT email"}
+    )
+
+    assessment = _retrieval_assessment(
+        replay,
+        RetrievalContract(harmful_sql_fragments=["select email"]),
+    )
+
+    assert assessment.harm_rate == 1
+
+
+def test_answer_contract_rejects_pii_in_narrative(test_config):
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={
+            "report": case.replay.report.model_copy(
+                update={"answer": "Contact jane@example.com for the result."}
+            )
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.scores.faithfulness == 0
+    assert "pii_leakage:1" in result.diagnostics.unsupported_qualitative_claims

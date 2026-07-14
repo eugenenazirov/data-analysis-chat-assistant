@@ -51,17 +51,14 @@ def validate_and_prepare_sql(sql: str, config: AgentConfig) -> SQLValidation:
     if any(_is_projection_star(star) for star in expression.find_all(exp.Star)):
         raise SQLSafetyError("SELECT * is forbidden; project only required columns.")
 
+    _validate_query_shape(expression)
+
     cte_names = _extract_cte_names(expression)
     table_refs = _extract_table_references(expression, cte_names)
     allowed = {
-        f"{config.bigquery.dataset}.{table}".lower()
-        for table in config.bigquery.allowed_tables
+        f"{config.bigquery.dataset}.{table}".lower() for table in config.bigquery.allowed_tables
     }
-    unknown = [
-        ref.full_name
-        for ref in table_refs
-        if ref.full_name.lower() not in allowed
-    ]
+    unknown = [ref.full_name for ref in table_refs if ref.full_name.lower() not in allowed]
     if unknown:
         raise SQLSafetyError(
             f"Query references disallowed tables: {', '.join(sorted(set(unknown)))}."
@@ -77,6 +74,38 @@ def validate_and_prepare_sql(sql: str, config: AgentConfig) -> SQLValidation:
     )
 
 
+def _validate_query_shape(expression: exp.Expression) -> None:
+    for join in expression.find_all(exp.Join):
+        if join.kind.casefold() == "cross" or not (
+            join.args.get("on") is not None or join.args.get("using")
+        ):
+            raise SQLSafetyError("Every table join requires an explicit non-CROSS join condition.")
+
+    for division in expression.find_all(exp.Div):
+        denominator = division.args.get("expression")
+        if not _division_denominator_is_guarded(denominator):
+            raise SQLSafetyError(
+                "Division denominators must use SAFE_DIVIDE, NULLIF(..., 0), "
+                "or a non-zero numeric literal."
+            )
+
+
+def _division_denominator_is_guarded(denominator: exp.Expression | None) -> bool:
+    if isinstance(denominator, exp.Nullif):
+        fallback = denominator.args.get("expression")
+        return (
+            isinstance(fallback, exp.Literal)
+            and not fallback.is_string
+            and str(fallback.this) in {"0", "0.0"}
+        )
+    if isinstance(denominator, exp.Literal) and not denominator.is_string:
+        try:
+            return float(str(denominator.this)) != 0
+        except ValueError:
+            return False
+    return False
+
+
 @dataclass(frozen=True)
 class TableReference:
     name: str
@@ -85,11 +114,7 @@ class TableReference:
 
 
 def _extract_cte_names(expression: exp.Expression) -> set[str]:
-    return {
-        cte.alias_or_name.lower()
-        for cte in expression.find_all(exp.CTE)
-        if cte.alias_or_name
-    }
+    return {cte.alias_or_name.lower() for cte in expression.find_all(exp.CTE) if cte.alias_or_name}
 
 
 def _extract_table_references(
@@ -118,10 +143,7 @@ def _table_reference(table: exp.Table) -> TableReference | None:
 
 def _is_cte_reference(table: exp.Table, cte_names: set[str]) -> bool:
     return (
-        bool(table.name)
-        and table.name.lower() in cte_names
-        and not table.db
-        and not table.catalog
+        bool(table.name) and table.name.lower() in cte_names and not table.db and not table.catalog
     )
 
 
@@ -186,9 +208,7 @@ def _validate_column_safety(
                 "allowed tables. Qualify it with a table alias."
             )
         elif column_name in pii_columns:
-            raise SQLSafetyError(
-                f"Query references forbidden PII columns: {column_name}."
-            )
+            raise SQLSafetyError(f"Query references forbidden PII columns: {column_name}.")
 
 
 def _ensure_safe_column(
@@ -227,8 +247,7 @@ def normalized_table_aliases(expression: exp.Expression) -> dict[str, str]:
     cte_names = _extract_cte_names(expression)
     table_refs = _extract_table_references(expression, cte_names)
     return {
-        alias: reference.name.lower()
-        for alias, reference in _table_alias_map(table_refs).items()
+        alias: reference.name.lower() for alias, reference in _table_alias_map(table_refs).items()
     }
 
 
@@ -241,9 +260,7 @@ def _direct_table_references_for_column(
     return _direct_table_references(select, cte_names)
 
 
-def _direct_table_references(
-    select: exp.Select, cte_names: set[str]
-) -> list[TableReference]:
+def _direct_table_references(select: exp.Select, cte_names: set[str]) -> list[TableReference]:
     refs: list[TableReference] = []
     from_expression = select.args.get("from_")
     if from_expression is not None:
@@ -305,9 +322,7 @@ def _ensure_limit(sql: str, max_rows: int) -> str:
     limit = _top_level_limit_value(expression)
     if limit is not None:
         if limit > max_rows:
-            raise SQLSafetyError(
-                f"LIMIT {limit} exceeds maximum row limit {max_rows}."
-            )
+            raise SQLSafetyError(f"LIMIT {limit} exceeds maximum row limit {max_rows}.")
         return sql.rstrip(";")
     return f"{sql.rstrip(';')}\nLIMIT {max_rows}"
 

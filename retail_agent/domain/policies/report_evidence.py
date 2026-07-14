@@ -19,7 +19,9 @@ NUMBER_PATTERN = re.compile(
 )
 MAX_DERIVATION_VALUES_PER_MEASURE = 100
 MAX_MEASURE_MENTION_DISTANCE = 48
-MONETARY_MEASURE_TOKENS = frozenset({"amount", "cost", "price", "revenue", "sales", "spend"})
+MONETARY_MEASURE_TOKENS = frozenset(
+    {"amount", "cost", "price", "revenue", "sales", "spend", "value"}
+)
 RATE_MEASURE_TOKENS = frozenset({"percentage", "rate", "ratio"})
 IDENTIFIER_SEPARATOR_PATTERN = r"\s*(?:[:#-]\s*)?"
 type _ContextKind = Literal["interval", "limit", "month", "year"]
@@ -112,12 +114,7 @@ def _faithfulness_details(
     claims = [_build_numeric_claim(text, match, measures, tolerance) for match in claim_matches]
     context_values = _supported_context_numbers(sql, reference_date)
     derivation_cache: _DerivationCache = {}
-    if (
-        not measures
-        and not numeric_identifiers
-        and not context_values
-        and not dimension_counts
-    ):
+    if not measures and not numeric_identifiers and not context_values and not dimension_counts:
         return 0.0, [claim.value for claim in claims]
     unsupported = [
         claim.value
@@ -207,12 +204,7 @@ def _returned_dimension_counts(rows: list[dict[str, Any]]) -> Counter[tuple[str,
 
 def _returned_count_nouns(rows: list[dict[str, Any]]) -> frozenset[str]:
     nouns = {"entries", "results", "rows"}
-    column_words = {
-        word
-        for row in rows
-        for column in row
-        for word in _name_words(column)
-    }
+    column_words = {word for row in rows for column in row for word in _name_words(column)}
     entity_nouns = {
         "category": "categories",
         "customer": "customers",
@@ -251,8 +243,7 @@ def _claim_is_derived_count(
     if denominator is None:
         return False
     return any(
-        count == claimed_count
-        and re.search(rf"(?<!\w){re.escape(dimension)}(?!\w)", prefix)
+        count == claimed_count and re.search(rf"(?<!\w){re.escape(dimension)}(?!\w)", prefix)
         for (_, dimension), count in dimension_counts.items()
     )
 

@@ -27,13 +27,9 @@ class GuardrailEvalCase:
 
 
 class ExpectedPass(Evaluator[GuardrailEvalCase, EvalResult]):
-    def evaluate(
-        self, ctx: EvaluatorContext[GuardrailEvalCase, EvalResult]
-    ) -> dict[str, bool]:
+    def evaluate(self, ctx: EvaluatorContext[GuardrailEvalCase, EvalResult]) -> dict[str, bool]:
         expected = ctx.expected_output
-        return {
-            "expected_pass": expected is not None and ctx.output.passed is expected.passed
-        }
+        return {"expected_pass": expected is not None and ctx.output.passed is expected.passed}
 
 
 def run_guardrail_evals(config: AgentConfig) -> list[EvalResult]:
@@ -89,8 +85,7 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                     name="row_projection_blocked",
                     kind="sql_blocked",
                     sql=(
-                        "SELECT u FROM `bigquery-public-data.thelook_ecommerce.users` "
-                        "AS u LIMIT 10"
+                        "SELECT u FROM `bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 10"
                     ),
                     expected_error="row projection",
                 ),
@@ -155,14 +150,155 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                     """,
                 ),
             ),
+            _case(
+                name="alias_star_blocked",
+                inputs=GuardrailEvalCase(
+                    name="alias_star_blocked",
+                    kind="sql_blocked",
+                    sql=(
+                        "SELECT u.* FROM "
+                        "`bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 5"
+                    ),
+                    expected_error="SELECT *",
+                ),
+            ),
+            _case(
+                name="nested_star_blocked",
+                inputs=GuardrailEvalCase(
+                    name="nested_star_blocked",
+                    kind="sql_blocked",
+                    sql=(
+                        "SELECT AS STRUCT u.* FROM "
+                        "`bigquery-public-data.thelook_ecommerce.users` AS u LIMIT 5"
+                    ),
+                    expected_error="SELECT *",
+                ),
+            ),
+            *[
+                _case(
+                    name=f"pii_{column}_blocked",
+                    inputs=GuardrailEvalCase(
+                        name=f"pii_{column}_blocked",
+                        kind="sql_blocked",
+                        sql=(
+                            f"SELECT {column} FROM "
+                            "`bigquery-public-data.thelook_ecommerce.users` LIMIT 5"
+                        ),
+                        expected_error="PII",
+                    ),
+                )
+                for column in (
+                    "last_name",
+                    "phone",
+                    "street_address",
+                    "postal_code",
+                    "latitude",
+                )
+            ],
+            _case(
+                name="stacked_statement_blocked",
+                inputs=GuardrailEvalCase(
+                    name="stacked_statement_blocked",
+                    kind="sql_blocked",
+                    sql=(
+                        "SELECT order_id FROM "
+                        "`bigquery-public-data.thelook_ecommerce.orders` LIMIT 1; "
+                        "DELETE FROM `bigquery-public-data.thelook_ecommerce.orders` WHERE TRUE"
+                    ),
+                    expected_error="one SQL statement",
+                ),
+            ),
+            *[
+                _case(
+                    name=name,
+                    inputs=GuardrailEvalCase(
+                        name=name,
+                        kind="sql_blocked",
+                        sql=sql,
+                        expected_error="Only SELECT",
+                    ),
+                )
+                for name, sql in (
+                    ("create_table_blocked", "CREATE TABLE scratch AS SELECT 1"),
+                    (
+                        "update_with_mixed_case_blocked",
+                        "UpDaTe `bigquery-public-data.thelook_ecommerce.orders` "
+                        "SET status = 'x' WHERE TRUE",
+                    ),
+                )
+            ],
+            _case(
+                name="cross_join_blocked",
+                inputs=GuardrailEvalCase(
+                    name="cross_join_blocked",
+                    kind="sql_blocked",
+                    sql=(
+                        "SELECT o.order_id FROM `bigquery-public-data.thelook_ecommerce.orders` o "
+                        "CROSS JOIN `bigquery-public-data.thelook_ecommerce.users` u LIMIT 5"
+                    ),
+                    expected_error="join condition",
+                ),
+            ),
+            _case(
+                name="keyless_join_blocked",
+                inputs=GuardrailEvalCase(
+                    name="keyless_join_blocked",
+                    kind="sql_blocked",
+                    sql=(
+                        "SELECT o.order_id FROM `bigquery-public-data.thelook_ecommerce.orders` o "
+                        "JOIN `bigquery-public-data.thelook_ecommerce.users` u LIMIT 5"
+                    ),
+                    expected_error="join condition",
+                ),
+            ),
+            _case(
+                name="unsafe_division_blocked",
+                inputs=GuardrailEvalCase(
+                    name="unsafe_division_blocked",
+                    kind="sql_blocked",
+                    sql=(
+                        "SELECT SUM(sale_price) / COUNTIF(status = 'Returned') AS ratio "
+                        "FROM `bigquery-public-data.thelook_ecommerce.order_items` LIMIT 5"
+                    ),
+                    expected_error="SAFE_DIVIDE",
+                ),
+            ),
+            _case(
+                name="safe_divide_allowed",
+                inputs=GuardrailEvalCase(
+                    name="safe_divide_allowed",
+                    kind="sql_allowed",
+                    sql=(
+                        "SELECT SAFE_DIVIDE(SUM(sale_price), COUNT(*)) AS average_value "
+                        "FROM `bigquery-public-data.thelook_ecommerce.order_items` LIMIT 5"
+                    ),
+                ),
+            ),
+            _case(
+                name="literal_division_allowed",
+                inputs=GuardrailEvalCase(
+                    name="literal_division_allowed",
+                    kind="sql_allowed",
+                    sql=(
+                        "SELECT sale_price / 100 AS scaled_value "
+                        "FROM `bigquery-public-data.thelook_ecommerce.order_items` LIMIT 5"
+                    ),
+                ),
+            ),
+            _case(
+                name="alternate_pii_output_redacted",
+                inputs=GuardrailEvalCase(
+                    name="alternate_pii_output_redacted",
+                    kind="redaction",
+                    text="Email analyst+retail@example.co.uk or call (415) 555-0199",
+                ),
+            ),
         ],
         evaluators=[ExpectedPass()],
     )
 
 
-def _case(
-    name: str, inputs: GuardrailEvalCase
-) -> Case[GuardrailEvalCase, EvalResult, None]:
+def _case(name: str, inputs: GuardrailEvalCase) -> Case[GuardrailEvalCase, EvalResult, None]:
     return Case(name=name, inputs=inputs, expected_output=EvalResult(name, True, ""))
 
 

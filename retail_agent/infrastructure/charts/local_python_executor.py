@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
@@ -31,6 +32,51 @@ _FORBIDDEN_SVG_ELEMENTS = {
     "set",
     "style",
 }
+_ALLOWED_IMPORT_ROOTS = {
+    "collections",
+    "datetime",
+    "json",
+    "math",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pathlib",
+    "seaborn",
+    "statistics",
+    "time",
+}
+_FORBIDDEN_CALL_NAMES = {
+    "__import__",
+    "breakpoint",
+    "compile",
+    "eval",
+    "exec",
+    "globals",
+    "input",
+    "locals",
+    "open",
+    "vars",
+}
+_FORBIDDEN_ATTRIBUTE_NAMES = {
+    "connect",
+    "create_connection",
+    "environ",
+    "execv",
+    "execve",
+    "fork",
+    "getenv",
+    "popen",
+    "remove",
+    "rmtree",
+    "run",
+    "scandir",
+    "spawn",
+    "system",
+    "unlink",
+    "urlopen",
+    "walk",
+}
+_ALLOWED_CHART_PATHS = {"input.json", "chart.png", "chart.svg"}
 
 
 @dataclass
@@ -68,6 +114,7 @@ class LocalPythonChartExecutor:
                 "Chart source exceeds the configured size limit.",
                 code="source_too_large",
             )
+        _validate_chart_source(request.code)
 
         code_digest = hashlib.sha256(source).hexdigest()
         temporary_parent = str(self.temporary_root) if self.temporary_root else None
@@ -215,9 +262,7 @@ class LocalPythonChartExecutor:
         configured_directory = self.settings.artifact_directory
         artifact_directory = configured_directory.resolve()
         artifact_directory.mkdir(parents=True, exist_ok=True)
-        filename = (
-            f"chart-{code_digest[:16]}-{uuid.uuid4().hex[:12]}.{output_format}"
-        )
+        filename = f"chart-{code_digest[:16]}-{uuid.uuid4().hex[:12]}.{output_format}"
         destination = artifact_directory / filename
         temporary_destination = artifact_directory / f".{filename}.tmp"
         try:
@@ -296,3 +341,56 @@ def _validate_svg(content: bytes) -> None:
 
 def _local_name(name: str) -> str:
     return name.rsplit("}", 1)[-1].casefold()
+
+
+def _validate_chart_source(source: str) -> None:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ChartExecutionError(
+            "Chart source is not valid Python.",
+            code="unsafe_source",
+        ) from exc
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported = [alias.name for alias in node.names]
+            _ensure_allowed_imports(imported)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or node.module is None:
+                _reject_unsafe_source()
+            _ensure_allowed_imports([node.module])
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_CALL_NAMES:
+                _reject_unsafe_source()
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "Path"
+                and not _is_allowed_path_call(node)
+            ):
+                _reject_unsafe_source()
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") or node.attr in _FORBIDDEN_ATTRIBUTE_NAMES:
+                _reject_unsafe_source()
+
+
+def _ensure_allowed_imports(modules: list[str]) -> None:
+    if any(module.split(".", 1)[0] not in _ALLOWED_IMPORT_ROOTS for module in modules):
+        _reject_unsafe_source()
+
+
+def _is_allowed_path_call(node: ast.Call) -> bool:
+    return (
+        len(node.args) == 1
+        and not node.keywords
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+        and node.args[0].value in _ALLOWED_CHART_PATHS
+    )
+
+
+def _reject_unsafe_source() -> None:
+    raise ChartExecutionError(
+        "Chart source requests file, network, process, environment, or dynamic-code access.",
+        code="unsafe_source",
+    )

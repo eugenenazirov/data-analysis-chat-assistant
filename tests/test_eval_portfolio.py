@@ -4,6 +4,8 @@ from pathlib import Path
 
 from evals.dataset import inspect_dataset_governance
 from evals.datasets.build_replay_fixtures import (
+    ADVERSARIAL_SCENARIOS,
+    DEVELOPMENT_SCENARIOS,
     HOLDOUT_SCENARIOS,
     MULTI_TURN_SCENARIOS,
     _render,
@@ -21,6 +23,8 @@ from retail_agent.observability import EventLogger
 
 HOLDOUT_PATH = Path("evals/datasets/release_holdout.jsonl")
 MULTI_TURN_PATH = Path("evals/datasets/multi_turn.jsonl")
+DEVELOPMENT_PATH = Path("evals/datasets/development.jsonl")
+ADVERSARIAL_PATH = Path("evals/datasets/adversarial.jsonl")
 GOLDEN_PATH = Path("data/golden_trios.jsonl")
 
 
@@ -53,7 +57,12 @@ def test_multi_turn_suite_scores_each_real_conversation(test_config):
 
 
 def test_generalization_suites_have_no_golden_knowledge_overlap():
-    for path in (HOLDOUT_PATH, MULTI_TURN_PATH):
+    for path in (
+        HOLDOUT_PATH,
+        MULTI_TURN_PATH,
+        DEVELOPMENT_PATH,
+        ADVERSARIAL_PATH,
+    ):
         governance = inspect_dataset_governance(load_quality_cases(path), GOLDEN_PATH)
 
         assert governance.golden_question_overlap_ids == []
@@ -62,12 +71,49 @@ def test_generalization_suites_have_no_golden_knowledge_overlap():
 
 
 def test_generated_replay_fixtures_are_current():
-    assert HOLDOUT_PATH.read_text(encoding="utf-8") == _render(
-        HOLDOUT_SCENARIOS, "release_holdout"
-    )
+    assert HOLDOUT_PATH.read_text(encoding="utf-8") == _render(HOLDOUT_SCENARIOS, "release_holdout")
     assert MULTI_TURN_PATH.read_text(encoding="utf-8") == _render(
         MULTI_TURN_SCENARIOS, "multi_turn"
     )
+    assert DEVELOPMENT_PATH.read_text(encoding="utf-8") == _render(
+        DEVELOPMENT_SCENARIOS, "development"
+    )
+    assert ADVERSARIAL_PATH.read_text(encoding="utf-8") == _render(
+        ADVERSARIAL_SCENARIOS, "adversarial"
+    )
+
+
+def test_retrieval_portfolio_covers_unseen_and_degraded_behavior(test_config):
+    cases = load_quality_cases(DEVELOPMENT_PATH)
+    result = run_quality_replay_evals(test_config, DEVELOPMENT_PATH)
+
+    assert len(cases) == 9
+    assert {
+        "retrieval_paraphrase",
+        "retrieval_compositional",
+        "retrieval_no_match",
+        "retrieval_distractor",
+        "retrieval_ranking",
+        "retrieval_harm",
+        "retrieval_malicious_context",
+        "retrieval_degradation",
+    } <= {case.category for case in cases}
+    assert all("retrieval" in case.evaluators for case in cases)
+    assert result.automated_passed is True
+    assert result.metrics["retrieval_harm"].minimum == 1
+    assert result.metrics["retrieval_degradation"].applicable_cases == 2
+
+
+def test_adversarial_responses_are_safe_concise_and_zero_tolerance(test_config):
+    cases = load_quality_cases(ADVERSARIAL_PATH)
+    result = run_quality_replay_evals(test_config, ADVERSARIAL_PATH)
+
+    assert len(cases) == 11
+    assert all(case.critical for case in cases)
+    assert all(len(case.replay.report.answer.split()) <= 24 for case in cases)
+    assert all(case.replay.candidate_sql == "" for case in cases)
+    assert result.automated_passed is True
+    assert result.critical_failures == []
 
 
 def test_expected_clarification_passes_without_fabricated_sql(test_config):
@@ -98,9 +144,7 @@ def test_failed_history_sql_cannot_become_trusted(test_config):
 
     diagnostics = _conversation_assessment(case, replay)
 
-    assert any(
-        item.name == "tool_result_lineage" and not item.passed for item in diagnostics
-    )
+    assert any(item.name == "tool_result_lineage" and not item.passed for item in diagnostics)
 
 
 class CanonicalQueryMustNotRun:
@@ -108,9 +152,7 @@ class CanonicalQueryMustNotRun:
         raise AssertionError("clarification must not execute a canonical query")
 
 
-def test_live_clarification_does_not_require_query_result(
-    test_config, tmp_path, monkeypatch
-):
+def test_live_clarification_does_not_require_query_result(test_config, tmp_path, monkeypatch):
     case = next(
         case for case in load_quality_cases(HOLDOUT_PATH) if case.expected_behavior == "clarify"
     )

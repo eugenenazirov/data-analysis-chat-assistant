@@ -38,11 +38,9 @@ def _executor(tmp_path: Path, **updates) -> tuple[LocalPythonChartExecutor, Path
 def _svg_code(extra: str = "") -> str:
     return f"""
 import json
-import os
 from pathlib import Path
 
 rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
-assert os.environ.get("RETAIL_CHART_TEST_SECRET") is None
 value = rows[0]["order_count"]
 Path("chart.svg").write_text(
     f'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text>{{value}}</text></svg>',
@@ -52,9 +50,7 @@ Path("chart.svg").write_text(
 """
 
 
-def test_executor_publishes_valid_svg_without_inheriting_secrets(
-    tmp_path, monkeypatch
-):
+def test_executor_publishes_valid_svg_without_inheriting_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("RETAIL_CHART_TEST_SECRET", "must-not-leak")
     executor, temporary_root = _executor(tmp_path)
 
@@ -168,17 +164,11 @@ def test_executor_cancellation_reaps_process_and_reader_tasks(tmp_path):
         ),
     ],
 )
-def test_executor_rejects_invalid_process_outputs(
-    tmp_path, code, expected_code
-):
+def test_executor_rejects_invalid_process_outputs(tmp_path, code, expected_code):
     executor, temporary_root = _executor(tmp_path)
 
     with pytest.raises(ChartExecutionError) as exc_info:
-        asyncio.run(
-            executor.execute(
-                ChartRequest(code=code, data=[], output_format="svg")
-            )
-        )
+        asyncio.run(executor.execute(ChartRequest(code=code, data=[], output_format="svg")))
 
     assert exc_info.value.code == expected_code
     assert list(temporary_root.iterdir()) == []
@@ -188,11 +178,28 @@ def test_executor_rejects_oversized_source_before_starting_process(tmp_path):
     executor, temporary_root = _executor(tmp_path, max_source_bytes=1_000)
 
     with pytest.raises(ChartExecutionError) as exc_info:
-        asyncio.run(
-            executor.execute(
-                ChartRequest(code="#" * 1_001, data=[], output_format="png")
-            )
-        )
+        asyncio.run(executor.execute(ChartRequest(code="#" * 1_001, data=[], output_format="png")))
 
     assert exc_info.value.code == "source_too_large"
+    assert list(temporary_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nos.getenv('HOME')",
+        "import socket\nsocket.create_connection(('example.com', 443))",
+        "import subprocess\nsubprocess.run(['id'])",
+        "from pathlib import Path\nPath('/etc/passwd').read_text()",
+        "open('/tmp/leak', 'w').write('x')",
+        "__import__('os').environ",
+    ],
+)
+def test_executor_rejects_unsafe_chart_source_before_starting_process(tmp_path, code):
+    executor, temporary_root = _executor(tmp_path)
+
+    with pytest.raises(ChartExecutionError) as exc_info:
+        asyncio.run(executor.execute(ChartRequest(code=code, data=[], output_format="svg")))
+
+    assert exc_info.value.code == "unsafe_source"
     assert list(temporary_root.iterdir()) == []
