@@ -1,0 +1,27 @@
+{
+  "version": "retail_analysis_v1",
+  "scale": {
+    "1": "Materially wrong, unsupported, unsafe, or unusable.",
+    "2": "Major correction is required before the output can be used.",
+    "3": "Usable with a minor but meaningful correction or caveat.",
+    "4": "Correct and useful with only cosmetic improvement possible.",
+    "5": "Excellent: precise, evidence-bound, actionable, and appropriately concise."
+  },
+  "dimensions": [
+    "correctness",
+    "faithfulness",
+    "usefulness",
+    "clarity",
+    "limitations",
+    "privacy_and_policy"
+  ],
+  "release_thresholds": {
+    "minimum_reviewers": 2,
+    "minimum_mean_usefulness": 4,
+    "minimum_case_usefulness": 3,
+    "major_disagreement_delta": 2,
+    "minimum_pairwise_noninferiority_rate": 0.8,
+    "minimum_live_repetitions": 5,
+    "calibration_case_limit": 5
+  }
+}

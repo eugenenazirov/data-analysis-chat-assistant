@@ -28,6 +28,7 @@ from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
 from retail_agent.models import (
     AgentFailure,
     AnalysisReport,
+    ChartArtifact,
     OperationalMetrics,
     merge_operational_metrics,
 )
@@ -327,6 +328,7 @@ class QualityDiagnostics(EvaluationModel):
     canonical_rows: list[dict[str, Any]]
     report_answer: str
     report_highlights: list[str] = Field(default_factory=list)
+    report_chart: ChartArtifact | None = None
     retrieved_ids: list[str] = Field(default_factory=list)
     history_used: bool = False
     report_degraded: bool = False
@@ -871,6 +873,7 @@ def evaluate_quality_case(
             canonical_rows=replay.canonical_rows,
             report_answer=replay.report.answer,
             report_highlights=replay.report.highlights,
+            report_chart=replay.report.chart_artifact,
             retrieved_ids=replay.retrieved_ids,
             history_used=replay.history_used,
             report_degraded=replay.report.degraded,
@@ -1111,6 +1114,10 @@ def load_human_scores(path: Path | None) -> dict[str, float]:
     if path is None:
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and "reviews" in raw:
+        from evals.human import HumanReviewSet
+
+        return HumanReviewSet.model_validate(raw).usefulness_scores()
     return {str(name): float(score) for name, score in raw.items()}
 
 

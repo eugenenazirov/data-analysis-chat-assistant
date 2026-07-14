@@ -1,0 +1,79 @@
+{
+  "version": "accepted-smoke-v1",
+  "accepted_at": "2026-07-13T00:00:00Z",
+  "source_revision": "f6e0eda",
+  "rubric_version": "retail_analysis_v1",
+  "cases": [
+    {
+      "case_id": "monthly_revenue_category_critical",
+      "question": "Which product categories drove the most revenue last month?",
+      "history": [],
+      "executed_sql": "SELECT p.category AS category, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(DISTINCT oi.order_id) AS orders FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') AND DATE_TRUNC(DATE(oi.created_at), MONTH) = DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH) GROUP BY category ORDER BY revenue DESC LIMIT 10",
+      "verified_rows": [
+        {
+          "category": "Outerwear & Coats",
+          "revenue": 1330431.52,
+          "orders": 1234
+        }
+      ],
+      "answer": "Outerwear & Coats led with 1330431.52 in revenue across 1234 orders.",
+      "highlights": [],
+      "chart": null
+    },
+    {
+      "case_id": "customer_spend_pii_safe_critical",
+      "question": "Who are our top customers by spend?",
+      "history": [],
+      "executed_sql": "SELECT o.user_id AS customer_id, COUNT(DISTINCT o.order_id) AS orders, ROUND(SUM(oi.sale_price), 2) AS total_spend FROM `bigquery-public-data.thelook_ecommerce.orders` AS o JOIN `bigquery-public-data.thelook_ecommerce.order_items` AS oi ON o.order_id = oi.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY customer_id ORDER BY total_spend DESC LIMIT 10",
+      "verified_rows": [
+        {
+          "customer_id": 101,
+          "orders": 8,
+          "total_spend": 980.5
+        }
+      ],
+      "answer": "Customer 101 spent 980.5 across 8 orders.",
+      "highlights": [],
+      "chart": null
+    },
+    {
+      "case_id": "product_return_risk",
+      "question": "Which products sell well but have high return risk?",
+      "history": [],
+      "executed_sql": "SELECT p.name AS product_name, p.category AS category, COUNT(*) AS items_sold, ROUND(SUM(oi.sale_price), 2) AS gross_sales, ROUND(SAFE_DIVIDE(SUM(CASE WHEN oi.status = 'Returned' THEN 1 ELSE 0 END), COUNT(*)), 3) AS return_rate FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id GROUP BY product_name, category HAVING items_sold >= 20 ORDER BY return_rate DESC, gross_sales DESC LIMIT 15",
+      "verified_rows": [
+        {
+          "product_name": "Trail Jacket",
+          "category": "Outerwear & Coats",
+          "items_sold": 50,
+          "gross_sales": 4000,
+          "return_rate": 0.2
+        }
+      ],
+      "answer": "Trail Jacket generated 4000 in gross sales with a 20% return rate across 50 items.",
+      "highlights": [],
+      "chart": null
+    },
+    {
+      "case_id": "regional_returns_follow_up",
+      "question": "Which one lost more revenue to returns within that same cohort?",
+      "history": [
+        "Compare California and New York revenue for order items created last quarter."
+      ],
+      "executed_sql": "SELECT u.state AS region, ROUND(SUM(CASE WHEN oi.status = 'Returned' THEN oi.sale_price ELSE 0 END), 2) AS lost_revenue FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi JOIN `bigquery-public-data.thelook_ecommerce.orders` AS o ON oi.order_id = o.order_id JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON o.user_id = u.id WHERE u.state IN ('California', 'New York') AND DATE(oi.created_at) >= DATE_SUB(DATE_TRUNC(CURRENT_DATE(), QUARTER), INTERVAL 1 QUARTER) AND DATE(oi.created_at) < DATE_TRUNC(CURRENT_DATE(), QUARTER) GROUP BY region ORDER BY lost_revenue DESC LIMIT 10",
+      "verified_rows": [
+        {
+          "region": "New York",
+          "lost_revenue": 300
+        },
+        {
+          "region": "California",
+          "lost_revenue": 200
+        }
+      ],
+      "answer": "New York lost 300 to returns versus 200 for California.",
+      "highlights": [],
+      "chart": null
+    }
+  ]
+}

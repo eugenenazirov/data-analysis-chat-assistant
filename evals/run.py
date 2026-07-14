@@ -15,7 +15,16 @@ from evals.dataset import (
     validate_quality_case_schema,
 )
 from evals.guardrails import run_guardrail_evals
+from evals.human import (
+    evaluate_release_readiness,
+    load_accepted_baseline,
+    load_human_review_key,
+    load_human_review_set,
+    write_human_review_packet,
+    write_release_decision,
+)
 from evals.quality import (
+    QualitySuiteResult,
     load_human_scores,
     load_quality_cases,
     run_quality_live_evals,
@@ -29,6 +38,7 @@ app = typer.Typer(help="Retail assistant evaluation runner")
 console = Console()
 DEFAULT_CASES_PATH = Path("evals/datasets/smoke.jsonl")
 DEFAULT_SCHEMA_PATH = Path("evals/datasets/schema/quality-case.schema.json")
+DEFAULT_BASELINE_PATH = Path("evals/baselines/accepted-smoke-v1.json")
 
 
 class QualityEvalMode(StrEnum):
@@ -160,6 +170,90 @@ def quality(
         console.print(f"[dim]quality_report={output}[/dim]")
     gate_passed = result.automated_passed if automated_only else result.passed
     if not gate_passed:
+        raise typer.Exit(code=1)
+
+
+@app.command("human-review-form")
+def human_review_form(
+    report_path: Annotated[
+        Path, typer.Option("--report", help="Machine-readable quality report to review.")
+    ],
+    cases_path: Annotated[
+        Path, typer.Option("--cases", help="Dataset used to produce the report.")
+    ] = DEFAULT_CASES_PATH,
+    baseline_path: Annotated[
+        Path, typer.Option("--baseline", help="Last accepted comparison baseline.")
+    ] = DEFAULT_BASELINE_PATH,
+    form_output: Annotated[
+        Path, typer.Option("--form-output", help="Reviewer-facing scoring packet.")
+    ] = Path("artifacts/human-review-form.json"),
+    key_output: Annotated[
+        Path,
+        typer.Option(
+            "--key-output",
+            help="Restricted A/B assignment key; do not share with reviewers.",
+        ),
+    ] = Path("artifacts/human-review-key.json"),
+    seed: Annotated[
+        str, typer.Option(help="Release-specific seed used to balance A/B positions.")
+    ] = "local-review",
+) -> None:
+    """Create absolute and blinded pairwise analyst-scoring materials."""
+
+    result = QualitySuiteResult.model_validate_json(report_path.read_text(encoding="utf-8"))
+    cases = load_quality_cases(cases_path)
+    form, key = write_human_review_packet(
+        cases,
+        result,
+        load_accepted_baseline(baseline_path),
+        form_path=form_output,
+        key_path=key_output,
+        seed=seed,
+    )
+    console.print(
+        "[green]human_review_form_created[/green] "
+        f"cases={len(form.cases)} comparisons={len(key.assignments)} "
+        f"form={form_output} key={key_output}"
+    )
+
+
+@app.command("release-decision")
+def release_decision(
+    report_path: Annotated[
+        Path, typer.Option("--report", help="Machine-readable credentialed quality report.")
+    ],
+    reviews_path: Annotated[
+        Path, typer.Option("--reviews", help="Completed structured human review set.")
+    ],
+    key_path: Annotated[
+        Path, typer.Option("--key", help="Restricted A/B assignment key.")
+    ],
+    output: Annotated[
+        Path, typer.Option(help="Machine-readable release decision.")
+    ] = Path("artifacts/release-decision.json"),
+) -> None:
+    """Combine automated, repeated-live, human, and baseline evidence."""
+
+    quality_result = QualitySuiteResult.model_validate_json(
+        report_path.read_text(encoding="utf-8")
+    )
+    reviews = load_human_review_set(reviews_path)
+    key = load_human_review_key(key_path)
+    decision = evaluate_release_readiness(
+        quality_result,
+        reviews,
+        key.assignments,
+        baseline_version=key.baseline_version,
+    )
+    write_release_decision(decision, output)
+    status = "APPROVED" if decision.approved else "BLOCKED"
+    console.print(
+        f"release={status} reviewers={decision.human_review.reviewer_count} "
+        f"reviewed_cases={decision.human_review.reviewed_case_count} output={output}"
+    )
+    if decision.blockers:
+        console.print("blockers=" + "; ".join(decision.blockers))
+    if not decision.approved:
         raise typer.Exit(code=1)
 
 

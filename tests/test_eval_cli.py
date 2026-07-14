@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -7,6 +8,7 @@ from evals.quality import (
     evaluate_quality_case,
     load_quality_cases,
     summarize_quality_results,
+    write_quality_report,
 )
 
 
@@ -79,3 +81,50 @@ def test_repetitions_are_live_only_and_bounded():
     assert replay.exit_code != 0
     assert "applies only" in replay.output
     assert unbounded.exit_code != 0
+
+
+def test_human_review_and_release_decision_cli(test_config, tmp_path):
+    quality_result = cli.run_quality_replay_evals(test_config, cli.DEFAULT_CASES_PATH)
+    report_path = tmp_path / "quality.json"
+    form_path = tmp_path / "form.json"
+    key_path = tmp_path / "key.json"
+    reviews_path = tmp_path / "reviews.json"
+    decision_path = tmp_path / "decision.json"
+    write_quality_report(quality_result, report_path)
+    reviews_path.write_text(
+        json.dumps({"rubric_version": "retail_analysis_v1", "reviews": []}),
+        encoding="utf-8",
+    )
+
+    form = CliRunner().invoke(
+        cli.app,
+        [
+            "human-review-form",
+            "--report",
+            str(report_path),
+            "--form-output",
+            str(form_path),
+            "--key-output",
+            str(key_path),
+        ],
+    )
+    decision = CliRunner().invoke(
+        cli.app,
+        [
+            "release-decision",
+            "--report",
+            str(report_path),
+            "--reviews",
+            str(reviews_path),
+            "--key",
+            str(key_path),
+            "--output",
+            str(decision_path),
+        ],
+    )
+
+    assert form.exit_code == 0, form.output
+    assert "comparisons=4" in form.output
+    assert decision.exit_code == 1
+    assert "release=BLOCKED" in decision.output
+    assert json.loads(decision_path.read_text(encoding="utf-8"))["approved"] is False
