@@ -21,7 +21,7 @@ from retail_agent.domain.policies.report_evidence import assess_report_evidence
 from retail_agent.models import AgentFailure, AnalysisReport
 from retail_agent.observability import EventLogger
 
-CASES_PATH = Path("evals/datasets/quality_eval_cases.jsonl")
+CASES_PATH = Path("evals/datasets/smoke.jsonl")
 
 
 def _faithfulness_score(report, rows, sql, tolerance):

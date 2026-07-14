@@ -9,9 +9,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from evals.dataset import (
+    inspect_dataset_governance,
+    validate_partition_path,
+    validate_quality_case_schema,
+)
 from evals.guardrails import run_guardrail_evals
 from evals.quality import (
     load_human_scores,
+    load_quality_cases,
     run_quality_live_evals,
     run_quality_replay_evals,
     write_quality_report,
@@ -21,12 +27,39 @@ from retail_agent.infrastructure.settings import load_settings
 
 app = typer.Typer(help="Retail assistant evaluation runner")
 console = Console()
-DEFAULT_CASES_PATH = Path("evals/datasets/quality_eval_cases.jsonl")
+DEFAULT_CASES_PATH = Path("evals/datasets/smoke.jsonl")
+DEFAULT_SCHEMA_PATH = Path("evals/datasets/schema/quality-case.schema.json")
 
 
 class QualityEvalMode(StrEnum):
     replay = "replay"
     live = "live"
+
+
+@app.command("validate-dataset")
+def validate_dataset(
+    config_path: Annotated[str, typer.Option("--config")] = "config/agent.yaml",
+    cases_path: Annotated[
+        Path, typer.Option("--cases", help="Evaluation JSONL dataset to validate.")
+    ] = DEFAULT_CASES_PATH,
+    schema_path: Annotated[
+        Path, typer.Option("--schema", help="Committed evaluation case JSON Schema.")
+    ] = DEFAULT_SCHEMA_PATH,
+) -> None:
+    """Validate schema, partition ownership, hashes, uniqueness, and overlap policy."""
+
+    config = load_settings(config_path)
+    cases = load_quality_cases(cases_path)
+    validate_partition_path(cases_path, cases)
+    validate_quality_case_schema(schema_path)
+    governance = inspect_dataset_governance(cases, config.golden_trios_path)
+    console.print(
+        "[green]dataset_valid[/green] "
+        f"cases={len(cases)} "
+        f"question_overlap={len(governance.golden_question_overlap_ids)} "
+        f"sql_overlap={len(governance.golden_sql_overlap_ids)} "
+        f"intentional_overlap={governance.intentional_overlap_count}"
+    )
 
 
 @app.command()

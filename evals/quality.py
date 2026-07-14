@@ -7,7 +7,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from statistics import mean, pvariance
 from typing import Any, Literal
@@ -85,6 +85,25 @@ class QualityExpectations(EvaluationModel):
     numeric_tolerance: float = 0.001
 
 
+class FixtureProvenance(EvaluationModel):
+    canonical_sql_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    reference_date: date
+    bigquery_location: str
+    source_datasets: list[str] = Field(min_length=1)
+    source_tables: list[str] = Field(min_length=1)
+    result_schema: dict[str, str]
+    row_count: int = Field(ge=0)
+    captured_at: datetime
+    evaluator_version: str
+    prompt_version: str
+    persona_version: str
+    model: str
+    embedding_model: str
+    golden_index_version: str
+    from_cache: bool
+    content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class QualityReplay(EvaluationModel):
     candidate_sql: str
     candidate_rows: list[dict[str, Any]]
@@ -94,6 +113,7 @@ class QualityReplay(EvaluationModel):
     history_used: bool = False
     usefulness_score: float | None = Field(default=None, ge=0, le=5)
     reference_date: date | None = None
+    provenance: FixtureProvenance
 
 
 class QualityEvalCase(EvaluationModel):
@@ -130,6 +150,19 @@ class QualityEvalCase(EvaluationModel):
             raise ValueError("critical cases must declare high or critical risk")
         if self.replay.reference_date not in {None, self.reference_date}:
             raise ValueError("replay reference date must match the case reference date")
+        provenance = self.replay.provenance
+        if provenance.reference_date != self.reference_date:
+            raise ValueError("fixture provenance reference date must match the case")
+        if provenance.canonical_sql_sha256 != _sha256_text(self.canonical_sql):
+            raise ValueError("fixture canonical SQL hash does not match canonical_sql")
+        if provenance.row_count != len(self.replay.canonical_rows):
+            raise ValueError("fixture row count does not match canonical rows")
+        if provenance.result_schema != _result_schema(self.replay.canonical_rows):
+            raise ValueError("fixture result schema does not match canonical rows")
+        if provenance.content_sha256 != _fixture_content_sha256(
+            self.canonical_sql, self.replay
+        ):
+            raise ValueError("fixture content hash does not match replay content")
         return self
 
 
@@ -192,6 +225,12 @@ class EvaluationVersions(EvaluationModel):
     reference_dates: list[date] = Field(default_factory=list)
 
 
+class DatasetGovernance(EvaluationModel):
+    golden_question_overlap_ids: list[str] = Field(default_factory=list)
+    golden_sql_overlap_ids: list[str] = Field(default_factory=list)
+    intentional_overlap_count: int = 0
+
+
 class QualitySuiteResult(EvaluationModel):
     mode: QualityMode
     passed: bool
@@ -205,7 +244,50 @@ class QualitySuiteResult(EvaluationModel):
     metrics: dict[ScoreName, MetricSummary] = Field(default_factory=dict)
     critical_failures: list[str] = Field(default_factory=list)
     versions: EvaluationVersions = Field(default_factory=EvaluationVersions)
+    governance: DatasetGovernance = Field(default_factory=DatasetGovernance)
     needs_human_review: bool = False
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _fixture_content_sha256(canonical_sql: str, replay: QualityReplay) -> str:
+    payload = {
+        "canonical_sql": canonical_sql,
+        "replay": replay.model_dump(mode="json", exclude={"provenance"}),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return _sha256_text(serialized)
+
+
+def _result_schema(rows: list[dict[str, Any]]) -> dict[str, str]:
+    field_types: dict[str, set[str]] = {}
+    for row in rows:
+        for field, value in row.items():
+            field_types.setdefault(field, set()).add(_value_type_name(value))
+    return {
+        field: " | ".join(sorted(types))
+        for field, types in sorted(field_types.items())
+    }
+
+
+def _value_type_name(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
 
 
 def load_quality_cases(path: Path) -> list[QualityEvalCase]:
@@ -230,12 +312,17 @@ def load_quality_cases(path: Path) -> list[QualityEvalCase]:
 
 
 def run_quality_replay_evals(config: AgentConfig, path: Path) -> QualitySuiteResult:
+    from evals.dataset import inspect_dataset_governance, validate_partition_path
+
     cases = load_quality_cases(path)
+    validate_partition_path(path, cases)
+    governance = inspect_dataset_governance(cases, config.golden_trios_path)
     results = [evaluate_quality_case(config, case, case.replay) for case in cases]
     return summarize_quality_results(
         "replay",
         results,
         versions=_evaluation_versions(config, path, cases),
+        governance=governance,
     )
 
 
@@ -251,8 +338,12 @@ async def run_quality_live_evals(
     max_safe_attempts: int = 3,
     retry_delay_seconds: float = 5.0,
 ) -> QualitySuiteResult:
+    from evals.dataset import inspect_dataset_governance, validate_partition_path
+
     results: list[QualityEvalResult] = []
     cases = load_quality_cases(path)
+    validate_partition_path(path, cases)
+    governance = inspect_dataset_governance(cases, config.golden_trios_path)
     for case in cases:
         conversation = ConversationState()
         history_succeeded = True
@@ -306,15 +397,17 @@ async def run_quality_live_evals(
             )
             continue
 
-        replay = QualityReplay(
-            candidate_sql=turn.query_result.sql,
-            candidate_rows=turn.query_result.rows,
-            canonical_rows=canonical.rows,
-            retrieved_ids=list(turn.retrieved_trio_ids),
-            report=turn.response,
-            history_used=bool(case.history and conversation.completed_turns),
-            usefulness_score=(human_scores or {}).get(case.id),
-            reference_date=turn.reference_date or case.reference_date,
+        replay = case.replay.model_copy(
+            update={
+                "candidate_sql": turn.query_result.sql,
+                "candidate_rows": turn.query_result.rows,
+                "canonical_rows": canonical.rows,
+                "retrieved_ids": list(turn.retrieved_trio_ids),
+                "report": turn.response,
+                "history_used": bool(case.history and conversation.completed_turns),
+                "usefulness_score": (human_scores or {}).get(case.id),
+                "reference_date": turn.reference_date or case.reference_date,
+            }
         )
         results.append(evaluate_quality_case(config, case, replay))
 
@@ -322,6 +415,7 @@ async def run_quality_live_evals(
         "live",
         results,
         versions=_evaluation_versions(config, path, cases),
+        governance=governance,
     )
 
 
@@ -488,6 +582,7 @@ def summarize_quality_results(
     results: list[QualityEvalResult],
     *,
     versions: EvaluationVersions | None = None,
+    governance: DatasetGovernance | None = None,
 ) -> QualitySuiteResult:
     if not results:
         return QualitySuiteResult(
@@ -498,6 +593,7 @@ def summarize_quality_results(
             aggregate=_zero_scores(),
             case_count=0,
             versions=versions or EvaluationVersions(),
+            governance=governance or DatasetGovernance(),
             needs_human_review=False,
         )
 
@@ -534,6 +630,7 @@ def summarize_quality_results(
             result.name for result in results if result.critical and not result.automated_passed
         ],
         versions=versions or EvaluationVersions(),
+        governance=governance or DatasetGovernance(),
         needs_human_review=needs_human_review,
     )
 

@@ -22,6 +22,14 @@ def test_quality_replay_cli_passes():
     assert result.exit_code == 0, result.output
 
 
+def test_dataset_validation_cli_reports_intentional_overlap():
+    result = CliRunner().invoke(cli.app, ["validate-dataset"])
+
+    assert result.exit_code == 0, result.output
+    assert "dataset_valid cases=4" in result.output
+    assert "intentional_overlap=3" in result.output
+
+
 def test_eval_runner_rejects_unknown_command():
     result = CliRunner().invoke(cli.app, ["unknown"])
     help_result = CliRunner().invoke(cli.app, ["--help"])
@@ -57,4 +65,4 @@ def test_quality_automated_only_accepts_pending_human_review(
 
 
 def test_default_quality_dataset_is_evaluation_only():
-    assert cli.DEFAULT_CASES_PATH == Path("evals/datasets/quality_eval_cases.jsonl")
+    assert cli.DEFAULT_CASES_PATH == Path("evals/datasets/smoke.jsonl")

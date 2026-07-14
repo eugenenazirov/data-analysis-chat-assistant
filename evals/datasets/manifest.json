@@ -1,0 +1,41 @@
+{
+  "schema": "schema/quality-case.schema.json",
+  "partitions": {
+    "smoke": {
+      "path": "smoke.jsonl",
+      "purpose": "Known Golden Knowledge retrieval compatibility",
+      "prompt_tuning_allowed": true,
+      "golden_overlap_allowed": true
+    },
+    "development": {
+      "path": "development.jsonl",
+      "purpose": "Visible analytical cases used during implementation",
+      "prompt_tuning_allowed": true,
+      "golden_overlap_allowed": false
+    },
+    "regression": {
+      "path": "regression.jsonl",
+      "purpose": "Minimized examples of previously observed failures",
+      "prompt_tuning_allowed": true,
+      "golden_overlap_allowed": false
+    },
+    "release_holdout": {
+      "path": "release_holdout.jsonl",
+      "purpose": "Unseen release-quality analytical benchmark",
+      "prompt_tuning_allowed": false,
+      "golden_overlap_allowed": false
+    },
+    "adversarial": {
+      "path": "adversarial.jsonl",
+      "purpose": "Privacy, injection, unsafe SQL, and misleading requests",
+      "prompt_tuning_allowed": true,
+      "golden_overlap_allowed": false
+    },
+    "multi_turn": {
+      "path": "multi_turn.jsonl",
+      "purpose": "Conversation trajectory and retained-constraint coverage",
+      "prompt_tuning_allowed": true,
+      "golden_overlap_allowed": false
+    }
+  }
+}

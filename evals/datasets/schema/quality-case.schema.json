@@ -1,0 +1,529 @@
+{
+  "$defs": {
+    "AnalysisReport": {
+      "properties": {
+        "answer": {
+          "title": "Answer",
+          "type": "string"
+        },
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "caveats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Caveats",
+          "type": "array"
+        },
+        "chart_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChartArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        },
+        "followups": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Followups",
+          "type": "array"
+        },
+        "highlights": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Highlights",
+          "type": "array"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "refused": {
+          "default": false,
+          "title": "Refused",
+          "type": "boolean"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sql"
+        },
+        "table": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Table",
+          "type": "array"
+        },
+        "trace_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trace Id"
+        }
+      },
+      "required": [
+        "question",
+        "answer"
+      ],
+      "title": "AnalysisReport",
+      "type": "object"
+    },
+    "ChartArtifact": {
+      "properties": {
+        "code_digest": {
+          "title": "Code Digest",
+          "type": "string"
+        },
+        "output_format": {
+          "$ref": "#/$defs/ChartFormat"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "output_format",
+        "size_bytes",
+        "code_digest"
+      ],
+      "title": "ChartArtifact",
+      "type": "object"
+    },
+    "ChartFormat": {
+      "enum": [
+        "png",
+        "svg"
+      ],
+      "type": "string"
+    },
+    "EvaluationRisk": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "type": "string"
+    },
+    "EvaluationSuite": {
+      "enum": [
+        "smoke",
+        "development",
+        "regression",
+        "release_holdout",
+        "adversarial",
+        "multi_turn"
+      ],
+      "type": "string"
+    },
+    "EvaluatorName": {
+      "enum": [
+        "intent",
+        "calculation",
+        "retrieval",
+        "faithfulness",
+        "multi_turn",
+        "usefulness"
+      ],
+      "type": "string"
+    },
+    "ExpectedBehavior": {
+      "enum": [
+        "answer",
+        "clarify",
+        "refuse",
+        "degrade"
+      ],
+      "type": "string"
+    },
+    "FixtureProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "bigquery_location": {
+          "title": "Bigquery Location",
+          "type": "string"
+        },
+        "canonical_sql_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Canonical Sql Sha256",
+          "type": "string"
+        },
+        "captured_at": {
+          "format": "date-time",
+          "title": "Captured At",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "embedding_model": {
+          "title": "Embedding Model",
+          "type": "string"
+        },
+        "evaluator_version": {
+          "title": "Evaluator Version",
+          "type": "string"
+        },
+        "from_cache": {
+          "title": "From Cache",
+          "type": "boolean"
+        },
+        "golden_index_version": {
+          "title": "Golden Index Version",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "persona_version": {
+          "title": "Persona Version",
+          "type": "string"
+        },
+        "prompt_version": {
+          "title": "Prompt Version",
+          "type": "string"
+        },
+        "reference_date": {
+          "format": "date",
+          "title": "Reference Date",
+          "type": "string"
+        },
+        "result_schema": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Result Schema",
+          "type": "object"
+        },
+        "row_count": {
+          "minimum": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "source_datasets": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Datasets",
+          "type": "array"
+        },
+        "source_tables": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "canonical_sql_sha256",
+        "reference_date",
+        "bigquery_location",
+        "source_datasets",
+        "source_tables",
+        "result_schema",
+        "row_count",
+        "captured_at",
+        "evaluator_version",
+        "prompt_version",
+        "persona_version",
+        "model",
+        "embedding_model",
+        "golden_index_version",
+        "from_cache",
+        "content_sha256"
+      ],
+      "title": "FixtureProvenance",
+      "type": "object"
+    },
+    "JoinKey": {
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "title": "Left",
+          "type": "string"
+        },
+        "right": {
+          "title": "Right",
+          "type": "string"
+        }
+      },
+      "required": [
+        "left",
+        "right"
+      ],
+      "title": "JoinKey",
+      "type": "object"
+    },
+    "QualityExpectations": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_joins": {
+          "items": {
+            "$ref": "#/$defs/JoinKey"
+          },
+          "title": "Allowed Joins",
+          "type": "array"
+        },
+        "expected_retrieval_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Expected Retrieval Ids",
+          "type": "array"
+        },
+        "forbidden_sql_fragments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Sql Fragments",
+          "type": "array"
+        },
+        "numeric_tolerance": {
+          "default": 0.001,
+          "title": "Numeric Tolerance",
+          "type": "number"
+        },
+        "required_sql_fragments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Sql Fragments",
+          "type": "array"
+        },
+        "required_tables": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Tables",
+          "type": "array"
+        }
+      },
+      "title": "QualityExpectations",
+      "type": "object"
+    },
+    "QualityMode": {
+      "enum": [
+        "replay",
+        "live"
+      ],
+      "type": "string"
+    },
+    "QualityReplay": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_rows": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Candidate Rows",
+          "type": "array"
+        },
+        "candidate_sql": {
+          "title": "Candidate Sql",
+          "type": "string"
+        },
+        "canonical_rows": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Canonical Rows",
+          "type": "array"
+        },
+        "history_used": {
+          "default": false,
+          "title": "History Used",
+          "type": "boolean"
+        },
+        "provenance": {
+          "$ref": "#/$defs/FixtureProvenance"
+        },
+        "reference_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Date"
+        },
+        "report": {
+          "$ref": "#/$defs/AnalysisReport"
+        },
+        "retrieved_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retrieved Ids",
+          "type": "array"
+        },
+        "usefulness_score": {
+          "anyOf": [
+            {
+              "maximum": 5,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usefulness Score"
+        }
+      },
+      "required": [
+        "candidate_sql",
+        "candidate_rows",
+        "canonical_rows",
+        "retrieved_ids",
+        "report",
+        "provenance"
+      ],
+      "title": "QualityReplay",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "canonical_sql": {
+      "title": "Canonical Sql",
+      "type": "string"
+    },
+    "category": {
+      "title": "Category",
+      "type": "string"
+    },
+    "critical": {
+      "default": false,
+      "title": "Critical",
+      "type": "boolean"
+    },
+    "evaluators": {
+      "items": {
+        "$ref": "#/$defs/EvaluatorName"
+      },
+      "title": "Evaluators",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "expectations": {
+      "$ref": "#/$defs/QualityExpectations"
+    },
+    "expected_behavior": {
+      "$ref": "#/$defs/ExpectedBehavior"
+    },
+    "history": {
+      "items": {
+        "type": "string"
+      },
+      "title": "History",
+      "type": "array"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "modes": {
+      "items": {
+        "$ref": "#/$defs/QualityMode"
+      },
+      "title": "Modes",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "question": {
+      "title": "Question",
+      "type": "string"
+    },
+    "reference_date": {
+      "format": "date",
+      "title": "Reference Date",
+      "type": "string"
+    },
+    "replay": {
+      "$ref": "#/$defs/QualityReplay"
+    },
+    "risk": {
+      "$ref": "#/$defs/EvaluationRisk"
+    },
+    "suite": {
+      "$ref": "#/$defs/EvaluationSuite"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "user_id": {
+      "default": "manager_a",
+      "title": "User Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "suite",
+    "category",
+    "risk",
+    "question",
+    "reference_date",
+    "expected_behavior",
+    "modes",
+    "evaluators",
+    "canonical_sql",
+    "expectations",
+    "replay"
+  ],
+  "title": "QualityEvalCase",
+  "type": "object"
+}

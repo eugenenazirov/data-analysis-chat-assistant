@@ -29,12 +29,16 @@ test *args:
 guardrails:
     uv run python -m evals.run guardrails
 
+# Validate evaluation data contracts, provenance, partitions, and overlap policy.
+dataset:
+    uv run python -m evals.run validate-dataset
+
 # Run the credential-free answer-quality replay evaluation.
 quality:
     uv run python -m evals.run quality --mode replay
 
 # Run all credential-free evaluation suites.
-eval: guardrails quality
+eval: dataset guardrails quality
 
 # Run linting, tests, and offline evaluations.
 _local-check: lint test eval
