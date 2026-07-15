@@ -9,10 +9,11 @@ operations without presenting those components as already built.
 Implemented:
 
 - Approved Question -> SQL -> Analyst Report trios are embedded into Qdrant.
-- The versioned routing prompt and deterministic tool-visibility policy require
-  `retrieve_golden_examples` before SQL for rankings, time windows, customer
-  behavior, returns, comparisons, and follow-up cohorts. Schema, clarification,
-  unsupported, and simple unambiguous requests may skip retrieval.
+- The versioned routing policy application-prefetches
+  `retrieve_golden_examples` exactly once before the model for rankings, time
+  windows, customer behavior, returns, comparisons, and follow-up cohorts.
+  Optional retrieval remains model-callable; schema, clarification, unsupported,
+  and simple unambiguous requests may skip retrieval.
 - Retrieval receives bounded multi-turn context and reports matched IDs and
   degraded dependency state through typed results and telemetry.
 - A Qdrant outage does not prevent a SQL-backed answer.
@@ -83,12 +84,16 @@ Implemented:
 - A conversation aggregate retains complete, bounded prior turns rather than a
   single previous-question string.
 - PydanticAI receives compacted verified tool context and uses configured
-  request, tool-call, token, SQL-retry, and output-retry budgets.
+  request, tool-call, token, SQL-retry, chart-retry, and output-retry budgets.
 - Retrieval follows the conditional policy above and degrades without blocking
   SQL. SQL remains model-selected; `generate_chart` is dynamically unavailable
   until SQL succeeds in the current run.
 - Chart code receives only verified rows through a fixed input file and must
   produce a validated PNG or passive SVG through a fixed output path.
+- Chart input is recursively redacted before execution. The runtime declares
+  and build-verifies Matplotlib, NumPy, pandas, and seaborn; failures are
+  classified with bounded line/column/filename repair feedback and receive at
+  most two tool repairs (three total attempts).
 - The local subprocess has source, output, captured-output, and time limits, a
   minimal environment, process-group cleanup, and digest-only telemetry.
 
@@ -104,11 +109,23 @@ Implemented:
   0-3 tool retry budget. A successfully executed empty result is not a failure:
   it is preserved, counted once, and must be disclosed explicitly without
   broadening or replaying the query.
+- BigQuery results use a 500-row client retrieval cap rather than an injected
+  SQL limit. Returned and available counts are carried separately. Partial
+  results produce a deterministic 20-row preview and cannot be charted or
+  described as complete; explicit literal limits up to 500 remain valid.
 - Every submitted query receives a stable trace/SQL-derived BigQuery job ID.
   An unknown post-submission outcome is non-retryable and never returned to the
   model retry loop.
 - Qdrant failure degrades retrieval without failing the turn.
-- Provider failures are translated at the agent boundary. If verified rows
+- One reusable Gemini model uses three transport attempts with exponential
+  backoff and jitter for 408, 429, and retryable 5xx responses. With Vertex
+  credentials, two attempts use the global endpoint and the final attempt uses
+  `us-central1` inside the same logical model request; completed tools are not
+  restarted.
+  Gemini 2.5 Flash runs at temperature 0 with thinking disabled and a bounded
+  output budget for predictable reviewer latency; the model remains configurable.
+  Provider status, retry count, and terminal category are normalized without
+  logging response bodies. Provider failures are translated at the agent boundary. If verified rows
   exist, the user receives a redacted degraded table and executed SQL; otherwise
   the user receives a typed safe failure.
 - `chat` survives a failed turn; `ask` exits nonzero without a traceback.
@@ -136,6 +153,9 @@ Kubernetes concurrency, backups, and tested recovery objectives.
   intent, expected behavior, operational budgets, and analyst usefulness.
 - Repeated live runs report first-attempt, eventual, and per-attempt success,
   p50/p95 latency, confidence intervals, score variance, and flaky cases.
+- Reviewer-release latency is reported but does not fail the prototype gate;
+  provider-side timing is evaluated separately from correctness, completeness,
+  privacy, warehouse execution integrity, and chart-artifact requirements.
 - A release candidate requires five live repetitions, complete two-reviewer
   structured scoring, critical-dimension floors, resolved disagreements and
   rejections, and blinded baseline noninferiority before it can pass.

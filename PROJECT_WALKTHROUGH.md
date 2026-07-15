@@ -23,35 +23,52 @@ workflows separately.
 
 ## Fast Reviewer Path
 
-Local deterministic verification:
+Start with the complete credential-free gate:
 
 ```bash
-uv sync --frozen --all-groups
-uv pip check
-uv run ruff check .
-uv run pytest --cov=retail_agent --cov-branch --cov-fail-under=85
-uv run python -m evals.run guardrails
-uv run python -m evals.run quality --mode replay
+just check
+just container-check
 ```
 
-Runtime and evaluation images:
+With Google credentials configured, prepare the exact current application image
+and its dependencies:
 
 ```bash
-docker build --target runtime -t retail-agent:runtime .
-docker run --rm retail-agent:runtime --help
-docker build --target evaluation -t retail-agent:evaluation .
-docker run --rm retail-agent:evaluation guardrails
-docker run --rm retail-agent:evaluation quality --mode replay
+just live-setup
 ```
 
-Credentialed application path:
+Expected outcome: Qdrant becomes healthy, the Golden index is recreated,
+diagnostics reports `Revision match: yes` and prompt `analysis-v10`, and five
+chart smoke cases produce validated artifacts, including PNG, SVG, pandas,
+seaborn, and the 156-cell heatmap.
+
+Then execute the reviewer flow:
 
 ```bash
-docker compose up -d qdrant
-docker compose run --rm app index-golden --recreate
-docker compose run --rm app ask "Plot monthly revenue by category" --user manager_a
-docker compose run --rm app chat --user manager_a
+just reviewer-live
 ```
+
+That command checks a schema-only question, a live analytical question, a PII
+request, the broad six-month/category chart, a multi-turn conversation, and a
+Qdrant-degraded turn. Run individual probes with `just ask`, `just chat`,
+`just diagnostics`, `just chart-smoke`, and `just bq-smoke`. Every command that
+uses the application image rebuilds it through Docker's cache first.
+
+Expected tool sequences:
+
+| Flow | Expected tools |
+|---|---|
+| Schema introduction | none; retrieval, SQL, and chart are hidden |
+| Simple analytical question | `run_sql_query` |
+| Ranking/time-window/comparison | application-prefetched `retrieve_golden_examples`, then `run_sql_query` |
+| Chart request | required retrieval when applicable, `run_sql_query`, then `generate_chart` |
+| PII or unsupported request | none; deterministic refusal or clarification |
+| Retrieval outage | retrieval returns degraded, SQL continues, report has `degraded=true` and a caveat |
+
+For a chart request, the final report must name a real file and the command must
+show `rows_returned`, `rows_available`, and `result=complete`. If more than 500
+rows are available, the correct behavior is a deterministic 20-row preview and
+a request to narrow the scope; no chart or completeness claim is allowed.
 
 ## One Turn, End To End
 
@@ -67,22 +84,30 @@ docker compose run --rm app chat --user manager_a
    bounded context rather than a single previous-question string. The turn also
    receives one captured UTC reference date so relative SQL periods and numeric
    evidence validation use the same clock value.
-5. The PydanticAI `FunctionToolset` registers retrieval and SQL. For classified
+5. The application prefetches deterministically required Golden Knowledge once;
+   the PydanticAI `FunctionToolset` registers optional retrieval, SQL, and chart
+   tools. Schema-only requests hide all three execution tools. For classified
    ranking, time-window, customer-behavior, return, comparison, and follow-up
-   questions, tool preparation exposes retrieval but hides SQL until retrieval
-   has been attempted, including a typed degraded attempt. Schema,
-   clarification, unsupported, and simple unambiguous requests may expose SQL
-   immediately. `generate_chart` remains hidden until `run_sql_query` succeeds
-   in the current run.
+   questions, SQL remains hidden until the prefetch has completed, including a
+   typed degraded attempt. Schema, clarification, unsupported, and simple
+   unambiguous requests may expose SQL immediately. `generate_chart` remains
+   hidden until `run_sql_query` succeeds in the current run.
 6. Retrieval returns approved precedents or a typed degraded result. It never
    presents an outage as an ordinary empty match set.
-7. SQL passes `sqlglot` validation, table/column allowlists, row limits, BigQuery
-   dry run, byte cap, and stable job-ID execution. Failures after submission are
+7. SQL passes `sqlglot` validation, table/column allowlists, BigQuery dry run,
+   byte cap, and stable job-ID execution. The client fetches at most 500 rows
+   without injecting a misleading SQL `LIMIT`; BigQuery's complete row count
+   distinguishes complete from partial results. Literal limits up to 500 retain
+   their meaning. Failures after submission are
    non-retryable to avoid duplicate warehouse work. A valid empty result is
    preserved; output validation requires an explicit no-matching-data statement
    instead of asking the model to broaden and rerun the query.
-8. Chart code, when requested, receives the verified rows through `input.json`
-   and must create a fixed PNG or SVG filename in a temporary directory.
+8. Chart code, when requested, receives recursively redacted verified rows
+   through `input.json` and must create `chart.png` by default or `chart.svg`
+   only when SVG was explicitly requested. Syntax, dependency, data-shape,
+   output, timeout, and runtime failures return bounded repair instructions.
+   Two `ModelRetry` repairs allow three total chart attempts without repeating
+   the completed warehouse query; the tool is hidden after that budget.
 9. Structured output is one of data analysis, schema explanation,
    clarification, unsupported request, or execution failure. Data output
    requires a query; numeric claims and chart references are validated with a
@@ -131,11 +156,16 @@ imports.
 
 `retail_agent/infrastructure/` implements outbound ports:
 
+- `agents/google_model.py`: one reusable Gemini model with three transport
+  attempts for 408, 429, and retryable 5xx responses; Vertex uses two global
+  attempts followed by one `us-central1` attempt inside the same model request;
 - `agents/pydantic_ai_analysis_agent.py`: domain/PydanticAI history adapter;
 - `analytics/bigquery_adapter.py`: SDK exception translation and query boundary;
 - `retrieval/qdrant_adapter.py`: Golden Knowledge storage/search;
 - `retrieval/gemini_embeddings.py`: Gemini and deterministic hash embedders;
-- `charts/local_python_executor.py`: bounded local chart subprocess;
+- `charts/local_python_executor.py`: bounded local chart subprocess and
+  actionable failure classification;
+- `charts/smoke.py`: image-level PNG, SVG, pandas, seaborn, and heatmap proof;
 - `conversations/in_memory_repository.py`: session-local prototype persistence;
 - `prompts/`: packaged prompt resource plus deterministic builder;
 - `settings.py`: nested Pydantic Settings and source precedence;
@@ -149,8 +179,9 @@ must replace it with a separately isolated worker.
 
 ### Presentation And Composition
 
-- `retail_agent/presentation/cli/app.py`: `ask`, `chat`, `index-golden`, and
-  `bq-smoke`; no evaluation, SDK, prompt, or tool-order logic.
+- `retail_agent/presentation/cli/app.py`: `ask`, `chat`, `index-golden`,
+  `bq-smoke`, `diagnostics`, and `chart-smoke`; no evaluation, prompt, or
+  tool-order logic.
 - `retail_agent/presentation/cli/renderer.py`: Rich rendering only.
 - `retail_agent/bootstrap.py`: the sole composition root for settings and
   concrete adapters.
@@ -187,7 +218,8 @@ dataset, while the Docker `evaluation` target adds both.
 - fully qualified allowlisted tables;
 - table-specific safe-column allowlists;
 - no `SELECT *`, whole-row alias projection, DDL, or DML;
-- bounded result rows, dry-run bytes, execution timeout, and stable job ID;
+- 500-row client retrieval cap with explicit completeness metadata, dry-run
+  bytes, execution timeout, and stable job ID;
 - retry feedback only while safe, never after an unknown submitted-job outcome.
 
 ### Output and privacy
@@ -203,7 +235,7 @@ dataset, while the Docker `evaluation` target adds both.
 
 ### Agent limits
 
-- request, tool-call, token, SQL-retry, output-retry, history-turn, and
+- request, tool-call, token, SQL-retry, chart-retry, output-retry, history-turn, and
   history-byte limits are configured centrally;
 - tool calls have explicit timeouts;
 - `ProcessHistory` keeps complete recent turn groups;
@@ -219,7 +251,7 @@ dataset, while the Docker `evaluation` target adds both.
 | Automatic charts | Dynamic post-query tool and local bounded executor | Isolated chart worker with separate credentials/resources |
 | Resilience | Typed failures, safe retry boundary, degraded verified-row report | Circuit breakers, HA storage, recovery objectives |
 | Observability | Trace/session IDs, versions, tool timings, usage, retries, degradation | OpenTelemetry metrics/logs/traces and alerts |
-| Quality assurance | 320 offline tests, guardrails, 67 partitioned replay cases, repeated-live and human-gate tests, runtime/evaluation image checks | Scheduled canary plus protected release-candidate and analyst approval workflows |
+| Quality assurance | Branch-gated tests, guardrails, 67 partitioned replay cases, repeated-live and human-gate tests, runtime/evaluation image checks | Scheduled canary plus protected release-candidate and analyst approval workflows |
 | Saved reports/personas | HLD only | OIDC, PostgreSQL, confirmations, audit, admin UI |
 
 ## Configuration And Versions
@@ -227,11 +259,26 @@ dataset, while the Docker `evaluation` target adds both.
 `config/agent.yaml` is the readable baseline. Environment and `.env` aliases
 override it; explicit initialization has highest priority. Credentials use
 `SecretStr`. Prompt content is packaged at
-`retail_agent/infrastructure/prompts/templates/analysis-v4.md`, and its version
+`retail_agent/infrastructure/prompts/templates/analysis-v10.md`, and its version
 is recorded in telemetry.
 
 The locked stack uses Python 3.12, uv 0.10.8, PydanticAI 2.9, Pydantic Settings,
-BigQuery, Qdrant, Gemini, sqlglot, Matplotlib, Rich, and Typer.
+BigQuery, Qdrant, Gemini, sqlglot, Matplotlib, NumPy, pandas, seaborn, Rich, and
+Typer. Vertex chat defaults to the global endpoint, fails over to `us-central1`
+inside the same bounded model request, and keeps embeddings in `us-central1`;
+`GOOGLE_CLOUD_LOCATION` remains a compatibility fallback.
+
+## Failure Interpretation
+
+| Symptom | Meaning and next check |
+|---|---|
+| `Revision match: NO` | The Compose image is stale; rerun `just live-setup`. |
+| `chart-smoke` fails | The production image is missing a declared plotting dependency or cannot produce a validated artifact; do not begin model review. |
+| `missing_dependency` | The generated program imported a package unavailable in the image; diagnostics lists the supported versions. |
+| `syntax_error` / `data_shape_error` | The model receives the failing line, expected filename, and available columns and may repair twice. |
+| `rows_available` exceeds `rows_returned` | The result is intentionally partial; narrow the request before interpreting or plotting it. |
+| Golden Knowledge caveat | Qdrant degraded; the report may still be valid because SQL was independently verified. |
+| Provider 408/429/5xx | The shared transport retries up to three attempts without restarting the agent or repeating completed BigQuery work. |
 
 ## Known Prototype Boundaries
 

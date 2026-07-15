@@ -185,8 +185,9 @@ sequenceDiagram
     DB-->>API: Pinned versions + bounded history
     API->>A: Question + bounded complete history + pinned versions
     alt Precedent required by the versioned routing policy
-        A->>Q: Retrieve top-k from active index version
-        Q-->>A: Approved trios or typed degraded result
+        API->>Q: Prefetch top-k once from active index version
+        Q-->>API: Approved trios or typed degraded result
+        API->>A: Question + bounded history + approved context
     else Schema, clarification, unsupported, or simple unambiguous request
         A->>A: Continue without retrieval
     end
@@ -194,7 +195,7 @@ sequenceDiagram
     G->>G: Parse, allowlist, PII, row and cost controls
     G->>W: Dry-run and execute with stable job ID
     W-->>G: Verified QueryResult or typed outcome
-    G-->>A: Safe rows or bounded retry feedback
+    G-->>A: Up to 500 rows + complete available count, or bounded retry feedback
     opt Model requests a chart after verified SQL
         A->>C: Bounded code + verified rows
         C-->>A: Validated artifact reference or typed failure
@@ -222,8 +223,20 @@ replayed into future model context.
 The prototype can execute chart-producing Python automatically after a verified
 query. Its local executor uses a short-lived working directory, a minimal
 environment, fixed input and output filenames, source/output/capture limits, and
-a strict timeout. This subprocess is a reliability boundary, not a security
-sandbox.
+a strict timeout. Matplotlib, NumPy, pandas, and seaborn are pinned runtime
+dependencies and imported during the image build. A production-executor smoke
+command proves PNG, SVG, pandas, seaborn, and a 156-cell heatmap. Generated input
+is recursively redacted, and bounded stderr diagnostics classify syntax,
+dependency, data-shape, missing-output, timeout, and runtime failures. The model
+may repair twice without rerunning the verified query. This subprocess is a
+reliability boundary, not a security sandbox.
+
+BigQuery does not receive an automatically injected `LIMIT`. The adapter calls
+`QueryJob.result(max_results=500)` and compares the returned count with
+`RowIterator.total_rows`. A partial result is never passed to chart execution or
+model-authored interpretation; the application returns exact counts, a 20-row
+preview, and asks the user to narrow the scope. Dry runs and
+`maximum_bytes_billed` remain the cost controls.
 
 Production deployments must execute model-generated code in an isolated
 external worker outside the application container. That worker needs separate
@@ -311,13 +324,13 @@ sessions.
 | Failure | User behavior | Retry/cost rule | Telemetry |
 |---|---|---|---|
 | Qdrant unavailable | Continue without precedent and show normal report | No model-run restart | `golden_knowledge_unavailable` and degraded retrieval metric |
-| Gemini unavailable before query | Typed retryable failure; UI remains available | Provider-level bounded retry only | `agent_run_failed:model_unavailable` |
+| Gemini unavailable before query | Typed retryable failure; UI remains available | Shared model makes two global Vertex attempts and one `us-central1` failover attempt for 408, 429, and retryable 5xx with exponential backoff and jitter | Normalized status, retry count, and terminal category on `agent_run_failed` |
 | Gemini fails after verified query | Return redacted degraded table and SQL | Never repeat completed query blindly | `agent_run_failed` with `degraded=true` |
 | SQL invalid or empty | Return structured `ModelRetry` feedback | Configured 0-3 tool retries | Retry attempt, budget, failure class |
 | BigQuery unavailable during validation/dry-run | Typed warehouse failure after budget | Retry is allowed because no paid execution job was submitted | Warehouse error rate and latency |
 | BigQuery outcome unknown after submission | Non-retryable typed failure with trace ID | Stable job ID; never model-retry or resubmit until the original job is checked | `sql_terminal_failure`, stable job ID, warehouse error rate |
 | Query exceeds byte cap | Reject before execution | No retry until SQL changes | Estimated bytes and cap |
-| Chart generation fails | Return the verified analysis without an artifact and a typed chart warning | Never repeat SQL; chart retry stays within the chart job budget | Tool timing, code digest, failure class, output format/size |
+| Chart generation fails | Return the verified analysis without an artifact and a typed chart warning | Never repeat SQL; two repair prompts allow three total chart attempts, then the tool is hidden | Tool timing, code digest, classified failure and repair attempt, output format/size |
 | PostgreSQL unavailable | Fail turn before model call | No model spend without durable ownership/idempotency state | API error and DB saturation alerts |
 | Outbox worker failure | Keep durable uncompleted event | Exponential backoff and dead-letter status | Queue age, attempts, oldest event |
 

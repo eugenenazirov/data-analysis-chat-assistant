@@ -27,14 +27,18 @@ The credential-free suite covers:
 - settings precedence, validation, secret masking, and packaged prompts;
 - conversation isolation, bounded complete history, trajectory metrics, and
   tool-summary compaction;
-- model-selected retrieval/SQL paths, valid empty results, bounded retries,
+- deterministic mandatory retrieval, optional model-selected retrieval/SQL
+  paths, valid empty results, bounded retries,
   provider/warehouse failure boundaries, and duplicate-work prevention;
 - SQL AST, table/column/join scope, PII, projection, row, cost, timeout, stable
   job-ID, unknown-outcome, and safe-division controls;
 - evidence-bound output, expected refusal/clarification/degradation, explicit
   no-data disclosure, recursive redaction, and verified chart binding;
-- chart success, timeout, cleanup, environment minimization, source/output caps,
-  PNG/SVG validation, and CLI rendering;
+- chart success, all declared plotting dependencies, realistic PNG/SVG/grouped
+  bar/line/156-cell heatmap templates, classified repair feedback, retry
+  exhaustion, timeout, cleanup, source/output caps, and CLI rendering;
+- complete-result metadata, the 500-row client cap, explicit SQL limit meaning,
+  deterministic truncated previews, and chart suppression for partial results;
 - evaluation contracts, deterministic scoring, reliability statistics, human
   calibration, release decisions, CI definitions, and image separation.
 
@@ -103,8 +107,11 @@ The evaluator checks:
 - numeric faithfulness through the runtime evidence policy;
 - multi-turn intent resolution and use of prior context;
 - expected answer, clarification, refusal, or degraded behavior;
+- complete candidate data for analytical answers and a verified artifact for
+  every case that requests a chart;
 - exact verified SQL attachment, no unsupported row dump, and report integrity;
-- provider/tool/query/token/byte/latency budgets and compliant tool ordering;
+- provider/tool/query/token/byte budgets, compliant tool ordering, and latency
+  observations;
 - analyst usefulness when human scores are available.
 
 Replay is reproducible evidence, not proof of current model or warehouse
@@ -113,23 +120,18 @@ human gates are complete.
 
 ## Credentialed Live Evaluation
 
-Prepare Qdrant and current credentials, and keep a conservative byte cap:
+Prepare the current cached image, Qdrant, Golden Knowledge, diagnostics, and the
+actual image-level chart runtime in one command:
 
 ```bash
-docker compose up -d qdrant
-QDRANT_URL=http://localhost:6333 uv run python -m retail_agent index-golden --recreate
+just live-setup
 export BQ_MAX_BYTES_BILLED=50000000
 ```
 
 A local canary can then run three independent attempts per smoke case:
 
 ```bash
-QDRANT_URL=http://localhost:6333 uv run python -m evals.run quality \
-  --mode live \
-  --automated-only \
-  --cases evals/datasets/smoke.jsonl \
-  --repetitions 3 \
-  --output artifacts/quality-eval-live-canary.json
+just release-canary
 ```
 
 Live mode snapshots the canonical result once per case, not once per repeated
@@ -138,11 +140,21 @@ IDs, and cache rates are accounted separately. Conversation cases merge history
 and final-turn telemetry before applying per-trajectory budgets. Reports include
 first-attempt, eventual, and per-attempt pass rates, a 95% pass-rate interval,
 p50/p95 duration, score variance, worst scores, and explicit flaky cases.
+Latency remains visible in the report but is informational for the reviewer
+release decision because provider-side response time is outside this prototype's
+control. Correctness, completeness, privacy, tool budgets, duplicate warehouse
+execution, and required chart artifacts remain blocking gates.
 
 Transient retries are allowed only before verified warehouse work completes.
 Successful empty results are retained and require an explicit no-matching-data
 answer; they do not trigger broader SQL. Unknown post-submission outcomes remain
 non-retryable.
+
+The reviewer default is `google-cloud:gemini-3.5-flash`, authenticated by Vertex
+ADC. It uses two bounded global-endpoint transport attempts, then one regional
+`us-central1` attempt within the same provider request budget. An explicitly
+selected `google:` model instead uses `GOOGLE_API_KEY` and all three attempts on
+the Gemini Developer API.
 
 ## CI Tiers And Immutable Evidence
 
@@ -197,6 +209,8 @@ uv run python -m evals.run release-decision \
 Release requires all of the following:
 
 - five live repetitions and no flaky or critical-case failure;
+- no truncated analytical result, every requested chart artifact present, no
+  duplicate warehouse execution, and all declared operational budgets met;
 - complete reviews from at least two reviewers for every required case;
 - mean usefulness at least 4/5 and every case at least 3/5;
 - every dimension at least 3/5, with correctness, faithfulness, and
@@ -216,8 +230,10 @@ just container-check
 
 The production runtime image includes runtime code, configuration, and Golden
 Knowledge seed data only. It excludes `evals/`, its datasets, and
-`pydantic-evals`. The evaluation image adds those assets with ownership readable
-by the non-root application user and runs both guardrail and replay smoke tests.
+`pydantic-evals`. The gate also runs `chart-smoke` in that exact runtime image,
+so an allowlisted-but-missing plotting dependency fails before review. The
+evaluation image adds the evaluation assets and runs guardrail and replay smoke
+tests.
 
 ## Manual Resilience Checks
 

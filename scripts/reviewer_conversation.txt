@@ -1,0 +1,4 @@
+Which region had the most completed orders last complete month?
+What percentage of all completed orders did it represent?
+Plot those regional order counts as a bar chart.
+exit

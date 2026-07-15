@@ -18,7 +18,8 @@ every available recipe.
 just setup
 just check
 just review
-just ask "Plot monthly revenue by category"
+just live-setup
+just reviewer-live
 ```
 
 `just check` is the complete credential-free local gate. `just review` also
@@ -41,13 +42,14 @@ Infrastructure adapters (Gemini, BigQuery, Qdrant, charts, telemetry)
 selects a conversation, calls use cases, renders DTOs, and maps exit codes. A
 future HTTP adapter can invoke the same `AnalyzeQuestion` use case.
 
-During a turn, the PydanticAI agent chooses among these bounded tools:
+During a turn, the application orchestrates mandatory precedent retrieval and
+the PydanticAI agent chooses among the remaining bounded tools:
 
-- `retrieve_golden_examples`: the versioned routing prompt and deterministic
-  tool-visibility policy require analyst-approved precedent for rankings, time
-  windows, customer behavior, returns, comparisons, and follow-up cohorts;
-  schema, clarification, unsupported, and simple unambiguous requests may skip
-  it;
+- `retrieve_golden_examples`: rankings, time windows, customer behavior,
+  returns, comparisons, and follow-up cohorts are prefetched exactly once before
+  the model runs; optional retrieval remains model-callable for other questions,
+  while schema, clarification, unsupported, and simple unambiguous requests may
+  skip it;
 - `run_sql_query`: guarded, dry-run-checked, read-only BigQuery execution;
 - `generate_chart`: dynamically hidden until the current turn has verified rows.
 
@@ -65,8 +67,8 @@ references, then applies deterministic PII redaction.
    ```
 
 2. Set `GOOGLE_CLOUD_PROJECT` and authenticate with Application Default
-   Credentials. `GOOGLE_API_KEY` is optional when using the default Vertex AI
-   model path.
+   Credentials for BigQuery and the default Vertex-hosted
+   `google-cloud:gemini-3.5-flash` model.
 
    ```bash
    export PROJECT_ID=your-project-id
@@ -75,30 +77,36 @@ references, then applies deterministic PII redaction.
    gcloud auth application-default set-quota-project "$PROJECT_ID"
    ```
 
-3. Build the runtime and start Qdrant:
+3. Build the exact current image, start and wait for Qdrant, recreate the Golden
+   index, display safe diagnostics, and prove all chart dependencies:
 
    ```bash
-   docker compose build app
-   docker compose up -d qdrant
+   just live-setup
    ```
 
-4. Index approved Golden Knowledge:
+   This cached build runs before every `just ask`, `just chat`, and
+   `just index-golden` invocation, preventing reviewers from exercising a stale
+   image.
+
+4. Ask a question or start a conversation:
 
    ```bash
-   docker compose run --rm app index-golden --recreate
+   just ask "Plot monthly revenue by category" manager_a
+   just chat manager_a
    ```
 
-5. Ask a question or start a conversation:
+5. Run the complete documented reviewer sequence:
 
    ```bash
-   docker compose run --rm app ask "Plot monthly revenue by category" --user manager_a
-   docker compose run --rm app chat --user manager_a
+   just reviewer-live
    ```
 
-6. Run a live BigQuery smoke test without Gemini or Qdrant retrieval:
+6. Individual diagnostics remain available:
 
    ```bash
-   docker compose run --rm app bq-smoke
+   just diagnostics
+   just chart-smoke
+   just bq-smoke
    ```
 
 Chart artifacts persist in the Compose `chart_artifacts` volume. Local uv runs
@@ -132,6 +140,8 @@ uv run python -m retail_agent ask "monthly revenue by category" --user manager_a
 uv run python -m retail_agent chat --user manager_a
 uv run python -m retail_agent index-golden --recreate
 uv run python -m retail_agent bq-smoke
+uv run python -m retail_agent diagnostics
+uv run python -m retail_agent chart-smoke
 ```
 
 ## Evaluations
@@ -184,10 +194,10 @@ Common environment aliases include:
 
 | Area | Variables |
 |---|---|
-| Gemini | `LLM_MODEL`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `GOOGLE_API_KEY`, `GOOGLE_CLOUD_LOCATION` |
+| Gemini | `LLM_MODEL` defaults to `google-cloud:gemini-3.5-flash`; `GOOGLE_CLOUD_LLM_LOCATION`, `GOOGLE_CLOUD_LLM_FALLBACK_LOCATION`, and `GOOGLE_CLOUD_EMBEDDING_LOCATION` configure its Vertex chat/embedding routes, while `GOOGLE_API_KEY` authenticates optional `google:` chat and embedding models; `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` select embeddings; legacy `GOOGLE_CLOUD_LOCATION` remains a compatibility fallback |
 | BigQuery | `GOOGLE_CLOUD_PROJECT`, `BIGQUERY_LOCATION`, `BQ_MAX_BYTES_BILLED` |
 | Retrieval | `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `GOLDEN_TOP_K` |
-| Agent limits | `MAX_AGENT_REQUESTS`, `MAX_TOOL_CALLS`, `MAX_AGENT_TOKENS`, `MAX_SQL_RETRIES`, `MAX_OUTPUT_RETRIES` |
+| Agent limits | `MAX_AGENT_REQUESTS`, `MAX_TOOL_CALLS`, `MAX_AGENT_TOKENS`, `MAX_SQL_RETRIES`, `MAX_CHART_RETRIES`, `MAX_OUTPUT_RETRIES` |
 | Conversation | `MAX_CHAT_HISTORY_TURNS`, `MAX_CHAT_HISTORY_BYTES` |
 | Charts | `CHART_TIMEOUT_SECONDS` |
 | Telemetry | `AGENT_LOG_PATH`, `LOGFIRE_TOKEN` |
@@ -198,7 +208,10 @@ The prototype executes model-generated chart Python automatically in a
 short-lived subprocess with a minimal environment, fixed input/output names,
 strict source/output/capture limits, and a timeout. It supplies only the current
 verified query rows through `input.json` and accepts validated PNG or passive
-SVG output.
+SVG output. Matplotlib, NumPy, pandas, and seaborn are explicit runtime
+dependencies and are imported during the image build. `chart-smoke` then runs
+known-good PNG, SVG, pandas, seaborn, and 156-cell heatmap programs through the
+same executor used by the agent.
 
 This subprocess is a reliability boundary, not a security sandbox. Production
 must run generated code in an isolated external worker outside the application
@@ -210,6 +223,7 @@ and time limits.
 ```bash
 just check
 just container-check
+just review
 ```
 
 The runtime image intentionally excludes `evals/`, its datasets, and

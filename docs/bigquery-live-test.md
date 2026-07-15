@@ -62,7 +62,8 @@ gcloud services enable aiplatform.googleapis.com --project "$PROJECT_ID"
 Set these values in `.env`:
 
 ```dotenv
-GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_CLOUD_LLM_LOCATION=global
+GOOGLE_CLOUD_EMBEDDING_LOCATION=us-central1
 LLM_MODEL=google-cloud:gemini-2.5-flash
 EMBEDDING_PROVIDER=gemini
 EMBEDDING_MODEL=gemini-embedding-001
@@ -71,9 +72,8 @@ EMBEDDING_MODEL=gemini-embedding-001
 Then run:
 
 ```bash
-docker compose up -d qdrant
-docker compose run --rm app index-golden --recreate
-docker compose run --rm app ask "What are the top 5 product categories by gross sales?" --user manager_a
+just live-setup
+just ask "What are the top 5 product categories by gross sales?" manager_a
 docker compose down
 ```
 
@@ -109,7 +109,8 @@ prototype protects each query with:
 - SQL table allowlist.
 - Table-specific safe-column allowlists, PII column denylist, and whole-row
   projection blocking.
-- Configured maximum result row enforcement.
+- A 500-row client retrieval cap with exact complete/partial metadata; SQL
+  `LIMIT` is not used as a cost control.
 
 For extra safety during demos:
 
