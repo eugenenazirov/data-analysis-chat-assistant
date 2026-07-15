@@ -126,6 +126,7 @@ per-provider-request timeout prevents silent multi-minute hangs.
 - Image chart smoke: PNG, SVG, pandas line, seaborn grouped bar, and 156-cell
   heatmap all pass.
 
-The remaining readiness checks are the final current-image container/reviewer
-gate, clean manual walkthrough, visual artifact inspection, and the independent
-human-review packet for formal release approval.
+The final current-image container/reviewer gate and clean manual walkthrough
+passed. The live heatmap and regional bar chart were visually inspected, and
+the SVG smoke artifact was rendered and inspected successfully. The only
+remaining formal release gate is the independent human-review packet.
