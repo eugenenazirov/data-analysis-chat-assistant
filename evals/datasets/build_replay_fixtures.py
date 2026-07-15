@@ -354,7 +354,9 @@ HOLDOUT_SCENARIOS += [
         _sql("""
             SELECT product_id, ROUND(SUM(sale_price), 2) AS revenue
             FROM `bigquery-public-data.thelook_ecommerce.order_items`
-            WHERE product_id = -1 GROUP BY product_id ORDER BY product_id
+            WHERE status NOT IN ('Cancelled', 'Returned')
+              AND product_id = -1
+            GROUP BY product_id ORDER BY product_id
         """),
         [],
         ["product_id"],

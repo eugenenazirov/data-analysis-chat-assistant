@@ -1258,6 +1258,88 @@ def test_intent_signature_rejects_additional_outer_grouping_for_singleton_projec
     assert not candidate.satisfies(canonical)
 
 
+def test_intent_score_accepts_equivalent_cte_top_n_ranking(test_config):
+    case = next(
+        item
+        for item in load_quality_cases(Path("evals/datasets/release_holdout.jsonl"))
+        if item.id == "top_three_products_per_category"
+    )
+    candidate = """
+        WITH product_revenue AS (
+          SELECT p.category, p.name AS product_name,
+                 SUM(oi.sale_price) AS realized_revenue
+          FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+          JOIN `bigquery-public-data.thelook_ecommerce.products` AS p
+            ON oi.product_id = p.id
+          WHERE oi.status NOT IN ('Cancelled', 'Returned')
+          GROUP BY p.category, p.name
+        ), ranked AS (
+          SELECT category, product_name, realized_revenue, ROW_NUMBER() OVER (
+            PARTITION BY category ORDER BY realized_revenue DESC, product_name
+          ) AS rank_num
+          FROM product_revenue
+        )
+        SELECT category, product_name, realized_revenue, rank_num
+        FROM ranked WHERE rank_num <= 3 ORDER BY category, rank_num
+    """
+
+    assert _intent_score(
+        test_config,
+        candidate,
+        case.canonical_sql,
+        case.expectations,
+    ) == 1
+    assert _intent_score(
+        test_config,
+        candidate.replace("rank_num <= 3", "rank_num <= 4"),
+        case.canonical_sql,
+        case.expectations,
+    ) == 0
+
+
+def test_intent_score_accepts_filtered_form_of_conditional_aggregate(test_config):
+    canonical = """
+        SELECT product_id,
+               SUM(IF(status = 'Returned', sale_price, 0)) AS returned_revenue
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        GROUP BY product_id
+    """
+    candidate = """
+        SELECT product_id, SUM(sale_price) AS returned_revenue
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        WHERE status = 'Returned'
+        GROUP BY product_id
+    """
+
+    assert _intent_score(test_config, candidate, canonical, QualityExpectations()) == 1
+    assert _intent_score(
+        test_config,
+        candidate.replace("'Returned'", "'Complete'"),
+        canonical,
+        QualityExpectations(),
+    ) == 0
+
+
+def test_intent_score_accepts_aggregate_alias_having_but_preserves_threshold(test_config):
+    canonical = """
+        SELECT product_id, COUNT(*) AS items_sold
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        GROUP BY product_id HAVING COUNT(*) >= 100
+    """
+    candidate = canonical.replace("COUNT(*)", "COUNT(id)").replace(
+        "HAVING COUNT(id) >= 100",
+        "HAVING items_sold >= 100",
+    )
+
+    assert _intent_score(test_config, candidate, canonical, QualityExpectations()) == 1
+    assert _intent_score(
+        test_config,
+        candidate.replace(">= 100", ">= 50"),
+        canonical,
+        QualityExpectations(),
+    ) == 0
+
+
 def test_intent_signature_accepts_distinct_order_aov_rewritten_at_order_grain():
     canonical = _intent_signature(
         "SELECT SAFE_DIVIDE(SUM(sale_price), COUNT(DISTINCT order_id)) "
@@ -1442,6 +1524,77 @@ def test_row_score_accepts_matching_month_number_and_name_for_fixed_single_year(
         candidate_sql=candidate_sql,
         canonical_sql=canonical_sql,
     ) == 1
+
+
+def test_row_score_accepts_sql_proven_month_label_without_projected_month_number():
+    contract = ResultContract(
+        key_columns=["month"],
+        measure_columns=["revenue"],
+        column_mapping={"month": "month", "revenue": "revenue"},
+        units={"month": "date", "revenue": "currency"},
+    )
+    candidate_sql = """
+        SELECT FORMAT_TIMESTAMP('%B', created_at) AS month_name,
+               SUM(sale_price) AS realized_sales
+        FROM order_items
+        WHERE created_at >= TIMESTAMP('2026-05-01')
+          AND created_at < TIMESTAMP('2026-07-01')
+        GROUP BY EXTRACT(MONTH FROM created_at), month_name
+    """
+    canonical_sql = """
+        SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month,
+               SUM(sale_price) AS revenue
+        FROM order_items GROUP BY month
+    """
+
+    assessment = _row_assessment(
+        [
+            {"month_name": "May", "realized_sales": 10.0},
+            {"month_name": "June", "realized_sales": 20.0},
+        ],
+        [
+            {"month": date(2026, 5, 1), "revenue": 10.0},
+            {"month": date(2026, 6, 1), "revenue": 20.0},
+        ],
+        contract,
+        candidate_sql=candidate_sql,
+        canonical_sql=canonical_sql,
+    )
+
+    assert assessment.score == 1
+    assert assessment.decision == "pass"
+
+
+def test_row_score_uses_formula_evidence_to_select_ratio_from_helper_measures():
+    contract = ResultContract(
+        key_columns=["category"],
+        measure_columns=["return_rate"],
+        column_mapping={"category": "category", "return_rate": "return_rate"},
+        units={"category": "text", "return_rate": "percentage"},
+    )
+    candidate_sql = """
+        SELECT category,
+               COUNT(*) AS units_sold,
+               COUNTIF(status = 'Returned') AS units_returned,
+               SAFE_DIVIDE(COUNTIF(status = 'Returned'), COUNT(*)) AS return_share
+        FROM order_items GROUP BY category
+    """
+    canonical_sql = """
+        SELECT category,
+               SAFE_DIVIDE(COUNTIF(status = 'Returned'), COUNT(*)) AS return_rate
+        FROM order_items GROUP BY category
+    """
+
+    assessment = _row_assessment(
+        [{"category": "A", "units_sold": 100, "units_returned": 5, "return_share": 0.05}],
+        [{"category": "A", "return_rate": 0.05}],
+        contract,
+        candidate_sql=candidate_sql,
+        canonical_sql=canonical_sql,
+    )
+
+    assert assessment.score == 1
+    assert assessment.decision == "pass"
 
 
 @pytest.mark.parametrize(

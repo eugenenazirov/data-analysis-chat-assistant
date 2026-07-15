@@ -99,6 +99,13 @@ def quality(
     cases_path: Annotated[
         Path, typer.Option("--cases", help="Quality evaluation JSONL dataset.")
     ] = DEFAULT_CASES_PATH,
+    case_ids: Annotated[
+        list[str],
+        typer.Option(
+            "--case-id",
+            help="Run only this case ID; repeat the option to select multiple cases.",
+        ),
+    ] = [],
     output: Annotated[
         Path | None, typer.Option(help="Optional machine-readable quality report.")
     ] = None,
@@ -134,7 +141,11 @@ def quality(
     if mode is QualityEvalMode.replay:
         if repetitions != 1:
             raise typer.BadParameter("--repetitions applies only to --mode live")
-        result = run_quality_replay_evals(config, cases_path)
+        result = run_quality_replay_evals(
+            config,
+            cases_path,
+            case_ids=set(case_ids) or None,
+        )
     else:
         runtime = Runtime(config)
         result = asyncio.run(
@@ -150,6 +161,7 @@ def quality(
                 human_scores=load_human_scores(human_scores),
                 repetitions=repetitions,
                 inter_attempt_delay_seconds=inter_attempt_delay,
+                case_ids=set(case_ids) or None,
             )
         )
         output = output or Path("artifacts/quality-eval-live.json")

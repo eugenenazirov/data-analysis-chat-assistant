@@ -76,7 +76,7 @@ type ScoreName = Literal[
     "operational",
 ]
 
-EVALUATOR_VERSION = "quality-v7"
+EVALUATOR_VERSION = "quality-v8"
 _AUTOMATED_EVALUATORS: tuple[EvaluatorName, ...] = (
     "intent",
     "calculation",
@@ -547,11 +547,17 @@ def load_quality_cases(path: Path) -> list[QualityEvalCase]:
     return cases
 
 
-def run_quality_replay_evals(config: AgentConfig, path: Path) -> QualitySuiteResult:
+def run_quality_replay_evals(
+    config: AgentConfig,
+    path: Path,
+    *,
+    case_ids: set[str] | None = None,
+) -> QualitySuiteResult:
     from evals.dataset import inspect_dataset_governance, validate_partition_path
 
     cases = load_quality_cases(path)
     validate_partition_path(path, cases)
+    cases = _select_quality_cases(cases, case_ids)
     governance = inspect_dataset_governance(cases, config.golden_trios_path)
     results = [evaluate_quality_case(config, case, case.replay) for case in cases]
     return summarize_quality_results(
@@ -577,12 +583,14 @@ async def run_quality_live_evals(
     retry_delay_seconds: float = 5.0,
     inter_attempt_delay_seconds: float = 5.0,
     repetitions: int = 1,
+    case_ids: set[str] | None = None,
 ) -> QualitySuiteResult:
     from evals.dataset import inspect_dataset_governance, validate_partition_path
 
     results: list[QualityEvalResult] = []
     cases = load_quality_cases(path)
     validate_partition_path(path, cases)
+    cases = _select_quality_cases(cases, case_ids)
     governance = inspect_dataset_governance(cases, config.golden_trios_path)
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
@@ -659,6 +667,19 @@ async def run_quality_live_evals(
         governance=governance,
         reference_queries=reference_queries,
     )
+
+
+def _select_quality_cases(
+    cases: list[QualityEvalCase],
+    case_ids: set[str] | None,
+) -> list[QualityEvalCase]:
+    if not case_ids:
+        return cases
+    available = {case.id for case in cases}
+    unknown = sorted(case_ids - available)
+    if unknown:
+        raise ValueError(f"Unknown evaluation case IDs: {', '.join(unknown)}")
+    return [case for case in cases if case.id in case_ids]
 
 
 async def _evaluate_live_case(
@@ -1538,6 +1559,7 @@ def _row_assessment(
         )
     context = _result_comparison_context(
         candidate_rows,
+        canonical_rows,
         contract,
         candidate_sql=candidate_sql,
         canonical_sql=canonical_sql,
@@ -1614,7 +1636,8 @@ def _row_assessment(
 @dataclass(frozen=True)
 class _ProjectionEvidence:
     lineage: frozenset[str]
-    aggregates: frozenset[str]
+    aggregates: tuple[tuple[str, int], ...]
+    operators: tuple[tuple[str, int], ...]
     aggregated: bool
 
 
@@ -1629,6 +1652,7 @@ class _ResultComparisonContext:
 
 def _result_comparison_context(
     candidate_rows: list[dict[str, Any]],
+    canonical_rows: list[dict[str, Any]],
     contract: ResultContract,
     *,
     candidate_sql: str | None,
@@ -1706,14 +1730,71 @@ def _result_comparison_context(
                 violations.append(f"unproven_temporal_key:{canonical_column}")
                 continue
             candidates = proven
+        candidates = [
+            column
+            for column in candidates
+            if _candidate_column_matches_canonical_values(
+                column,
+                canonical_column,
+                candidate_rows,
+                canonical_rows,
+                contract,
+                fixed_year=fixed_year,
+                month_label_columns=frozenset(
+                    {
+                        *month_labels,
+                        *(
+                            {column}
+                            if _uses_month_labels(column, candidate_rows)
+                            else set()
+                        ),
+                    }
+                ),
+            )
+        ]
         if not candidates:
             compatible = sorted(
                 column
                 for column in row_columns
                 if _column_names_compatible(column, canonical_column)
                 and _candidate_column_supports_unit(column, candidate_rows, unit)
+                and (
+                    unit != "date"
+                    or _date_projection_is_proven(
+                        column,
+                        candidate_rows,
+                        candidate_evidence,
+                        fixed_year,
+                    )
+                )
             )
-            if len(compatible) == 1:
+            value_proven = [
+                column
+                for column in compatible
+                if _candidate_column_matches_canonical_values(
+                    column,
+                    canonical_column,
+                    candidate_rows,
+                    canonical_rows,
+                    contract,
+                    fixed_year=fixed_year,
+                    month_label_columns=frozenset(
+                        {
+                            *month_labels,
+                            *(
+                                {column}
+                                if _uses_month_labels(column, candidate_rows)
+                                else set()
+                            ),
+                        }
+                    ),
+                )
+            ]
+            if len(value_proven) == 1:
+                mapping[canonical_column] = value_proven[0]
+                if _uses_month_labels(value_proven[0], candidate_rows):
+                    month_labels.add(value_proven[0])
+            elif len(compatible) == 1:
                 mapping[canonical_column] = compatible[0]
                 reviews.append(f"projection_lineage_unproven:{canonical_column}")
             continue
@@ -1743,23 +1824,111 @@ def _projection_evidence(
     }
     aliases = _resolved_intent_aliases(expression)
     nodes = lineage(None, expression, dialect="bigquery")
-    return {
-        name.lower(): _ProjectionEvidence(
+    evidence: dict[str, _ProjectionEvidence] = {}
+    ranking_functions = (exp.DenseRank, exp.Rank, exp.RowNumber)
+    for name, output in nodes.items():
+        normalized_name = name.lower()
+        if normalized_name not in projections:
+            continue
+        lineage_nodes = list(output.walk())
+        expressions = [
+            node.expression
+            for node in lineage_nodes
+            if not isinstance(node.expression, exp.Table)
+        ]
+        aggregates = Counter(
+            _aggregate_signature(aggregate, aliases)
+            for expression in expressions
+            for aggregate in expression.find_all(exp.AggFunc)
+            if not isinstance(aggregate, ranking_functions)
+        )
+        operators = Counter(
+            signature
+            for expression in expressions
+            for function in expression.find_all(exp.Func)
+            if (signature := _projection_operator_signature(function)) is not None
+        )
+        evidence[normalized_name] = _ProjectionEvidence(
             lineage=frozenset(
                 f"{node.expression.name.lower()}.{node.name.rsplit('.', 1)[-1].lower()}"
-                for node in output.walk()
+                for node in lineage_nodes
                 if isinstance(node.expression, exp.Table)
             ),
-            aggregates=frozenset(
-                _aggregate_signature(aggregate, aliases)
-                for aggregate in projections[name.lower()].find_all(exp.AggFunc)
-                if not isinstance(aggregate, (exp.DenseRank, exp.Rank, exp.RowNumber))
-            ),
-            aggregated=projections[name.lower()].find(exp.AggFunc) is not None,
+            aggregates=tuple(sorted(aggregates.items())),
+            operators=tuple(sorted(operators.items())),
+            aggregated=any(expression.find(exp.AggFunc) is not None for expression in expressions),
         )
-        for name, output in nodes.items()
-        if name.lower() in projections
-    }
+    return evidence
+
+
+def _projection_operator_signature(function: exp.Func) -> str | None:
+    if isinstance(function, exp.TimeToStr):
+        format_expression = function.args.get("format")
+        if (
+            isinstance(format_expression, exp.Literal)
+            and format_expression.is_string
+            and format_expression.this in {"%B", "%b"}
+        ):
+            return "month_label"
+    if isinstance(function, (exp.DenseRank, exp.Rank, exp.RowNumber, exp.SafeDivide)):
+        return _function_signature(function)
+    return None
+
+
+def _candidate_column_matches_canonical_values(
+    candidate_column: str,
+    canonical_column: str,
+    candidate_rows: list[dict[str, Any]],
+    canonical_rows: list[dict[str, Any]],
+    contract: ResultContract,
+    *,
+    fixed_year: int | None,
+    month_label_columns: frozenset[str],
+) -> bool:
+    if not canonical_rows or len(candidate_rows) != len(canonical_rows):
+        return False
+    context = _ResultComparisonContext(
+        column_mapping={},
+        fixed_year=fixed_year,
+        month_label_columns=month_label_columns,
+    )
+
+    def equal(candidate_value: Any, expected_value: Any) -> bool:
+        return _row_values_equal(
+            candidate_value,
+            expected_value,
+            contract.numeric_tolerance,
+            candidate_key=candidate_column,
+            expected_key=canonical_column,
+            contract=contract,
+            context=context,
+        )
+
+    if contract.ordered:
+        return all(
+            candidate_column in candidate
+            and canonical_column in expected
+            and equal(candidate[candidate_column], expected[canonical_column])
+            for candidate, expected in zip(candidate_rows, canonical_rows, strict=True)
+        )
+    unused = [row.get(canonical_column) for row in canonical_rows if canonical_column in row]
+    if len(unused) != len(canonical_rows):
+        return False
+    for row in candidate_rows:
+        if candidate_column not in row:
+            return False
+        match = next(
+            (
+                index
+                for index, expected in enumerate(unused)
+                if equal(row[candidate_column], expected)
+            ),
+            None,
+        )
+        if match is None:
+            return False
+        unused.pop(match)
+    return not unused
 
 
 def _candidate_column_supports_unit(
@@ -1798,7 +1967,9 @@ def _date_projection_is_proven(
         candidate
         for candidate, candidate_evidence in evidence.items()
         if candidate != column
-        and candidate_evidence == projection
+        and candidate_evidence.lineage == projection.lineage
+        and candidate_evidence.aggregates == projection.aggregates
+        and candidate_evidence.aggregated == projection.aggregated
         and all(
             isinstance(row.get(candidate), int)
             and not isinstance(row.get(candidate), bool)
@@ -1806,9 +1977,23 @@ def _date_projection_is_proven(
             for row in rows
         )
     ]
-    return len(companions) == 1 and all(
-        _month_number(str(row[column])) == row[companions[0]] for row in rows
-    )
+    if companions:
+        return len(companions) == 1 and all(
+            _month_number(str(row[column])) == row[companions[0]] for row in rows
+        )
+    return _projection_formats_month_label(column, expression=projection)
+
+
+def _projection_formats_month_label(
+    column: str,
+    *,
+    expression: _ProjectionEvidence,
+) -> bool:
+    # FORMAT_* month labels are deterministic when the SQL bounds prove one
+    # calendar year. The lineage requirement prevents an unrelated text alias
+    # from being accepted merely because its current values resemble months.
+    del column
+    return any(operator == "month_label" for operator, _ in expression.operators)
 
 
 def _uses_month_labels(column: str, rows: list[dict[str, Any]]) -> bool:
@@ -2032,11 +2217,12 @@ def _unit_value_valid(value: Any, unit: ResultUnit) -> bool:
 
 def _values_equal(candidate: Any, expected: Any, tolerance: float) -> bool:
     if isinstance(candidate, (int, float)) and isinstance(expected, (int, float)):
+        effective_tolerance = tolerance + 1e-12
         return math.isclose(
             float(candidate),
             float(expected),
-            rel_tol=tolerance,
-            abs_tol=tolerance,
+            rel_tol=effective_tolerance,
+            abs_tol=effective_tolerance,
         )
     if isinstance(candidate, str) and isinstance(expected, str):
         candidate_month = re.fullmatch(r"(\d{4}-\d{2})(?:-01)?", candidate)
@@ -2614,10 +2800,15 @@ def _resolved_intent_aliases(
         if name in seen:
             return frozenset({name})
         targets = raw_aliases.get(name)
-        if not targets or targets == {name}:
+        if targets is None:
+            return frozenset({name})
+        if not targets:
+            return frozenset()
+        forwarded_targets = targets - {name}
+        if not forwarded_targets:
             return frozenset({name})
         resolved: set[str] = set()
-        for target in targets:
+        for target in forwarded_targets:
             resolved.update(resolve_name(target, seen | {name}))
         return frozenset(resolved)
 
@@ -2628,6 +2819,19 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
     expression = sqlglot.parse_one(sql, read="bigquery") if isinstance(sql, str) else sql
     select = expression if isinstance(expression, exp.Select) else expression.find(exp.Select)
     aliases = _resolved_intent_aliases(expression)
+    aggregate_aliases = {
+        projection.alias.lower()
+        for nested_select in expression.find_all(exp.Select)
+        for projection in nested_select.expressions
+        if projection.alias
+        and (
+            projection.find(exp.AggFunc) is not None
+            or any(
+                projection.find(ranking) is not None
+                for ranking in (exp.DenseRank, exp.Rank, exp.RowNumber)
+            )
+        )
+    }
 
     def resolved_column_names(columns: list[exp.Column]) -> set[str]:
         return {
@@ -2637,27 +2841,13 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
             for resolved in aliases.get(column.name.lower(), {column.name.lower()})
         }
 
-    dimensions: set[str] = set()
-    if select is not None:
-        for projection in select.expressions:
-            column_names = resolved_column_names(
-                list(projection.find_all(exp.Column))
-            )
-            if projection.find(exp.AggFunc) is None:
-                dimensions.update(column_names)
-
-    group = select.args.get("group") if select is not None else None
     limit_expression = select.args.get("limit") if select is not None else None
     limit_value = None
     if limit_expression is not None:
         raw_limit = limit_expression.args.get("expression")
         if isinstance(raw_limit, exp.Literal) and raw_limit.is_int:
             limit_value = int(raw_limit.this)
-    if group is not None:
-        for group_expression in group.expressions:
-            for column in group_expression.find_all(exp.Column):
-                name = column.name.lower()
-                dimensions.update(aliases.get(name, {name}))
+    dimensions = _effective_output_dimensions(expression, select, aliases)
 
     predicates = [
         *expression.find_all(exp.Where),
@@ -2675,10 +2865,20 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
         for aggregate in aggregate_nodes
         if isinstance(aggregate, exp.CountIf)
         or isinstance(aggregate, (exp.Count, exp.Sum))
-        and aggregate.find(exp.Case) is not None
+        and (
+            aggregate.find(exp.Case) is not None
+            or aggregate.find(exp.If) is not None
+        )
     ]
     filter_columns = resolved_column_names(
-        [column for predicate in predicates for column in predicate.find_all(exp.Column)]
+        [
+            column
+            for predicate in predicates
+            for column in predicate.find_all(exp.Column)
+            if column.name.lower() not in aggregate_aliases
+            and column.find_ancestor(exp.AggFunc) is None
+            and not _inside_ranking_window(column)
+        ]
     )
     filter_columns.update(
         resolved_column_names(
@@ -2725,10 +2925,70 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
         functions=functions,
         time_offsets=_normalized_time_offsets(expression),
         date_parts=frozenset(),
-        has_group=group is not None,
-        has_having=select is not None and select.args.get("having") is not None,
+        has_group=bool(dimensions) and bool(aggregate_nodes),
+        has_having=any(
+            nested.args.get("having") is not None for nested in expression.find_all(exp.Select)
+        ),
         limit=limit_value,
     )
+
+
+def _inside_ranking_window(column: exp.Column) -> bool:
+    window = column.find_ancestor(exp.Window)
+    return window is not None and any(
+        window.find(ranking) is not None
+        for ranking in (exp.DenseRank, exp.Rank, exp.RowNumber)
+    )
+
+
+def _effective_output_dimensions(
+    expression: exp.Expression,
+    select: exp.Select | None,
+    aliases: dict[str, frozenset[str]],
+) -> frozenset[str]:
+    if select is None:
+        return frozenset()
+    try:
+        evidence = _projection_evidence(expression)
+    except (SqlglotError, ValueError):
+        evidence = {}
+    grouped_outputs: set[str] = set()
+    group = select.args.get("group")
+    if group is not None:
+        for group_expression in group.expressions:
+            if isinstance(group_expression, exp.Literal) and group_expression.is_int:
+                index = int(group_expression.this) - 1
+                if 0 <= index < len(select.expressions):
+                    grouped_outputs.add(select.expressions[index].alias_or_name.lower())
+                continue
+            grouped_outputs.update(
+                column.name.lower()
+                for column in group_expression.find_all(exp.Column)
+                if column.name
+            )
+    dimensions: set[str] = set()
+    for projection in select.expressions:
+        name = projection.alias_or_name.lower()
+        projection_evidence = evidence.get(name)
+        is_dimension = (
+            name in grouped_outputs
+            or projection_evidence is not None
+            and not projection_evidence.aggregated
+        )
+        if not is_dimension:
+            continue
+        if projection_evidence is not None and projection_evidence.lineage:
+            dimensions.update(
+                item.rsplit(".", 1)[-1] for item in projection_evidence.lineage
+            )
+            continue
+        dimensions.update(
+            resolved
+            for column in projection.find_all(exp.Column)
+            if column.name
+            for resolved in aliases.get(column.name.lower(), {column.name.lower()})
+        )
+    return frozenset(dimensions)
 
 
 def _aggregate_signature(
@@ -2884,7 +3144,7 @@ def _has_product_name_ranking_tiebreak(function: exp.Func) -> bool:
 
 
 def _is_cosmetic_round(function: exp.Func) -> bool:
-    if not isinstance(function, exp.Round) or function.find(exp.AggFunc) is None:
+    if not isinstance(function, exp.Round):
         return False
     parent = function.parent
     if isinstance(parent, exp.Alias):
@@ -2903,7 +3163,7 @@ def _is_cosmetic_round(function: exp.Func) -> bool:
                 for clause in clauses
             ):
                 return False
-    return isinstance(parent, exp.Select)
+    return isinstance(parent, exp.Select) or isinstance(function.parent, exp.Alias)
 
 
 def _is_business_condition_literal(literal: exp.Literal) -> bool:

@@ -48,7 +48,11 @@ def test_quality_automated_only_accepts_pending_human_review(test_config, monkey
         "replay", [evaluate_quality_case(test_config, case, replay)]
     )
     monkeypatch.setattr(cli, "load_settings", lambda path: test_config)
-    monkeypatch.setattr(cli, "run_quality_replay_evals", lambda config, path: pending)
+    monkeypatch.setattr(
+        cli,
+        "run_quality_replay_evals",
+        lambda config, path, **kwargs: pending,
+    )
 
     automated = CliRunner().invoke(
         cli.app,
@@ -66,6 +70,24 @@ def test_quality_automated_only_accepts_pending_human_review(test_config, monkey
 
 def test_default_quality_dataset_is_evaluation_only():
     assert cli.DEFAULT_CASES_PATH == Path("evals/datasets/smoke.jsonl")
+
+
+def test_quality_cli_can_select_repeatable_case_ids():
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "quality",
+            "--mode",
+            "replay",
+            "--automated-only",
+            "--case-id",
+            "monthly_revenue_category_critical",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "monthly_revenue_category" in result.output
+    assert "customer_spend_pii_safe" not in result.output
 
 
 def test_repetitions_are_live_only_and_bounded():
