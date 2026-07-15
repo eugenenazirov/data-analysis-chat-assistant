@@ -63,7 +63,8 @@ Expected tool sequences:
 | Simple analytical question | `run_sql_query` |
 | Ranking/time-window/comparison | application-prefetched `retrieve_golden_examples`, then `run_sql_query` |
 | Chart request | required retrieval when applicable, `run_sql_query`, then `generate_chart` |
-| PII or unsupported request | none; deterministic refusal or clarification |
+| PII-only or unsupported request | none; deterministic refusal or clarification |
+| PII request with a clear safe analytical intent | refuse direct identifiers; `run_sql_query` may return an aggregate keyed only by approved customer ID |
 | Retrieval outage | retrieval returns degraded, SQL continues, report has `degraded=true` and a caveat |
 
 For a chart request, the final report must name a real file and the command must
