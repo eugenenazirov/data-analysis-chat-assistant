@@ -913,9 +913,7 @@ def evaluate_quality_case(
         assessment is not None and assessment.decision == "review"
         for assessment in (intent_assessment, result_assessment)
     )
-    needs_human_review = (
-        "usefulness" in case.evaluators and usefulness is None
-    ) or semantic_review_required
+    needs_human_review = "usefulness" in case.evaluators and usefulness is None
     executed_sql_attached = report_uses_verified_sql(
         replay.report,
         replay.candidate_sql,
@@ -951,6 +949,7 @@ def evaluate_quality_case(
         automated_passed
         and _applicable_score_passes("usefulness", usefulness)
         and not needs_human_review
+        and not semantic_review_required
     )
     scores = QualityScores(
         intent=intent,
@@ -1585,13 +1584,7 @@ def _row_assessment(
         resolved_score = score if not violations else 0.0
         return ResultAssessment(
             score=resolved_score,
-            decision=(
-                "review"
-                if resolved_score == 1.0 and context.review_reasons
-                else "pass"
-                if resolved_score == 1.0
-                else "fail"
-            ),
+            decision=_result_assessment_decision(resolved_score, context.review_reasons),
             violations=violations,
         )
     matched = 0
@@ -1622,15 +1615,18 @@ def _row_assessment(
     resolved_score = score if not _has_contract_type_violation(violations) else 0.0
     return ResultAssessment(
         score=resolved_score,
-        decision=(
-            "review"
-            if resolved_score == 1.0 and context.review_reasons
-            else "pass"
-            if resolved_score == 1.0
-            else "fail"
-        ),
+        decision=_result_assessment_decision(resolved_score, context.review_reasons),
         violations=violations,
     )
+
+
+def _result_assessment_decision(
+    score: float,
+    review_reasons: tuple[str, ...],
+) -> AssessmentDecision:
+    if score != 1.0:
+        return "fail"
+    return "review" if review_reasons else "pass"
 
 
 @dataclass(frozen=True)
@@ -1685,6 +1681,35 @@ def _result_comparison_context(
     month_labels: set[str] = set()
     reviews: list[str] = []
     violations: list[str] = []
+
+    def record_mapping(canonical_column: str, candidate_column: str) -> None:
+        mapping[canonical_column] = candidate_column
+        if _uses_month_labels(candidate_column, candidate_rows):
+            month_labels.add(candidate_column)
+
+    def value_proven_columns(
+        columns: list[str],
+        canonical_column: str,
+    ) -> list[str]:
+        return [
+            column
+            for column in columns
+            if _candidate_column_matches_canonical_values(
+                column,
+                canonical_column,
+                candidate_rows,
+                canonical_rows,
+                contract,
+                fixed_year=fixed_year,
+                month_label_columns=frozenset(
+                    {
+                        *month_labels,
+                        *({column} if _uses_month_labels(column, candidate_rows) else set()),
+                    }
+                ),
+            )
+        ]
+
     for canonical_column, preferred in contract.column_mapping.items():
         unit = contract.units.get(canonical_column)
         exact = preferred if preferred in row_columns else None
@@ -1697,9 +1722,7 @@ def _result_comparison_context(
                 candidate_evidence,
                 fixed_year,
             ):
-                mapping[canonical_column] = exact
-                if _uses_month_labels(exact, candidate_rows):
-                    month_labels.add(exact)
+                record_mapping(canonical_column, exact)
             else:
                 violations.append(f"unproven_temporal_key:{canonical_column}")
             continue
@@ -1730,28 +1753,7 @@ def _result_comparison_context(
                 violations.append(f"unproven_temporal_key:{canonical_column}")
                 continue
             candidates = proven
-        candidates = [
-            column
-            for column in candidates
-            if _candidate_column_matches_canonical_values(
-                column,
-                canonical_column,
-                candidate_rows,
-                canonical_rows,
-                contract,
-                fixed_year=fixed_year,
-                month_label_columns=frozenset(
-                    {
-                        *month_labels,
-                        *(
-                            {column}
-                            if _uses_month_labels(column, candidate_rows)
-                            else set()
-                        ),
-                    }
-                ),
-            )
-        ]
+        candidates = value_proven_columns(candidates, canonical_column)
         if not candidates:
             compatible = sorted(
                 column
@@ -1768,39 +1770,14 @@ def _result_comparison_context(
                     )
                 )
             )
-            value_proven = [
-                column
-                for column in compatible
-                if _candidate_column_matches_canonical_values(
-                    column,
-                    canonical_column,
-                    candidate_rows,
-                    canonical_rows,
-                    contract,
-                    fixed_year=fixed_year,
-                    month_label_columns=frozenset(
-                        {
-                            *month_labels,
-                            *(
-                                {column}
-                                if _uses_month_labels(column, candidate_rows)
-                                else set()
-                            ),
-                        }
-                    ),
-                )
-            ]
+            value_proven = value_proven_columns(compatible, canonical_column)
             if len(value_proven) == 1:
-                mapping[canonical_column] = value_proven[0]
-                if _uses_month_labels(value_proven[0], candidate_rows):
-                    month_labels.add(value_proven[0])
+                record_mapping(canonical_column, value_proven[0])
             elif len(compatible) == 1:
-                mapping[canonical_column] = compatible[0]
+                record_mapping(canonical_column, compatible[0])
                 reviews.append(f"projection_lineage_unproven:{canonical_column}")
             continue
-        mapping[canonical_column] = candidates[0]
-        if _uses_month_labels(candidates[0], candidate_rows):
-            month_labels.add(candidates[0])
+        record_mapping(canonical_column, candidates[0])
         if len(candidates) > 1:
             reviews.append(f"ambiguous_projection:{canonical_column}")
 
@@ -1981,19 +1958,10 @@ def _date_projection_is_proven(
         return len(companions) == 1 and all(
             _month_number(str(row[column])) == row[companions[0]] for row in rows
         )
-    return _projection_formats_month_label(column, expression=projection)
-
-
-def _projection_formats_month_label(
-    column: str,
-    *,
-    expression: _ProjectionEvidence,
-) -> bool:
     # FORMAT_* month labels are deterministic when the SQL bounds prove one
     # calendar year. The lineage requirement prevents an unrelated text alias
     # from being accepted merely because its current values resemble months.
-    del column
-    return any(operator == "month_label" for operator, _ in expression.operators)
+    return any(operator == "month_label" for operator, _ in projection.operators)
 
 
 def _uses_month_labels(column: str, rows: list[dict[str, Any]]) -> bool:
@@ -3120,26 +3088,74 @@ def _function_signature(function: exp.Func) -> str:
         precision = decimals.sql(dialect="bigquery") if decimals is not None else "0"
         return f"round:{precision.lower()}"
     if isinstance(function, (exp.DenseRank, exp.Rank, exp.RowNumber)):
-        if _has_product_name_ranking_tiebreak(function):
-            # At product-name grain, the secondary name key makes these window
-            # functions equivalent for an exact top-N request. Explicit
-            # tie-preserving requests omit that key and therefore retain their
-            # distinct DENSE_RANK signature.
-            return "deterministic_product_rank"
+        if _has_deterministic_ranking_tiebreak(function):
+            return "deterministic_rank"
     return function.sql_name().lower()
 
 
-def _has_product_name_ranking_tiebreak(function: exp.Func) -> bool:
+def _has_deterministic_ranking_tiebreak(function: exp.Func) -> bool:
     window = function.parent
     if not isinstance(window, exp.Window):
         return False
     order = window.args.get("order")
     if order is None or len(order.expressions) < 2:
         return False
-    return any(
-        column.name.casefold() in {"name", "product_name"}
-        for ordered in order.expressions[1:]
-        for column in ordered.find_all(exp.Column)
+    select = function.find_ancestor(exp.Select)
+    if select is None:
+        return False
+    root = function.root()
+    aliases = _resolved_intent_aliases(root)
+    ranking_grain = _resolved_columns(
+        [*(window.args.get("partition_by") or []), *order.expressions[1:]],
+        aliases,
+    )
+    if not ranking_grain:
+        return False
+
+    source_grains = [_grouping_grain(select, aliases)]
+    ctes = {
+        cte.alias_or_name.casefold(): cte.this
+        for cte in root.find_all(exp.CTE)
+        if isinstance(cte.this, exp.Select)
+    }
+    from_clause = select.args.get("from_")
+    if from_clause is not None:
+        source_grains.extend(
+            _grouping_grain(source, aliases)
+            for table in from_clause.find_all(exp.Table)
+            if isinstance((source := ctes.get(table.name.casefold())), exp.Select)
+        )
+    return any(grain and grain.issubset(ranking_grain) for grain in source_grains)
+
+
+def _grouping_grain(
+    select: exp.Select,
+    aliases: dict[str, frozenset[str]],
+) -> frozenset[str]:
+    group = select.args.get("group")
+    if group is None:
+        return frozenset()
+    expressions: list[exp.Expression] = []
+    for grouped in group.expressions:
+        if isinstance(grouped, exp.Literal) and grouped.is_int:
+            index = int(grouped.this) - 1
+            if 0 <= index < len(select.expressions):
+                expressions.append(select.expressions[index])
+        else:
+            expressions.append(grouped)
+    return _resolved_columns(expressions, aliases)
+
+
+def _resolved_columns(
+    expressions: list[exp.Expression],
+    aliases: dict[str, frozenset[str]],
+) -> frozenset[str]:
+    return frozenset(
+        resolved
+        for expression in expressions
+        for column in expression.find_all(exp.Column)
+        if column.name
+        for resolved in aliases.get(column.name.casefold(), {column.name.casefold()})
     )
 
 

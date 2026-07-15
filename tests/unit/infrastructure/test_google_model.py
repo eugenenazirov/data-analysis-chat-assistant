@@ -3,7 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from pydantic import SecretStr
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 
 from retail_agent.infrastructure.agents import google_model
 
@@ -171,4 +173,39 @@ def test_transport_timeout_is_retryable_and_has_safe_telemetry():
         "provider_retry_count": 2,
         "provider_terminal_category": "provider_unavailable",
         "provider_error_category": "provider_unavailable",
+    }
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+def test_non_retryable_http_failure_does_not_trigger_fallback(status_code):
+    failure = ModelHTTPError(status_code, "gemini-3.5-flash", body={"secret": "hidden"})
+
+    assert google_model._is_retryable_provider_failure(failure) is False
+    assert google_model.is_provider_failure(failure) is True
+    assert google_model.provider_failure_details(
+        failure,
+        configured_attempts=3,
+    ) == {
+        "provider_status": f"http_{status_code}",
+        "provider_status_code": status_code,
+        "provider_retry_count": 0,
+        "provider_terminal_category": "non_retryable_provider_error",
+        "provider_error_category": "non_retryable_provider_error",
+    }
+
+
+def test_generic_provider_failure_is_recognized_but_not_retried():
+    failure = ModelAPIError("gemini-3.5-flash", "provider rejected the request")
+
+    assert google_model._is_retryable_provider_failure(failure) is False
+    assert google_model.is_provider_failure(failure) is True
+    assert google_model.provider_failure_details(
+        failure,
+        configured_attempts=3,
+    ) == {
+        "provider_status": "provider_error",
+        "provider_status_code": None,
+        "provider_retry_count": 0,
+        "provider_terminal_category": "provider_error",
+        "provider_error_category": "provider_error",
     }

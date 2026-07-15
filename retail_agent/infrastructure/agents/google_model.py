@@ -15,12 +15,12 @@ from retail_agent.infrastructure.settings import ApplicationSettings
 
 _RETRYABLE_HTTP_STATUS_CODES = [408, 429, 500, 502, 503, 504]
 _PROVIDER_TRANSPORT_ERRORS = (
-    ModelAPIError,
     ConnectionError,
     TimeoutError,
     httpx.ConnectError,
     httpx.TimeoutException,
 )
+_PROVIDER_FAILURE_ERRORS = (ModelAPIError, *_PROVIDER_TRANSPORT_ERRORS)
 
 
 def analysis_model_settings(config: ApplicationSettings) -> ModelSettings:
@@ -96,9 +96,9 @@ def build_analysis_model(config: ApplicationSettings) -> Any:
 
 
 def _is_retryable_provider_failure(exc: Exception) -> bool:
-    return (
-        isinstance(exc, ModelHTTPError) and exc.status_code in _RETRYABLE_HTTP_STATUS_CODES
-    ) or isinstance(exc, _PROVIDER_TRANSPORT_ERRORS)
+    if isinstance(exc, ModelHTTPError):
+        return exc.status_code in _RETRYABLE_HTTP_STATUS_CODES
+    return isinstance(exc, _PROVIDER_TRANSPORT_ERRORS)
 
 
 def provider_failure_details(
@@ -112,8 +112,12 @@ def provider_failure_details(
         category = "rate_limited"
     elif status_code in _RETRYABLE_HTTP_STATUS_CODES:
         category = "transient_provider_error"
+    elif status_code is not None:
+        category = "non_retryable_provider_error"
     elif isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS):
         category = "provider_unavailable"
+    elif isinstance(provider_exc, ModelAPIError):
+        category = "provider_error"
     else:
         category = "non_provider_error"
     retry_count = (
@@ -122,16 +126,16 @@ def provider_failure_details(
         or isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS)
         else 0
     )
+    if status_code is not None:
+        provider_status = f"http_{status_code}"
+    elif isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS):
+        provider_status = "transport_error"
+    elif isinstance(provider_exc, ModelAPIError):
+        provider_status = "provider_error"
+    else:
+        provider_status = "not_applicable"
     return {
-        "provider_status": (
-            f"http_{status_code}"
-            if status_code is not None
-            else (
-                "transport_error"
-                if isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS)
-                else "not_applicable"
-            )
-        ),
+        "provider_status": provider_status,
         "provider_status_code": status_code,
         "provider_retry_count": retry_count,
         "provider_terminal_category": category,
@@ -142,12 +146,12 @@ def provider_failure_details(
 def is_provider_failure(exc: Exception) -> bool:
     return isinstance(
         _nested_provider_exception(exc),
-        _PROVIDER_TRANSPORT_ERRORS,
+        _PROVIDER_FAILURE_ERRORS,
     )
 
 
 def _nested_provider_exception(exc: Exception) -> Exception:
-    if isinstance(exc, _PROVIDER_TRANSPORT_ERRORS):
+    if isinstance(exc, _PROVIDER_FAILURE_ERRORS):
         return exc
     if isinstance(exc, BaseExceptionGroup):
         for nested in reversed(exc.exceptions):
@@ -155,7 +159,7 @@ def _nested_provider_exception(exc: Exception) -> Exception:
                 provider_exc = _nested_provider_exception(nested)
                 if isinstance(
                     provider_exc,
-                    _PROVIDER_TRANSPORT_ERRORS,
+                    _PROVIDER_FAILURE_ERRORS,
                 ):
                     return provider_exc
     return exc

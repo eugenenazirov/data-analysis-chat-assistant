@@ -1297,6 +1297,48 @@ def test_intent_score_accepts_equivalent_cte_top_n_ranking(test_config):
     ) == 0
 
 
+def test_intent_signature_accepts_deterministic_ranking_at_non_product_grain():
+    canonical_sql = """
+        WITH grouped AS (
+          SELECT state, user_id, SUM(revenue) AS revenue
+          FROM sales GROUP BY state, user_id
+        )
+        SELECT state, user_id, revenue,
+               DENSE_RANK() OVER (
+                 PARTITION BY state ORDER BY revenue DESC, user_id
+               ) AS rank_num
+        FROM grouped
+    """
+    candidate_sql = canonical_sql.replace("DENSE_RANK()", "ROW_NUMBER()")
+
+    assert _intent_signature(candidate_sql).satisfies(
+        _intent_signature(canonical_sql)
+    )
+
+
+def test_intent_signature_preserves_explicit_ranking_ties():
+    tie_preserving_sql = """
+        WITH grouped AS (
+          SELECT state, user_id, SUM(revenue) AS revenue
+          FROM sales GROUP BY state, user_id
+        )
+        SELECT state, user_id, revenue,
+               DENSE_RANK() OVER (
+                 PARTITION BY state ORDER BY revenue DESC
+               ) AS rank_num
+        FROM grouped
+    """
+    deterministic_sql = tie_preserving_sql.replace(
+        "DENSE_RANK() OVER (\n                 PARTITION BY state ORDER BY revenue DESC",
+        "ROW_NUMBER() OVER (\n                 PARTITION BY state "
+        "ORDER BY revenue DESC, user_id",
+    )
+
+    assert not _intent_signature(deterministic_sql).satisfies(
+        _intent_signature(tie_preserving_sql)
+    )
+
+
 def test_intent_score_accepts_filtered_form_of_conditional_aggregate(test_config):
     canonical = """
         SELECT product_id,
@@ -1678,6 +1720,7 @@ def test_semantic_review_blocks_suite_gate_without_counting_as_model_failure(tes
             "candidate_sql": candidate_sql,
             "candidate_rows": [{"sales_a": value, "sales_b": value}],
             "report": case.replay.report.model_copy(update={"sql": candidate_sql}),
+            "usefulness_score": 5,
         }
     )
 
@@ -1686,10 +1729,11 @@ def test_semantic_review_blocks_suite_gate_without_counting_as_model_failure(tes
 
     assert result.automated_passed is True
     assert result.semantic_review_required is True
-    assert result.needs_human_review is True
+    assert result.needs_human_review is False
     assert result.passed is False
     assert suite.automated_passed is False
     assert suite.semantic_review_required is True
+    assert suite.needs_human_review is False
     assert suite.critical_failures == []
 
 

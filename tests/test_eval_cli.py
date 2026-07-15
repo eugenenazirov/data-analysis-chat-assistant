@@ -68,6 +68,42 @@ def test_quality_automated_only_accepts_pending_human_review(test_config, monkey
     assert release.exit_code == 1
 
 
+def test_semantic_review_has_distinct_cli_message(test_config, monkeypatch):
+    case = load_quality_cases(Path("evals/datasets/release_holdout.jsonl"))[0]
+    value = case.replay.canonical_rows[0]["net_sales"]
+    candidate_sql = case.canonical_sql.replace(
+        "AS net_sales",
+        "AS sales_a, ROUND(SUM(sale_price), 2) AS sales_b",
+    )
+    replay = case.replay.model_copy(
+        update={
+            "candidate_sql": candidate_sql,
+            "candidate_rows": [{"sales_a": value, "sales_b": value}],
+            "report": case.replay.report.model_copy(update={"sql": candidate_sql}),
+            "usefulness_score": 5,
+        }
+    )
+    review = summarize_quality_results(
+        "replay", [evaluate_quality_case(test_config, case, replay)]
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda path: test_config)
+    monkeypatch.setattr(
+        cli,
+        "run_quality_replay_evals",
+        lambda config, path, **kwargs: review,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["quality", "--mode", "replay", "--automated-only"],
+    )
+
+    assert result.exit_code == 1
+    assert "REVIEW" in result.output
+    assert "Semantic equivalence is indeterminate" in result.output
+    assert "Human usefulness scores are required" not in result.output
+
+
 def test_default_quality_dataset_is_evaluation_only():
     assert cli.DEFAULT_CASES_PATH == Path("evals/datasets/smoke.jsonl")
 

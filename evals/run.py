@@ -171,21 +171,21 @@ def quality(
     table.add_column("Status")
     table.add_column("Scores")
     for case_result in result.results:
+        if case_result.passed:
+            status = "PASS"
+        elif case_result.semantic_review_required:
+            status = "REVIEW"
+        elif case_result.automated_passed:
+            status = "AUTO PASS"
+        else:
+            status = "FAIL"
         table.add_row(
             (
                 f"{case_result.name}#{case_result.attempt}"
                 if result.repetitions > 1
                 else case_result.name
             ),
-            (
-                "PASS"
-                if case_result.passed
-                else "REVIEW"
-                if case_result.semantic_review_required
-                else "AUTO PASS"
-                if case_result.automated_passed
-                else "FAIL"
-            ),
+            status,
             case_result.detail,
         )
     console.print(table)
