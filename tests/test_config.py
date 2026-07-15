@@ -32,6 +32,7 @@ users:
     monkeypatch.setenv("MAX_CHAT_HISTORY_TURNS", "4")
     monkeypatch.setenv("MAX_CHAT_HISTORY_BYTES", "8192")
     monkeypatch.setenv("LLM_THINKING_BUDGET", "0")
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "90")
     load_config.cache_clear()
 
     config = load_config(str(config_file))
@@ -43,6 +44,7 @@ users:
     assert config.conversation.max_history_turns == 4
     assert config.conversation.max_history_bytes == 8192
     assert config.model.thinking_budget == 0
+    assert config.model.provider_request_timeout_seconds == 90
     assert config.user_profile("manager_a").preferred_format == "table"
     assert config.user_profile("unknown").tone == "plain"
     assert isinstance(config.observability.log_path, Path)
@@ -65,6 +67,7 @@ def test_gemini_defaults_to_deterministic_low_latency_settings():
     assert model.temperature == 0
     assert model.thinking_budget == 0
     assert model.max_output_tokens == 2048
+    assert model.provider_request_timeout_seconds == 120
     assert model.google_cloud_llm_location == "global"
     assert model.google_cloud_llm_fallback_location == "us-central1"
     assert AgentLimitSettings().output_retries == 1

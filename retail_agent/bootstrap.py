@@ -183,6 +183,10 @@ class Runtime:
             ),
             ("Embedding location", self.config.model.google_cloud_embedding_location),
             ("Provider attempts", str(self.config.model.provider_retry_attempts)),
+            (
+                "Provider request timeout",
+                f"{self.config.model.provider_request_timeout_seconds:g}s",
+            ),
             ("Thinking budget", str(self.config.model.thinking_budget)),
             ("Maximum model output", str(self.config.model.max_output_tokens)),
             ("BigQuery dataset", self.config.bigquery.dataset),

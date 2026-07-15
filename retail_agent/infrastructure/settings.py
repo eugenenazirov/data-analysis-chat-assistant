@@ -56,6 +56,7 @@ class ModelSettings(BaseModel):
     provider_retry_attempts: int = Field(default=3, ge=1, le=5)
     provider_retry_initial_delay: float = Field(default=1.0, ge=0, le=30)
     provider_retry_max_delay: float = Field(default=4.0, ge=0, le=60)
+    provider_request_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
     thinking_budget: int = Field(default=0, ge=-1, le=24_576)
     max_output_tokens: int = Field(default=2_048, ge=256, le=65_536)
     temperature: float = Field(default=0.0, ge=0, le=2)
@@ -202,6 +203,7 @@ _ENV_ALIASES: dict[str, tuple[str, str]] = {
         "model",
         "google_cloud_embedding_location",
     ),
+    "LLM_REQUEST_TIMEOUT_SECONDS": ("model", "provider_request_timeout_seconds"),
     "LLM_THINKING_BUDGET": ("model", "thinking_budget"),
     "LLM_MAX_OUTPUT_TOKENS": ("model", "max_output_tokens"),
     "MAX_SQL_RETRIES": ("agent_limits", "max_sql_retries"),

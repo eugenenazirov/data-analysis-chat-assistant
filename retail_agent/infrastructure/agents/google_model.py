@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 from google.genai.types import HttpRetryOptions
 from pydantic_ai import ModelSettings
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
@@ -13,12 +14,20 @@ from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 from retail_agent.infrastructure.settings import ApplicationSettings
 
 _RETRYABLE_HTTP_STATUS_CODES = [408, 429, 500, 502, 503, 504]
+_PROVIDER_TRANSPORT_ERRORS = (
+    ModelAPIError,
+    ConnectionError,
+    TimeoutError,
+    httpx.ConnectError,
+    httpx.TimeoutException,
+)
 
 
 def analysis_model_settings(config: ApplicationSettings) -> ModelSettings:
     settings: dict[str, Any] = {
         "temperature": config.model.temperature,
         "max_tokens": config.model.max_output_tokens,
+        "timeout": config.model.provider_request_timeout_seconds,
     }
     if config.model.llm_model.partition(":")[0] in {"google", "google-cloud"}:
         settings["google_thinking_config"] = {
@@ -87,7 +96,9 @@ def build_analysis_model(config: ApplicationSettings) -> Any:
 
 
 def _is_retryable_provider_failure(exc: Exception) -> bool:
-    return isinstance(exc, ModelHTTPError) and exc.status_code in _RETRYABLE_HTTP_STATUS_CODES
+    return (
+        isinstance(exc, ModelHTTPError) and exc.status_code in _RETRYABLE_HTTP_STATUS_CODES
+    ) or isinstance(exc, _PROVIDER_TRANSPORT_ERRORS)
 
 
 def provider_failure_details(
@@ -101,13 +112,14 @@ def provider_failure_details(
         category = "rate_limited"
     elif status_code in _RETRYABLE_HTTP_STATUS_CODES:
         category = "transient_provider_error"
-    elif isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError)):
+    elif isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS):
         category = "provider_unavailable"
     else:
         category = "non_provider_error"
     retry_count = (
         max(0, configured_attempts - 1)
         if status_code in _RETRYABLE_HTTP_STATUS_CODES
+        or isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS)
         else 0
     )
     return {
@@ -116,7 +128,7 @@ def provider_failure_details(
             if status_code is not None
             else (
                 "transport_error"
-                if isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError))
+                if isinstance(provider_exc, _PROVIDER_TRANSPORT_ERRORS)
                 else "not_applicable"
             )
         ),
@@ -130,12 +142,12 @@ def provider_failure_details(
 def is_provider_failure(exc: Exception) -> bool:
     return isinstance(
         _nested_provider_exception(exc),
-        (ModelAPIError, ConnectionError, TimeoutError),
+        _PROVIDER_TRANSPORT_ERRORS,
     )
 
 
 def _nested_provider_exception(exc: Exception) -> Exception:
-    if isinstance(exc, (ModelAPIError, ConnectionError, TimeoutError)):
+    if isinstance(exc, _PROVIDER_TRANSPORT_ERRORS):
         return exc
     if isinstance(exc, BaseExceptionGroup):
         for nested in reversed(exc.exceptions):
@@ -143,7 +155,7 @@ def _nested_provider_exception(exc: Exception) -> Exception:
                 provider_exc = _nested_provider_exception(nested)
                 if isinstance(
                     provider_exc,
-                    (ModelAPIError, ConnectionError, TimeoutError),
+                    _PROVIDER_TRANSPORT_ERRORS,
                 ):
                     return provider_exc
     return exc
