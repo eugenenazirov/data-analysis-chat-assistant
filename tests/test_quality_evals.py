@@ -15,6 +15,7 @@ from evals.quality import (
     _intent_signature,
     _retrieval_assessment,
     _retrieval_scores,
+    _row_assessment,
     _row_score,
     evaluate_quality_case,
     load_quality_cases,
@@ -1176,7 +1177,6 @@ def test_intent_score_accepts_equivalent_timestamp_period_boundaries(test_config
           AND oi.created_at < CAST(DATE_TRUNC(CURRENT_DATE(), QUARTER) AS TIMESTAMP)
         GROUP BY u.state
         ORDER BY returned_revenue DESC
-        LIMIT 10
     """
 
     score = _intent_score(
@@ -1249,13 +1249,65 @@ def test_intent_signature_allows_additional_aggregates():
     assert candidate.satisfies(canonical)
 
 
-def test_intent_signature_allows_additional_grouping_for_singleton_projection():
+def test_intent_signature_rejects_additional_outer_grouping_for_singleton_projection():
     canonical = _intent_signature("SELECT SUM(revenue) AS revenue FROM table")
     candidate = _intent_signature(
         "SELECT month, SUM(revenue) AS revenue FROM table GROUP BY month"
     )
 
+    assert not candidate.satisfies(canonical)
+
+
+def test_intent_signature_accepts_distinct_order_aov_rewritten_at_order_grain():
+    canonical = _intent_signature(
+        "SELECT SAFE_DIVIDE(SUM(sale_price), COUNT(DISTINCT order_id)) "
+        "AS average_order_spend FROM order_items "
+        "WHERE status NOT IN ('Cancelled', 'Returned')"
+    )
+    candidate = _intent_signature(
+        "WITH realized_orders AS ("
+        "SELECT order_id, SUM(sale_price) AS order_realized_value "
+        "FROM order_items WHERE status NOT IN ('Cancelled', 'Returned') "
+        "GROUP BY order_id) "
+        "SELECT SAFE_DIVIDE(SUM(order_realized_value), COUNT(order_id)) "
+        "AS realized_average_order_value FROM realized_orders"
+    )
+
     assert candidate.satisfies(canonical)
+
+
+@pytest.mark.parametrize(
+    "candidate_sql",
+    [
+        (
+            "WITH realized_orders AS ("
+            "SELECT order_id, product_id, SUM(sale_price) AS order_realized_value "
+            "FROM order_items WHERE status NOT IN ('Cancelled', 'Returned') "
+            "GROUP BY order_id, product_id) "
+            "SELECT SAFE_DIVIDE(SUM(order_realized_value), COUNT(order_id)) "
+            "FROM realized_orders"
+        ),
+        (
+            "WITH realized_orders AS ("
+            "SELECT order_id, SUM(sale_price) AS order_realized_value "
+            "FROM order_items WHERE status NOT IN ('Cancelled', 'Returned') "
+            "AND product_id = 1 GROUP BY order_id) "
+            "SELECT SAFE_DIVIDE(SUM(order_realized_value), COUNT(order_id)) "
+            "FROM realized_orders"
+        ),
+        (
+            "SELECT SAFE_DIVIDE(SUM(sale_price), COUNT(order_id)) "
+            "FROM order_items WHERE status NOT IN ('Cancelled', 'Returned')"
+        ),
+    ],
+)
+def test_intent_signature_rejects_unproven_distinct_order_aov_rewrites(candidate_sql):
+    canonical = _intent_signature(
+        "SELECT SAFE_DIVIDE(SUM(sale_price), COUNT(DISTINCT order_id)) "
+        "FROM order_items WHERE status NOT IN ('Cancelled', 'Returned')"
+    )
+
+    assert not _intent_signature(candidate_sql).satisfies(canonical)
 
 
 def test_intent_signature_enforces_explicit_result_limit():
@@ -1271,6 +1323,13 @@ def test_intent_signature_enforces_explicit_result_limit():
 
     assert not missing_limit.satisfies(canonical)
     assert not wrong_limit.satisfies(canonical)
+    assert not _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region LIMIT 10"
+    ).satisfies(
+        _intent_signature(
+            "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region"
+        )
+    )
 
 
 def test_intent_signature_treats_non_distinct_row_counts_as_equivalent():
@@ -1328,7 +1387,7 @@ def test_row_score_accepts_formatted_month_against_date_value():
     ) == 1
 
 
-def test_row_score_accepts_month_name_against_fixed_date_value():
+def test_row_score_rejects_unproven_month_name_against_fixed_date_value():
     contract = ResultContract(
         key_columns=["month"],
         measure_columns=["revenue"],
@@ -1341,7 +1400,144 @@ def test_row_score_accepts_month_name_against_fixed_date_value():
         [{"month": date(2026, 5, 1), "revenue": 10.0}],
         0.001,
         contract,
+    ) == 0
+
+
+def test_row_score_accepts_matching_month_number_and_name_for_fixed_single_year():
+    contract = ResultContract(
+        key_columns=["month"],
+        measure_columns=["revenue"],
+        column_mapping={"month": "month", "revenue": "revenue"},
+        units={"month": "date", "revenue": "currency"},
+    )
+    candidate_sql = """
+        SELECT EXTRACT(MONTH FROM created_at) AS month_num,
+               FORMAT_TIMESTAMP('%B', created_at) AS month_name,
+               SUM(sale_price) AS realized_sales
+        FROM order_items
+        WHERE created_at >= TIMESTAMP('2026-05-01')
+          AND created_at < TIMESTAMP('2026-07-01')
+        GROUP BY month_num, month_name
+    """
+    canonical_sql = """
+        SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month,
+               SUM(sale_price) AS revenue
+        FROM order_items
+        WHERE created_at >= TIMESTAMP('2026-05-01')
+          AND created_at < TIMESTAMP('2026-07-01')
+        GROUP BY month
+    """
+
+    assert _row_score(
+        [
+            {"month_num": 5, "month_name": "May", "realized_sales": 10.0},
+            {"month_num": 6, "month_name": "June", "realized_sales": 20.0},
+        ],
+        [
+            {"month": date(2026, 5, 1), "revenue": 10.0},
+            {"month": date(2026, 6, 1), "revenue": 20.0},
+        ],
+        0.001,
+        contract,
+        candidate_sql=candidate_sql,
+        canonical_sql=canonical_sql,
     ) == 1
+
+
+@pytest.mark.parametrize(
+    ("candidate_rows", "upper_bound"),
+    [
+        (
+            [{"month_num": 6, "month_name": "May", "realized_sales": 10.0}],
+            "2026-07-01",
+        ),
+        (
+            [{"month_num": 5, "month_name": "May", "realized_sales": 10.0}],
+            "2027-07-01",
+        ),
+    ],
+)
+def test_row_score_rejects_unproven_or_inconsistent_month_components(
+    candidate_rows, upper_bound
+):
+    contract = ResultContract(
+        key_columns=["month"],
+        measure_columns=["revenue"],
+        column_mapping={"month": "month", "revenue": "revenue"},
+        units={"month": "date", "revenue": "currency"},
+    )
+    candidate_sql = f"""
+        SELECT EXTRACT(MONTH FROM created_at) AS month_num,
+               FORMAT_TIMESTAMP('%B', created_at) AS month_name,
+               SUM(sale_price) AS realized_sales
+        FROM order_items
+        WHERE created_at >= TIMESTAMP('2026-05-01')
+          AND created_at < TIMESTAMP('{upper_bound}')
+        GROUP BY month_num, month_name
+    """
+    canonical_sql = """
+        SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month,
+               SUM(sale_price) AS revenue
+        FROM order_items GROUP BY month
+    """
+
+    assert _row_score(
+        candidate_rows,
+        [{"month": date(2026, 5, 1), "revenue": 10.0}],
+        0.001,
+        contract,
+        candidate_sql=candidate_sql,
+        canonical_sql=canonical_sql,
+    ) == 0
+
+
+def test_ambiguous_semantic_projection_requires_review_instead_of_model_failure():
+    contract = ResultContract(
+        measure_columns=["revenue"],
+        column_mapping={"revenue": "revenue"},
+        units={"revenue": "currency"},
+    )
+
+    assessment = _row_assessment(
+        [{"sales_a": 10.0, "sales_b": 10.0}],
+        [{"revenue": 10.0}],
+        contract,
+        candidate_sql=(
+            "SELECT SUM(sale_price) AS sales_a, SUM(sale_price) AS sales_b "
+            "FROM order_items"
+        ),
+        canonical_sql="SELECT SUM(sale_price) AS revenue FROM order_items",
+    )
+
+    assert assessment.score == 1
+    assert assessment.decision == "review"
+
+
+def test_semantic_review_blocks_suite_gate_without_counting_as_model_failure(test_config):
+    case = load_quality_cases(Path("evals/datasets/release_holdout.jsonl"))[0]
+    value = case.replay.canonical_rows[0]["net_sales"]
+    candidate_sql = case.canonical_sql.replace(
+        "AS net_sales",
+        "AS sales_a, ROUND(SUM(sale_price), 2) AS sales_b",
+    )
+    replay = case.replay.model_copy(
+        update={
+            "candidate_sql": candidate_sql,
+            "candidate_rows": [{"sales_a": value, "sales_b": value}],
+            "report": case.replay.report.model_copy(update={"sql": candidate_sql}),
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+    suite = summarize_quality_results("replay", [result])
+
+    assert result.automated_passed is True
+    assert result.semantic_review_required is True
+    assert result.needs_human_review is True
+    assert result.passed is False
+    assert suite.automated_passed is False
+    assert suite.semantic_review_required is True
+    assert suite.critical_failures == []
 
 
 def test_row_score_normalizes_percentage_scale_and_alias():

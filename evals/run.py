@@ -168,6 +168,8 @@ def quality(
             (
                 "PASS"
                 if case_result.passed
+                else "REVIEW"
+                if case_result.semantic_review_required
                 else "AUTO PASS"
                 if case_result.automated_passed
                 else "FAIL"
@@ -177,6 +179,11 @@ def quality(
     console.print(table)
     if result.needs_human_review:
         console.print("[yellow]Human usefulness scores are required before release.[/yellow]")
+    if result.semantic_review_required:
+        console.print(
+            "[yellow]Semantic equivalence is indeterminate and requires review before release."
+            "[/yellow]"
+        )
     if output is not None:
         write_quality_report(result, output)
         console.print(f"[dim]quality_report={output}[/dim]")
