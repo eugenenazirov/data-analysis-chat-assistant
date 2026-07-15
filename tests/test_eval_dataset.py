@@ -18,17 +18,21 @@ GOLDEN_PATH = Path("data/golden_trios.jsonl")
 def test_smoke_overlap_is_explicit_and_intentional():
     governance = inspect_dataset_governance(load_quality_cases(SMOKE_PATH), GOLDEN_PATH)
 
-    assert governance.intentional_overlap_count == 3
+    assert governance.intentional_overlap_count == 2
     assert governance.golden_question_overlap_ids == [
         "customer_spend_pii_safe_critical",
-        "monthly_revenue_category_critical",
         "product_return_risk",
     ]
-    assert governance.golden_sql_overlap_ids == governance.golden_question_overlap_ids
+    assert governance.golden_sql_overlap_ids == [
+        "customer_spend_pii_safe_critical",
+        "product_return_risk",
+    ]
 
 
 def test_release_holdout_rejects_golden_question_or_sql_overlap():
-    case = load_quality_cases(SMOKE_PATH)[0].model_copy(update={"suite": "release_holdout"})
+    case = next(
+        item for item in load_quality_cases(SMOKE_PATH) if item.id == "product_return_risk"
+    ).model_copy(update={"suite": "release_holdout"})
 
     with pytest.raises(ValueError, match="Release holdout overlaps Golden Knowledge"):
         inspect_dataset_governance([case], GOLDEN_PATH)

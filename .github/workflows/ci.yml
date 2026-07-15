@@ -64,11 +64,9 @@ jobs:
         run: docker build --target runtime --tag retail-agent:ci .
 
       - name: Verify runtime image excludes evaluations
-        run: >-
-          docker run --rm --entrypoint python retail-agent:ci -c
-          "import importlib.util, pathlib;
-          assert importlib.util.find_spec('pydantic_evals') is None;
-          assert not pathlib.Path('/app/evals').exists()"
+        run: |
+          docker run --rm --entrypoint python retail-agent:ci -c "import importlib.util, pathlib; assert importlib.util.find_spec('pydantic_evals') is None; assert not pathlib.Path('/app/evals').exists()"
+          docker run --rm retail-agent:ci chart-smoke
 
       - name: Build and smoke-test evaluation image
         run: |

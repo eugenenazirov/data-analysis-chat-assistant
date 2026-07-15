@@ -127,7 +127,8 @@ def test_review_packet_contains_required_context_and_keeps_pairwise_sources_blin
     assert first.pointwise.verified_rows
     assert first.pointwise.answer
     assert first.pointwise.highlights == []
-    assert first.pointwise.chart is None
+    assert first.pointwise.chart is not None
+    assert first.pointwise.chart.output_format == "png"
     comparison = pairwise.cases[0]
     pairwise_payload = comparison.model_dump_json().casefold()
     assert "candidate" not in pairwise_payload

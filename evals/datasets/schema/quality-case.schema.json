@@ -13,6 +13,19 @@
           "title": "Assumptions",
           "type": "array"
         },
+        "available_rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Available Rows"
+        },
         "caveats": {
           "items": {
             "type": "string"
@@ -59,6 +72,19 @@
           "title": "Refused",
           "type": "boolean"
         },
+        "row_limit": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Limit"
+        },
         "sql": {
           "anyOf": [
             {
@@ -79,6 +105,19 @@
           "title": "Table",
           "type": "array"
         },
+        "total_rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Rows"
+        },
         "trace_id": {
           "anyOf": [
             {
@@ -90,6 +129,11 @@
           ],
           "default": null,
           "title": "Trace Id"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
         }
       },
       "required": [
@@ -684,6 +728,13 @@
           },
           "title": "Trace Ids",
           "type": "array"
+        },
+        "turn_durations_ms": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Turn Durations Ms",
+          "type": "array"
         }
       },
       "title": "OperationalMetrics",
@@ -739,6 +790,19 @@
     "QualityReplay": {
       "additionalProperties": false,
       "properties": {
+        "available_rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Available Rows"
+        },
         "candidate_rows": {
           "items": {
             "additionalProperties": true,
@@ -799,6 +863,24 @@
           },
           "title": "Retrieved Ids",
           "type": "array"
+        },
+        "row_limit": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Limit"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
         },
         "usefulness_score": {
           "anyOf": [
@@ -993,6 +1075,22 @@
     },
     "expected_behavior": {
       "$ref": "#/$defs/ExpectedBehavior"
+    },
+    "expected_chart_format": {
+      "anyOf": [
+        {
+          "enum": [
+            "png",
+            "svg"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expected Chart Format"
     },
     "history": {
       "items": {

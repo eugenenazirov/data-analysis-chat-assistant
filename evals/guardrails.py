@@ -138,10 +138,10 @@ def build_guardrail_dataset() -> Dataset[GuardrailEvalCase, EvalResult, None]:
                 ),
             ),
             _case(
-                name="limit_added",
+                name="query_preserved_without_fabricated_limit",
                 inputs=GuardrailEvalCase(
-                    name="limit_added",
-                    kind="limit_added",
+                    name="query_preserved_without_fabricated_limit",
+                    kind="query_preserved",
                     sql="""
                     SELECT product_id, COUNT(*) AS item_count
                     FROM `bigquery-public-data.thelook_ecommerce.order_items`
@@ -309,8 +309,8 @@ def _run_guardrail_case(config: AgentConfig, case: GuardrailEvalCase) -> EvalRes
         return _eval_sql_blocked(config, case)
     if case.kind == "redaction":
         return _eval_pii_redaction(case)
-    if case.kind == "limit_added":
-        return _eval_limit_added(config, case)
+    if case.kind == "query_preserved":
+        return _eval_query_preserved(config, case)
     return EvalResult(case.name, False, f"Unknown eval kind: {case.kind}")
 
 
@@ -338,7 +338,7 @@ def _eval_pii_redaction(case: GuardrailEvalCase) -> EvalResult:
     return EvalResult(case.name, passed, text)
 
 
-def _eval_limit_added(config: AgentConfig, case: GuardrailEvalCase) -> EvalResult:
+def _eval_query_preserved(config: AgentConfig, case: GuardrailEvalCase) -> EvalResult:
     validation = validate_and_prepare_sql(case.sql, config)
-    passed = f"LIMIT {config.bigquery.max_result_rows}" in validation.safe_sql
+    passed = "LIMIT" not in validation.safe_sql.upper()
     return EvalResult(case.name, passed, validation.safe_sql)

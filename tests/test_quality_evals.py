@@ -7,7 +7,10 @@ import pytest
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from evals.quality import (
+    QualityExpectations,
+    ResultContract,
     RetrievalContract,
+    _intent_assessment,
     _intent_score,
     _intent_signature,
     _retrieval_assessment,
@@ -53,7 +56,7 @@ def test_smoke_replay_suite_remains_comparable(test_config):
     assert result.results[0].scores.multi_turn is None
     assert result.results[-1].scores.multi_turn == 1
     assert result.versions.dataset_sha256 != "unknown"
-    assert result.versions.prompt == "analysis-v4"
+    assert result.versions.prompt == "analysis-v10"
 
 
 def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
@@ -66,6 +69,46 @@ def test_quality_eval_rejects_unsupported_numeric_claim(test_config):
 
     assert result.passed is False
     assert result.scores.faithfulness == 0
+
+
+def test_quality_eval_rejects_truncated_candidate_as_release_success(test_config):
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={
+            "available_rows": len(case.replay.candidate_rows) + 1,
+            "truncated": True,
+            "row_limit": len(case.replay.candidate_rows),
+            "report": case.replay.report.model_copy(update={"truncated": True}),
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is False
+    assert "complete=no" in result.detail
+    assert result.diagnostics.truncated is True
+
+
+def test_quality_eval_requires_verified_artifact_for_chart_case(test_config):
+    case = load_quality_cases(CASES_PATH)[0]
+    assert case.expected_chart_format == "png"
+    replay = case.replay.model_copy(
+        update={"report": case.replay.report.model_copy(update={"chart_artifact": None})}
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.automated_passed is False
+    assert "chart=missing" in result.detail
+
+
+def test_quality_eval_marks_non_chart_case_as_not_required(test_config):
+    case = load_quality_cases(CASES_PATH)[1]
+    assert case.expected_chart_format is None
+
+    result = evaluate_quality_case(test_config, case, case.replay)
+
+    assert "chart=not-required" in result.detail
 
 
 @pytest.mark.parametrize("field", ["assumptions", "caveats", "followups"])
@@ -103,6 +146,38 @@ def test_faithfulness_parses_scientific_notation_as_one_claim():
     assert unsupported.is_supported is False
     assert unsupported.unsupported_numeric_claims == (1_200_000.0,)
     assert supported.is_supported is True
+
+
+def test_faithfulness_accepts_numeric_calendar_dimension_from_returned_row():
+    report = AnalysisReport(
+        question="Which month?",
+        answer="The verified month was 2026-06-01.",
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"month": "2026-06-01"}],
+        "SELECT DATE '2026-06-01' AS month",
+    )
+
+    assert assessment.is_supported is True
+    assert assessment.unsupported_numeric_claims == ()
+
+
+def test_faithfulness_accepts_numeric_calendar_dimension_from_date_object():
+    report = AnalysisReport(
+        question="Which month?",
+        answer="The verified month was 2026-06-01.",
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"month": date(2026, 6, 1)}],
+        "SELECT DATE '2026-06-01' AS month",
+    )
+
+    assert assessment.is_supported is True
+    assert assessment.unsupported_numeric_claims == ()
 
 
 @pytest.mark.parametrize(
@@ -186,6 +261,79 @@ def test_quality_eval_accepts_unit_compatible_numeric_claim(test_config, answer,
 
     assert result.automated_passed is True
     assert result.scores.faithfulness == 1
+
+
+def test_report_evidence_accepts_percentage_from_prior_verified_turn():
+    report = AnalysisReport(
+        question="What percentage did it represent?",
+        answer="California represented 2.15% of completed orders (2 of 93).",
+        sql="SELECT 93 AS total_completed_orders",
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"total_completed_orders": 93}],
+        "SELECT 93 AS total_completed_orders",
+        prior_verified_rows=[{"region": "California", "completed_orders": 2}],
+    )
+
+    assert assessment.is_supported is True
+    assert assessment.unsupported_numeric_claims == ()
+
+
+def test_report_evidence_accepts_having_threshold_in_matching_context():
+    report = AnalysisReport(
+        question="Which products have return risk?",
+        answer="The result includes products with at least 20 items sold.",
+        sql="SELECT items_sold FROM products HAVING items_sold >= 20",
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"items_sold": 21}],
+        "SELECT items_sold FROM products HAVING items_sold >= 20",
+    )
+
+    assert assessment.is_supported is True
+
+
+def test_report_evidence_accepts_compact_having_threshold_context():
+    report = AnalysisReport(
+        question="Which products have return risk?",
+        answer="The ranking includes products with 20+ items sold.",
+        sql="SELECT items_sold FROM products HAVING items_sold >= 20",
+    )
+
+    assessment = assess_report_evidence(
+        report,
+        [{"items_sold": 21}],
+        "SELECT items_sold FROM products HAVING items_sold >= 20",
+    )
+
+    assert assessment.is_supported is True
+
+
+def test_report_evidence_binds_colon_delimited_measure_before_claim():
+    report = AnalysisReport(
+        question="Which products have high return risk?",
+        answer=("Product: Trail Jacket; items sold: 21; gross sales: $839.79; return rate: 28.6%."),
+    )
+    rows = [
+        {
+            "product_name": "Trail Jacket",
+            "items_sold": 21,
+            "gross_sales": 839.79,
+            "return_rate": 0.286,
+        }
+    ]
+
+    assessment = assess_report_evidence(
+        report,
+        rows,
+        "SELECT items_sold, gross_sales, return_rate FROM safe_table",
+    )
+
+    assert assessment.unsupported_numeric_claims == ()
 
 
 @pytest.mark.parametrize("marker", ["~", "≈"])
@@ -452,10 +600,12 @@ def _single_case_file(tmp_path, index: int = 0) -> Path:
 def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp_path, monkeypatch):
     case = load_quality_cases(CASES_PATH)[0]
     calls = 0
+    chart_executor = object()
 
     async def fake_run_question(question, *, conversation, **kwargs):
         nonlocal calls
         calls += 1
+        assert kwargs["chart_executor"] is chart_executor
         if calls == 1:
             return TurnResult(
                 response=AgentFailure(
@@ -489,6 +639,7 @@ def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp
             golden_store=object(),
             logger=EventLogger(tmp_path / "runs.jsonl"),
             analysis_agent=object(),
+            chart_executor=chart_executor,
             human_scores={case.id: 5},
             max_safe_attempts=2,
             retry_delay_seconds=0,
@@ -501,6 +652,66 @@ def test_live_quality_eval_compares_agent_and_canonical_results(test_config, tmp
     assert result.results[0].operational.provider_requests == 3
     assert len(result.results[0].operational.trace_ids) == 2
     assert result.results[0].operational.query_attempts == 1
+
+
+def test_live_quality_eval_uses_fixed_reference_date_and_paces_attempts(
+    test_config, tmp_path, monkeypatch
+):
+    case = load_quality_cases(CASES_PATH)[3]
+    reference_dates = []
+    analysis_models = []
+    sleeps = []
+
+    async def fake_run_question(question, *, conversation, **kwargs):
+        reference_dates.append(kwargs["reference_date_override"])
+        analysis_models.append(kwargs["analysis_model"])
+        return TurnResult(
+            response=case.replay.report,
+            conversation=conversation.complete_turn(messages=[], max_turns=6),
+            retrieved_trio_ids=tuple(case.replay.retrieved_ids),
+            query_result=CanonicalWarehouse(case.replay.candidate_rows).execute(
+                case.replay.candidate_sql, "trace"
+            ),
+            reference_date=kwargs["reference_date_override"],
+            operational=case.replay.operational,
+        )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("evals.quality.run_question", fake_run_question)
+    monkeypatch.setattr("evals.quality.asyncio.sleep", fake_sleep)
+
+    result = asyncio.run(
+        run_quality_live_evals(
+            test_config,
+            _single_case_file(tmp_path, 3),
+            bigquery=CanonicalWarehouse(case.replay.canonical_rows),
+            golden_store=object(),
+            logger=EventLogger(tmp_path / "runs.jsonl"),
+            analysis_agent=object(),
+            analysis_model="concrete-model",
+            human_scores={case.id: 5},
+            repetitions=2,
+            inter_attempt_delay_seconds=0.25,
+        )
+    )
+
+    assert result.repetitions == 2
+    assert reference_dates == [case.reference_date] * 4
+    assert analysis_models == ["concrete-model"] * 4
+    assert sleeps == [0.25, 0.25, 0.25]
+
+
+def test_regional_follow_up_result_is_order_independent(test_config):
+    case = load_quality_cases(CASES_PATH)[3]
+    replay = case.replay.model_copy(
+        update={"candidate_rows": list(reversed(case.replay.candidate_rows))}
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.scores.calculation == 1
 
 
 def test_live_quality_eval_reports_failed_history_turn(test_config, tmp_path, monkeypatch):
@@ -839,6 +1050,34 @@ def test_faithfulness_numeric_claim_cases(answer, rows, sql, expected):
     assert _faithfulness_score(report, rows, sql, tolerance=0.001) == expected
 
 
+def test_faithfulness_accepts_percentage_rendered_from_share_measure():
+    report = AnalysisReport(
+        question="question",
+        answer="The verified return share was 14.57%.",
+    )
+
+    assert _faithfulness_score(
+        report,
+        [{"return_share": 0.1457}],
+        "SELECT return_share FROM table",
+        tolerance=0.001,
+    ) == 1
+
+
+def test_faithfulness_accepts_percentage_point_measure_without_rescaling():
+    report = AnalysisReport(
+        question="question",
+        answer="The verified growth rate was 2,661.43%.",
+    )
+
+    assert _faithfulness_score(
+        report,
+        [{"growth_rate_pct": 2661.43}],
+        "SELECT growth_rate_pct FROM table",
+        tolerance=0.001,
+    ) == 1
+
+
 def test_quality_eval_rejects_unverified_report_sql(test_config):
     case = load_quality_cases(CASES_PATH)[0]
     replay = case.replay.model_copy(
@@ -911,7 +1150,92 @@ def test_intent_signature_normalizes_equivalent_date_casts():
     date_function = _intent_signature("SELECT DATE(created_at) AS day FROM dataset.table")
     date_cast = _intent_signature("SELECT CAST(created_at AS DATE) AS day FROM dataset.table")
 
-    assert date_function.functions == date_cast.functions == frozenset({"to_date"})
+    assert date_function.functions == date_cast.functions == frozenset()
+
+
+def test_intent_score_accepts_equivalent_timestamp_period_boundaries(test_config):
+    case = next(
+        item
+        for item in load_quality_cases(CASES_PATH)
+        if item.id == "regional_returns_follow_up"
+    )
+    equivalent_sql = """
+        SELECT
+          u.state AS state,
+          ROUND(SUM(CASE WHEN oi.status = 'Returned' THEN oi.sale_price ELSE 0 END), 2)
+            AS returned_revenue,
+          COUNT(DISTINCT CASE WHEN oi.status = 'Returned' THEN oi.order_id END)
+            AS returned_orders
+        FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+        JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id
+        WHERE u.state IN ('California', 'New York')
+          AND oi.created_at >= CAST(
+            DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 QUARTER), QUARTER)
+            AS TIMESTAMP
+          )
+          AND oi.created_at < CAST(DATE_TRUNC(CURRENT_DATE(), QUARTER) AS TIMESTAMP)
+        GROUP BY u.state
+        ORDER BY returned_revenue DESC
+        LIMIT 10
+    """
+
+    score = _intent_score(
+        test_config,
+        equivalent_sql,
+        case.canonical_sql,
+        case.expectations,
+    )
+
+    assert score == 1
+
+
+def test_intent_score_resolves_reference_date_to_fixed_bounds(test_config):
+    canonical = """
+        SELECT SUM(sale_price) AS revenue
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        WHERE DATE(created_at) >= DATE_TRUNC(
+          DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH
+        )
+          AND DATE(created_at) < DATE_TRUNC(CURRENT_DATE(), MONTH)
+    """
+    candidate = """
+        SELECT SUM(sale_price) AS revenue
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        WHERE DATE(created_at) >= DATE '2026-06-01'
+          AND DATE(created_at) < DATE '2026-07-01'
+    """
+
+    assessment = _intent_assessment(
+        test_config,
+        candidate,
+        canonical,
+        QualityExpectations(),
+        reference_date=date(2026, 7, 13),
+    )
+
+    assert assessment.score == 1
+
+
+def test_intent_score_rejects_wrong_resolved_reference_bounds(test_config):
+    canonical = """
+        SELECT SUM(sale_price) AS revenue
+        FROM `bigquery-public-data.thelook_ecommerce.order_items`
+        WHERE DATE(created_at) >= DATE_TRUNC(
+          DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH
+        )
+          AND DATE(created_at) < DATE_TRUNC(CURRENT_DATE(), MONTH)
+    """
+    candidate = canonical.replace("CURRENT_DATE()", "DATE '2026-08-13'")
+
+    assessment = _intent_assessment(
+        test_config,
+        candidate,
+        canonical,
+        QualityExpectations(),
+        reference_date=date(2026, 7, 13),
+    )
+
+    assert assessment.score == 0
 
 
 def test_intent_signature_allows_additional_aggregates():
@@ -923,6 +1247,155 @@ def test_intent_signature_allows_additional_aggregates():
     )
 
     assert candidate.satisfies(canonical)
+
+
+def test_intent_signature_allows_additional_grouping_for_singleton_projection():
+    canonical = _intent_signature("SELECT SUM(revenue) AS revenue FROM table")
+    candidate = _intent_signature(
+        "SELECT month, SUM(revenue) AS revenue FROM table GROUP BY month"
+    )
+
+    assert candidate.satisfies(canonical)
+
+
+def test_intent_signature_enforces_explicit_result_limit():
+    canonical = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region LIMIT 10"
+    )
+    missing_limit = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region"
+    )
+    wrong_limit = _intent_signature(
+        "SELECT region, SUM(revenue) AS revenue FROM table GROUP BY region LIMIT 20"
+    )
+
+    assert not missing_limit.satisfies(canonical)
+    assert not wrong_limit.satisfies(canonical)
+
+
+def test_intent_signature_treats_non_distinct_row_counts_as_equivalent():
+    count_star = _intent_signature("SELECT COUNT(*) AS rows FROM table")
+    count_id = _intent_signature("SELECT COUNT(id) AS rows FROM table")
+    distinct_orders = _intent_signature("SELECT COUNT(DISTINCT order_id) AS rows FROM table")
+
+    assert count_id.satisfies(count_star)
+    assert count_star.satisfies(count_id)
+    assert not count_star.satisfies(distinct_orders)
+
+
+def test_intent_signature_normalizes_equivalent_conditional_counts():
+    count_if = _intent_signature(
+        "SELECT COUNTIF(status = 'Returned') AS returned_items FROM table"
+    )
+    sum_case = _intent_signature(
+        "SELECT SUM(CASE WHEN status = 'Returned' THEN 1 ELSE 0 END) AS returned_items "
+        "FROM table"
+    )
+
+    assert count_if.satisfies(sum_case)
+    assert sum_case.satisfies(count_if)
+
+
+def test_row_score_accepts_equivalent_month_labels():
+    contract = ResultContract(
+        key_columns=["month"],
+        measure_columns=["revenue"],
+        column_mapping={"month": "month", "revenue": "revenue"},
+        units={"month": "date", "revenue": "currency"},
+    )
+
+    assert _row_score(
+        [{"month": "2026-05", "revenue": 10.0}],
+        [{"month": "2026-05-01", "revenue": 10.0}],
+        0.001,
+        contract,
+    ) == 1
+
+
+def test_row_score_accepts_formatted_month_against_date_value():
+    contract = ResultContract(
+        key_columns=["month"],
+        measure_columns=["revenue"],
+        column_mapping={"month": "month", "revenue": "revenue"},
+        units={"month": "date", "revenue": "currency"},
+    )
+
+    assert _row_score(
+        [{"month": "2026-05", "revenue": 10.0}],
+        [{"month": date(2026, 5, 1), "revenue": 10.0}],
+        0.001,
+        contract,
+    ) == 1
+
+
+def test_row_score_accepts_month_name_against_fixed_date_value():
+    contract = ResultContract(
+        key_columns=["month"],
+        measure_columns=["revenue"],
+        column_mapping={"month": "month", "revenue": "revenue"},
+        units={"month": "date", "revenue": "currency"},
+    )
+
+    assert _row_score(
+        [{"month": "May", "revenue": 10.0}],
+        [{"month": date(2026, 5, 1), "revenue": 10.0}],
+        0.001,
+        contract,
+    ) == 1
+
+
+def test_row_score_normalizes_percentage_scale_and_alias():
+    contract = ResultContract(
+        key_columns=["state"],
+        measure_columns=["revenue_share"],
+        column_mapping={"state": "state", "revenue_share": "revenue_share"},
+        units={"state": "text", "revenue_share": "percentage"},
+    )
+
+    assert _row_score(
+        [{"state": "California", "revenue_percentage": 5.4768}],
+        [{"state": "California", "revenue_share": 0.055}],
+        0.001,
+        contract,
+    ) == 1
+
+
+def test_row_score_normalizes_pct_scale_and_alias():
+    contract = ResultContract(
+        key_columns=["state"],
+        measure_columns=["growth_rate"],
+        column_mapping={"state": "state", "growth_rate": "growth_rate"},
+        units={"state": "text", "growth_rate": "percentage"},
+    )
+
+    assert _row_score(
+        [{"state": "A", "growth_rate_pct": 2661.43}],
+        [{"state": "A", "growth_rate": 26.614}],
+        0.001,
+        contract,
+    ) == 1
+
+
+def test_row_score_normalizes_cohort_labels_and_measure_aliases():
+    contract = ResultContract(
+        key_columns=["cohort"],
+        measure_columns=["average_spend"],
+        column_mapping={"cohort": "cohort", "average_spend": "average_spend"},
+        units={"cohort": "text", "average_spend": "currency"},
+    )
+
+    assert _row_score(
+        [
+            {"customer_segment": "One-order customers", "average_customer_spend": 42.0},
+            {"customer_segment": "More than one order", "average_customer_spend": 84.0},
+        ],
+        [
+            {"cohort": "single_order", "average_spend": 42.0},
+            {"cohort": "repeat", "average_spend": 84.0},
+        ],
+        0.001,
+        contract,
+    ) == 1
 
 
 def test_intent_signature_ignores_cosmetic_rounding():
@@ -1054,6 +1527,28 @@ def test_operational_budget_mutations_fail_only_operational_score(
     )
 
 
+def test_provider_latency_is_observed_but_does_not_fail_release_gate(test_config):
+    case = load_quality_cases(CASES_PATH)[0]
+    replay = case.replay.model_copy(
+        update={
+            "operational": case.replay.operational.model_copy(
+                update={"duration_ms": 120_000}
+            )
+        }
+    )
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    duration = next(
+        item
+        for item in result.diagnostics.operational_results
+        if item.name == "duration_observation"
+    )
+    assert duration.passed is True
+    assert "informational=true" in duration.detail
+    assert result.scores.operational == 1
+
+
 def test_repeated_live_eval_reports_flakiness_and_attempt_statistics(
     test_config, tmp_path, monkeypatch
 ):
@@ -1172,6 +1667,7 @@ def test_live_multi_turn_eval_merges_history_and_final_operational_metrics(
     operations = result.results[0].operational
     assert calls == 2
     assert operations.trace_ids == ["trace-1", "trace-2"]
+    assert operations.turn_durations_ms == [1200, 1200]
     assert operations.provider_requests == 2
     assert operations.query_attempts == 2
     assert operations.bigquery_executions == 2

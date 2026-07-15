@@ -29,7 +29,7 @@ def test_dataset_validation_cli_reports_intentional_overlap():
 
     assert result.exit_code == 0, result.output
     assert "dataset_valid cases=4" in result.output
-    assert "intentional_overlap=3" in result.output
+    assert "intentional_overlap=2" in result.output
 
 
 def test_eval_runner_rejects_unknown_command():

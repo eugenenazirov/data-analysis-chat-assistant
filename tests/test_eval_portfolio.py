@@ -162,6 +162,21 @@ def test_failed_history_sql_cannot_become_trusted(test_config):
     assert any(item.name == "tool_result_lineage" and not item.passed for item in diagnostics)
 
 
+def test_conversation_contract_accepts_equivalent_quarter_interval():
+    case = load_quality_cases(Path("evals/datasets/smoke.jsonl"))[3]
+    replay = case.replay.model_copy(
+        update={
+            "candidate_sql": case.replay.candidate_sql.replace(
+                "INTERVAL 1 QUARTER", "INTERVAL 3 MONTH"
+            )
+        }
+    )
+
+    diagnostics = _conversation_assessment(case, replay)
+
+    assert all(item.passed for item in diagnostics), diagnostics
+
+
 class CanonicalQueryMustNotRun:
     def execute(self, sql: str, trace_id: str):
         raise AssertionError("clarification must not execute a canonical query")

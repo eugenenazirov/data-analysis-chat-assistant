@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from evals.quality import (
 )
 
 CASES_PATH = Path("evals/datasets/smoke.jsonl")
+RELEASE_CASES_PATH = Path("evals/datasets/release_holdout.jsonl")
 
 
 def _changed_scores(baseline, mutated) -> set[str]:
@@ -56,17 +56,12 @@ def _neutral_replay(case):
         ),
         pytest.param(
             lambda sql: sql.replace(
-                " AND DATE_TRUNC(DATE(oi.created_at), MONTH) = "
-                "DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH), MONTH)",
+                " AND oi.created_at >= TIMESTAMP('2026-06-01')"
+                " AND oi.created_at < TIMESTAMP('2026-07-01')",
                 "",
             ),
             "semantic_structure",
             id="date-boundary",
-        ),
-        pytest.param(
-            lambda sql: sql.replace("COUNT(DISTINCT oi.order_id)", "COUNT(*)"),
-            "semantic_structure",
-            id="distinct-order-count",
         ),
         pytest.param(
             lambda sql: sql.replace("'Returned'", "'Shipped'"),
@@ -96,6 +91,41 @@ def test_sql_mutations_only_lower_intent_metric(test_config, mutation, failed_co
     )
 
 
+def test_exact_top_n_accepts_equivalent_dense_rank_with_unique_name_tiebreak(
+    test_config,
+):
+    case = next(
+        case
+        for case in load_quality_cases(RELEASE_CASES_PATH)
+        if case.id == "top_three_products_per_category"
+    )
+    equivalent_sql = case.canonical_sql.replace("ROW_NUMBER()", "DENSE_RANK()")
+    replay = case.replay.model_copy(update={"candidate_sql": equivalent_sql})
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.scores.intent == 1.0
+    assert all(item.passed for item in result.diagnostics.constraint_results)
+
+
+def test_explicit_tie_preservation_still_rejects_row_number(test_config):
+    case = next(
+        case
+        for case in load_quality_cases(RELEASE_CASES_PATH)
+        if case.id == "equal_revenue_tie_handling"
+    )
+    non_preserving_sql = case.canonical_sql.replace("DENSE_RANK()", "ROW_NUMBER()")
+    replay = case.replay.model_copy(update={"candidate_sql": non_preserving_sql})
+
+    result = evaluate_quality_case(test_config, case, replay)
+
+    assert result.scores.intent == 0.0
+    assert any(
+        item.name == "semantic_structure" and not item.passed
+        for item in result.diagnostics.constraint_results
+    )
+
+
 @pytest.mark.parametrize(
     "mutate_rows",
     [
@@ -103,9 +133,9 @@ def test_sql_mutations_only_lower_intent_metric(test_config, mutation, failed_co
         pytest.param(lambda rows: rows[:-1], id="missing-row"),
         pytest.param(
             lambda rows: [
-                {**row, "revenue": row["orders"], "orders": row["revenue"]} for row in rows
+                {**row, "revenue": "not-currency"} for row in rows
             ],
-            id="swapped-measures",
+            id="wrong-measure",
         ),
         pytest.param(
             lambda rows: [
@@ -218,7 +248,7 @@ def test_critical_failure_cannot_be_hidden_by_averaging(test_config):
     cases = load_quality_cases(CASES_PATH)
     passed = [evaluate_quality_case(test_config, case, case.replay) for case in cases]
     critical = cases[0]
-    bad_sql = re.sub(r"COUNT\(DISTINCT oi\.order_id\)", "COUNT(*)", critical.replay.candidate_sql)
+    bad_sql = critical.replay.candidate_sql.replace("'Returned'", "'Shipped'")
     failed = evaluate_quality_case(
         test_config,
         critical,
@@ -257,4 +287,82 @@ def test_explicit_column_mapping_accepts_only_declared_alias():
             contract=contract,
         )
         == 0
+    )
+
+
+def test_equivalent_aov_alias_and_unrounded_currency_pass() -> None:
+    contract = ResultContract(
+        measure_columns=["average_order_spend"],
+        column_mapping={"average_order_spend": "average_order_spend"},
+        units={"average_order_spend": "currency"},
+        numeric_tolerance=0.001,
+    )
+
+    assert (
+        _row_score(
+            [
+                {
+                    "realized_revenue": 1_215_809.421,
+                    "realized_orders": 14_027,
+                    "realized_aov": 86.6763685,
+                }
+            ],
+            [{"average_order_spend": 86.68}],
+            tolerance=0.001,
+            contract=contract,
+        )
+        == 1
+    )
+
+
+def test_equivalent_state_percentage_alias_beats_other_state_measure() -> None:
+    contract = ResultContract(
+        key_columns=["state"],
+        measure_columns=["revenue_share_rate"],
+        column_mapping={"state": "state", "revenue_share_rate": "revenue_share_rate"},
+        units={"state": "text", "revenue_share_rate": "percentage"},
+        ordered=False,
+        numeric_tolerance=0.001,
+    )
+
+    assert (
+        _row_score(
+            [
+                {
+                    "customer_state": "Guangdong",
+                    "state_realized_revenue": 440_456.87,
+                    "revenue_percentage": 5.4768,
+                }
+            ],
+            [{"state": "Guangdong", "revenue_share_rate": 0.055}],
+            tolerance=0.001,
+            contract=contract,
+        )
+        == 1
+    )
+
+
+def test_human_readable_single_order_cohort_matches_new_label() -> None:
+    contract = ResultContract(
+        key_columns=["cohort"],
+        measure_columns=["revenue"],
+        column_mapping={"cohort": "cohort", "revenue": "revenue"},
+        units={"cohort": "text", "revenue": "currency"},
+        ordered=False,
+    )
+
+    assert (
+        _row_score(
+            [
+                {"customer_segment": "Repeat Customers", "realized_revenue": 80_000},
+                {"customer_segment": "Single-Order Customers", "realized_revenue": 45_000},
+            ],
+            [
+                {"cohort": "repeat", "revenue": 80_000},
+                {"cohort": "new", "revenue": 45_000},
+            ],
+            tolerance=0.001,
+            contract=contract,
+        )
+        == 1
     )

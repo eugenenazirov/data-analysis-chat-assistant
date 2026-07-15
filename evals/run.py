@@ -118,6 +118,15 @@ def quality(
             help="Independent live attempts per case (replay remains single-pass).",
         ),
     ] = 1,
+    inter_attempt_delay: Annotated[
+        float,
+        typer.Option(
+            min=0,
+            help=(
+                "Seconds between live attempts and multi-turn requests to smooth provider traffic."
+            ),
+        ),
+    ] = 5.0,
 ) -> None:
     """Run replay or credentialed live answer-quality evaluations."""
 
@@ -136,8 +145,11 @@ def quality(
                 golden_store=runtime.golden_store,
                 logger=runtime.logger,
                 analysis_agent=runtime.analysis_agent,
+                analysis_model=runtime.analysis_model,
+                chart_executor=runtime.chart_executor,
                 human_scores=load_human_scores(human_scores),
                 repetitions=repetitions,
+                inter_attempt_delay_seconds=inter_attempt_delay,
             )
         )
         output = output or Path("artifacts/quality-eval-live.json")
@@ -230,18 +242,14 @@ def release_decision(
     reviews_path: Annotated[
         Path, typer.Option("--reviews", help="Completed structured human review set.")
     ],
-    key_path: Annotated[
-        Path, typer.Option("--key", help="Restricted A/B assignment key.")
-    ],
-    output: Annotated[
-        Path, typer.Option(help="Machine-readable release decision.")
-    ] = Path("artifacts/release-decision.json"),
+    key_path: Annotated[Path, typer.Option("--key", help="Restricted A/B assignment key.")],
+    output: Annotated[Path, typer.Option(help="Machine-readable release decision.")] = Path(
+        "artifacts/release-decision.json"
+    ),
 ) -> None:
     """Combine automated, repeated-live, human, and baseline evidence."""
 
-    quality_result = QualitySuiteResult.model_validate_json(
-        report_path.read_text(encoding="utf-8")
-    )
+    quality_result = QualitySuiteResult.model_validate_json(report_path.read_text(encoding="utf-8"))
     reviews = load_human_review_set(reviews_path)
     key = load_human_review_key(key_path)
     decision = evaluate_release_readiness(

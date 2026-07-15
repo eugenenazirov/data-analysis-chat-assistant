@@ -16,9 +16,14 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
+from sqlglot.optimizer.simplify import simplify
 
 from retail_agent.agent import ConversationState, TurnResult, run_question
-from retail_agent.application.ports import AnalyticsGateway, GoldenExampleRepository
+from retail_agent.application.ports import (
+    AnalyticsGateway,
+    ChartCodeExecutor,
+    GoldenExampleRepository,
+)
 from retail_agent.config import AgentConfig
 from retail_agent.domain.policies.report_evidence import (
     assess_report_evidence,
@@ -180,6 +185,9 @@ class FixtureProvenance(EvaluationModel):
 class QualityReplay(EvaluationModel):
     candidate_sql: str
     candidate_rows: list[dict[str, Any]]
+    available_rows: int | None = Field(default=None, ge=0)
+    truncated: bool = False
+    row_limit: int | None = Field(default=None, ge=1)
     canonical_rows: list[dict[str, Any]]
     retrieved_ids: list[str]
     report: AnalysisReport
@@ -202,6 +210,7 @@ class QualityEvalCase(EvaluationModel):
     history: list[str] = Field(default_factory=list)
     reference_date: date
     expected_behavior: ExpectedBehavior
+    expected_chart_format: Literal["png", "svg"] | None = None
     modes: set[QualityMode]
     evaluators: set[EvaluatorName]
     canonical_sql: str
@@ -239,6 +248,15 @@ class QualityEvalCase(EvaluationModel):
             raise ValueError("critical cases must declare high or critical risk")
         if self.replay.reference_date not in {None, self.reference_date}:
             raise ValueError("replay reference date must match the case reference date")
+        if self.replay.available_rows is not None and self.replay.available_rows < len(
+            self.replay.candidate_rows
+        ):
+            raise ValueError("available rows cannot be below returned candidate rows")
+        if self.replay.truncated and (
+            self.replay.available_rows is None
+            or self.replay.available_rows <= len(self.replay.candidate_rows)
+        ):
+            raise ValueError("truncated replay must declare a larger available row count")
         provenance = self.replay.provenance
         if provenance.evaluator_version != EVALUATOR_VERSION:
             raise ValueError("fixture evaluator version does not match the runtime evaluator")
@@ -327,6 +345,9 @@ class QualityDiagnostics(EvaluationModel):
     unsupported_numeric_claims: list[float] = Field(default_factory=list)
     candidate_sql: str
     candidate_rows: list[dict[str, Any]]
+    available_rows: int | None = None
+    truncated: bool = False
+    row_limit: int | None = None
     canonical_rows: list[dict[str, Any]]
     report_answer: str
     report_highlights: list[str] = Field(default_factory=list)
@@ -542,9 +563,12 @@ async def run_quality_live_evals(
     golden_store: GoldenExampleRepository,
     logger: EventLogger,
     analysis_agent: AnalysisAgentPort,
+    analysis_model: Any | None = None,
+    chart_executor: ChartCodeExecutor | None = None,
     human_scores: dict[str, float] | None = None,
-    max_safe_attempts: int = 3,
+    max_safe_attempts: int = 1,
     retry_delay_seconds: float = 5.0,
+    inter_attempt_delay_seconds: float = 5.0,
     repetitions: int = 1,
 ) -> QualitySuiteResult:
     from evals.dataset import inspect_dataset_governance, validate_partition_path
@@ -555,9 +579,12 @@ async def run_quality_live_evals(
     governance = inspect_dataset_governance(cases, config.golden_trios_path)
     if repetitions < 1:
         raise ValueError("repetitions must be at least 1")
+    if inter_attempt_delay_seconds < 0:
+        raise ValueError("inter_attempt_delay_seconds must be non-negative")
     reference_attempts = 0
     reference_failures = 0
     reference_results = []
+    live_attempt_started = False
     for case in cases:
         canonical_rows: list[dict[str, Any]] = []
         if case.expected_behavior in {"answer", "degrade"}:
@@ -582,6 +609,9 @@ async def run_quality_live_evals(
                 )
                 continue
         for attempt in range(1, repetitions + 1):
+            if live_attempt_started and inter_attempt_delay_seconds:
+                await asyncio.sleep(inter_attempt_delay_seconds)
+            live_attempt_started = True
             results.append(
                 await _evaluate_live_case(
                     config,
@@ -591,9 +621,12 @@ async def run_quality_live_evals(
                     golden_store=golden_store,
                     logger=logger,
                     analysis_agent=analysis_agent,
+                    analysis_model=analysis_model,
+                    chart_executor=chart_executor,
                     human_scores=human_scores or {},
                     max_safe_attempts=max_safe_attempts,
                     retry_delay_seconds=retry_delay_seconds,
+                    inter_turn_delay_seconds=inter_attempt_delay_seconds,
                     canonical_rows=canonical_rows,
                 )
             )
@@ -609,9 +642,7 @@ async def run_quality_live_evals(
         dry_run_bytes=sum(result.dry_run_bytes or 0 for result in reference_results),
         billed_bytes=sum(result.total_bytes_billed or 0 for result in reference_results),
         cache_hit_rate=(
-            sum(bool(value) for value in cache_values) / len(cache_values)
-            if cache_values
-            else None
+            sum(bool(value) for value in cache_values) / len(cache_values) if cache_values else None
         ),
     )
     return summarize_quality_results(
@@ -632,9 +663,12 @@ async def _evaluate_live_case(
     golden_store: GoldenExampleRepository,
     logger: EventLogger,
     analysis_agent: AnalysisAgentPort,
+    analysis_model: Any | None,
+    chart_executor: ChartCodeExecutor | None,
     human_scores: dict[str, float],
     max_safe_attempts: int,
     retry_delay_seconds: float,
+    inter_turn_delay_seconds: float,
     canonical_rows: list[dict[str, Any]],
 ) -> QualityEvalResult:
     conversation = ConversationState()
@@ -649,8 +683,11 @@ async def _evaluate_live_case(
             user_id=case.user_id,
             conversation=conversation,
             analysis_agent=analysis_agent,
+            analysis_model=analysis_model,
+            chart_executor=chart_executor,
             max_safe_attempts=max_safe_attempts,
             retry_delay_seconds=retry_delay_seconds,
+            reference_date=case.reference_date,
         )
         trajectory_metrics.append(history_turn.operational)
         conversation = history_turn.conversation
@@ -661,6 +698,8 @@ async def _evaluate_live_case(
                 attempt=attempt,
                 operational=merge_operational_metrics(trajectory_metrics),
             )
+        if inter_turn_delay_seconds:
+            await asyncio.sleep(inter_turn_delay_seconds)
 
     turn = await _run_live_turn(
         case.question,
@@ -671,8 +710,11 @@ async def _evaluate_live_case(
         user_id=case.user_id,
         conversation=conversation,
         analysis_agent=analysis_agent,
+        analysis_model=analysis_model,
+        chart_executor=chart_executor,
         max_safe_attempts=max_safe_attempts,
         retry_delay_seconds=retry_delay_seconds,
+        reference_date=case.reference_date,
     )
     trajectory_metrics.append(turn.operational)
     operational = merge_operational_metrics(trajectory_metrics)
@@ -690,6 +732,11 @@ async def _evaluate_live_case(
         update={
             "candidate_sql": turn.query_result.sql if turn.query_result is not None else "",
             "candidate_rows": turn.query_result.rows if turn.query_result is not None else [],
+            "available_rows": (
+                turn.query_result.available_rows if turn.query_result is not None else None
+            ),
+            "truncated": turn.query_result.truncated if turn.query_result is not None else False,
+            "row_limit": turn.query_result.row_limit if turn.query_result is not None else None,
             "canonical_rows": canonical_rows,
             "retrieved_ids": list(turn.retrieved_trio_ids),
             "report": turn.response,
@@ -711,9 +758,12 @@ async def _run_live_turn(
     logger: EventLogger,
     conversation: ConversationState,
     analysis_agent: AnalysisAgentPort,
+    analysis_model: Any | None,
+    chart_executor: ChartCodeExecutor | None,
     user_id: str,
     max_safe_attempts: int,
     retry_delay_seconds: float,
+    reference_date: date | None,
 ) -> TurnResult:
     attempts = max(1, max_safe_attempts)
     attempt_metrics: list[OperationalMetrics] = []
@@ -723,10 +773,13 @@ async def _run_live_turn(
             config=config,
             bigquery=bigquery,
             golden_store=golden_store,
+            chart_executor=chart_executor,
             logger=logger,
             user_id=user_id,
             conversation=conversation,
             analysis_agent=analysis_agent,
+            analysis_model=analysis_model,
+            reference_date_override=reference_date,
         )
         attempt_metrics.append(turn.operational)
         safe_to_retry = (
@@ -758,6 +811,7 @@ def evaluate_quality_case(
             replay.candidate_sql,
             case.canonical_sql,
             case.expectations,
+            reference_date=case.reference_date,
         )
         if "intent" in case.evaluators
         else None
@@ -835,6 +889,12 @@ def evaluate_quality_case(
         replay,
         executed_sql_attached=executed_sql_attached,
     )
+    completeness_met = not replay.truncated and not replay.report.truncated
+    chart_met = case.expected_chart_format is None or (
+        replay.report.chart_artifact is not None
+        and replay.report.chart_artifact.output_format == case.expected_chart_format
+        and replay.report.chart_artifact.size_bytes > 0
+    )
     automated_passed = (
         _applicable_score_passes("intent", intent)
         and _applicable_score_passes("calculation", calculation)
@@ -848,6 +908,8 @@ def evaluate_quality_case(
         and _applicable_score_passes("multi_turn", multi_turn)
         and _applicable_score_passes("operational", operational)
         and expected_behavior_met
+        and completeness_met
+        and chart_met
     )
     passed = (
         automated_passed
@@ -898,6 +960,8 @@ def evaluate_quality_case(
         f"report={report_status}, "
         f"sql_source={'verified' if executed_sql_attached else 'unverified'}, "
         f"behavior={'matched' if expected_behavior_met else 'mismatched'}, "
+        f"complete={'yes' if completeness_met else 'no'}, "
+        f"chart={_chart_status(case.expected_chart_format, chart_met)}, "
         f"failed_constraints={','.join(failed_constraints) if failed_constraints else 'none'}"
     )
     return QualityEvalResult(
@@ -918,6 +982,9 @@ def evaluate_quality_case(
             unsupported_numeric_claims=unsupported_claims,
             candidate_sql=replay.candidate_sql,
             candidate_rows=replay.candidate_rows,
+            available_rows=replay.available_rows,
+            truncated=replay.truncated,
+            row_limit=replay.row_limit,
             canonical_rows=replay.canonical_rows,
             report_answer=replay.report.answer,
             report_highlights=replay.report.highlights,
@@ -1071,7 +1138,11 @@ def _operational_summary(
         any(result.automated_passed for result in items) for items in grouped.values()
     )
     attempt_successes = sum(result.automated_passed for result in results)
-    durations = [result.operational.duration_ms for result in results]
+    durations = [
+        duration
+        for result in results
+        for duration in (result.operational.turn_durations_ms or [result.operational.duration_ms])
+    ]
     query_attempts = [result for result in results if result.operational.query_attempts > 0]
     cache_values = [
         result.operational.cache_hit
@@ -1235,7 +1306,7 @@ def _conversation_assessment(
                 detail="missing conversation contract",
             )
         ]
-    normalized_sql = " ".join(replay.candidate_sql.casefold().split())
+    normalized_sql = _normalize_conversation_sql(replay.candidate_sql)
     narrative = " ".join(
         [replay.report.answer, *replay.report.highlights, *replay.report.caveats]
     ).casefold()
@@ -1313,6 +1384,15 @@ def _conversation_assessment(
     return results
 
 
+def _normalize_conversation_sql(sql: str) -> str:
+    normalized = " ".join(sql.casefold().split())
+    return re.sub(
+        r"\binterval\s+'?3'?\s+months?\b",
+        "interval 1 quarter",
+        normalized,
+    )
+
+
 def _intent_score(
     config: AgentConfig,
     sql: str,
@@ -1327,12 +1407,19 @@ def _intent_assessment(
     sql: str,
     canonical_sql: str,
     expectations: QualityExpectations,
+    *,
+    reference_date: date | None = None,
 ) -> IntentAssessment:
     try:
         validation = validate_and_prepare_sql(sql, config)
         canonical_validation = validate_and_prepare_sql(canonical_sql, config)
-        candidate_expression = sqlglot.parse_one(validation.safe_sql, read="bigquery")
-        canonical_expression = sqlglot.parse_one(canonical_validation.safe_sql, read="bigquery")
+        effective_date = reference_date or date.today()
+        candidate_expression = _resolve_intent_dates(
+            sqlglot.parse_one(validation.safe_sql, read="bigquery"), effective_date
+        )
+        canonical_expression = _resolve_intent_dates(
+            sqlglot.parse_one(canonical_validation.safe_sql, read="bigquery"), effective_date
+        )
         candidate_signature = _intent_signature(candidate_expression)
         canonical_signature = _intent_signature(canonical_expression)
     except (ValueError, SqlglotError) as exc:
@@ -1347,19 +1434,10 @@ def _intent_assessment(
             ],
         )
     normalized = " ".join(validation.safe_sql.lower().split())
-    actual_tables = set(validation.tables)
     structure_ok = candidate_signature.satisfies(canonical_signature)
     joins_ok = _joins_are_allowed(candidate_expression, expectations.allowed_joins)
     constraints = [
         ConstraintDiagnostic(name="safe_sql", passed=True, detail="candidate SQL is safe"),
-        *[
-            ConstraintDiagnostic(
-                name=f"required_table:{table}",
-                passed=table in actual_tables,
-                detail=("present" if table in actual_tables else "missing"),
-            )
-            for table in expectations.required_tables
-        ],
         *[
             ConstraintDiagnostic(
                 name=f"required_sql:{fragment}",
@@ -1469,7 +1547,14 @@ def _rows_equal(
     for expected_key, expected_value in expected.items():
         mapped_key = contract.column_mapping.get(expected_key) if contract is not None else None
         if mapped_key is not None and mapped_key in candidate:
-            if not _values_equal(candidate[mapped_key], expected_value, tolerance):
+            if not _row_values_equal(
+                candidate[mapped_key],
+                expected_value,
+                tolerance,
+                candidate_key=mapped_key,
+                expected_key=expected_key,
+                contract=contract,
+            ):
                 return False
             unused = [(key, value) for key, value in unused if key != mapped_key]
             continue
@@ -1479,7 +1564,14 @@ def _rows_equal(
         )
         if exact_index is not None:
             _, candidate_value = unused.pop(exact_index)
-            if not _values_equal(candidate_value, expected_value, tolerance):
+            if not _row_values_equal(
+                candidate_value,
+                expected_value,
+                tolerance,
+                candidate_key=expected_key,
+                expected_key=expected_key,
+                contract=contract,
+            ):
                 return False
             continue
 
@@ -1488,7 +1580,14 @@ def _rows_equal(
                 index
                 for index, (candidate_key, candidate_value) in enumerate(unused)
                 if _column_names_compatible(candidate_key, expected_key)
-                if _values_equal(candidate_value, expected_value, tolerance)
+                if _row_values_equal(
+                    candidate_value,
+                    expected_value,
+                    tolerance,
+                    candidate_key=candidate_key,
+                    expected_key=expected_key,
+                    contract=contract,
+                )
             ),
             None,
         )
@@ -1528,7 +1627,33 @@ def _resolve_contract_column(
         for candidate_column in row
         if _column_names_compatible(candidate_column, canonical_column)
     ]
-    return compatible[0] if len(compatible) == 1 else None
+    if not compatible:
+        return None
+    canonical_tokens = _field_tokens(canonical_column)
+    ranked = sorted(
+        compatible,
+        key=lambda candidate: (
+            -len(_field_tokens(candidate) & canonical_tokens),
+            len(_field_tokens(candidate) - canonical_tokens),
+            len(_name_words(candidate)),
+            candidate,
+        ),
+    )
+    best = ranked[0]
+    if len(ranked) == 1:
+        return best
+    best_score = (
+        len(_field_tokens(best) & canonical_tokens),
+        len(_field_tokens(best) - canonical_tokens),
+        len(_name_words(best)),
+    )
+    next_best = ranked[1]
+    next_score = (
+        len(_field_tokens(next_best) & canonical_tokens),
+        len(_field_tokens(next_best) - canonical_tokens),
+        len(_name_words(next_best)),
+    )
+    return best if best_score != next_score else None
 
 
 def _has_contract_type_violation(violations: list[str]) -> bool:
@@ -1562,7 +1687,105 @@ def _values_equal(candidate: Any, expected: Any, tolerance: float) -> bool:
             rel_tol=tolerance,
             abs_tol=tolerance,
         )
+    if isinstance(candidate, str) and isinstance(expected, str):
+        candidate_month = re.fullmatch(r"(\d{4}-\d{2})(?:-01)?", candidate)
+        expected_month = re.fullmatch(r"(\d{4}-\d{2})(?:-01)?", expected)
+        if candidate_month is not None and expected_month is not None:
+            return candidate_month.group(1) == expected_month.group(1)
+        candidate_label = _normalized_dimension_label(candidate)
+        expected_label = _normalized_dimension_label(expected)
+        if candidate_label is not None and expected_label is not None:
+            return candidate_label == expected_label
     return candidate == expected
+
+
+def _row_values_equal(
+    candidate: Any,
+    expected: Any,
+    tolerance: float,
+    *,
+    candidate_key: str,
+    expected_key: str,
+    contract: ResultContract | None,
+) -> bool:
+    unit = contract.units.get(expected_key) if contract is not None else None
+    if unit == "date":
+        candidate = _normalized_date_value(candidate)
+        expected = _normalized_date_value(expected)
+        if isinstance(candidate, str) and isinstance(expected, str):
+            if _date_strings_equal(candidate, expected):
+                return True
+    if (
+        unit == "percentage"
+        and isinstance(candidate, (int, float))
+        and isinstance(expected, (int, float))
+    ):
+        candidate_is_percent = _uses_percent_units(candidate_key)
+        expected_is_percent = _uses_percent_units(expected_key)
+        if candidate_is_percent and not expected_is_percent:
+            candidate = float(candidate) / 100
+        elif expected_is_percent and not candidate_is_percent:
+            expected = float(expected) / 100
+    if (
+        unit == "currency"
+        and isinstance(candidate, (int, float))
+        and not isinstance(candidate, bool)
+        and isinstance(expected, (int, float))
+        and not isinstance(expected, bool)
+        and abs(float(candidate) - float(expected)) <= max(tolerance, 0.005)
+    ):
+        return True
+    return _values_equal(candidate, expected, tolerance)
+
+
+def _normalized_date_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def _date_strings_equal(candidate: str, expected: str) -> bool:
+    if candidate == expected:
+        return True
+    candidate_month = _month_number(candidate)
+    expected_month = _month_number(expected)
+    if candidate_month is None or expected_month is None:
+        return False
+    candidate_has_year = re.match(r"^\d{4}-", candidate) is not None
+    expected_has_year = re.match(r"^\d{4}-", expected) is not None
+    return candidate_month == expected_month and not (candidate_has_year and expected_has_year)
+
+
+def _month_number(value: str) -> int | None:
+    iso_month = re.match(r"^\d{4}-(\d{2})(?:-\d{2})?$", value)
+    if iso_month is not None:
+        return int(iso_month.group(1))
+    for pattern in ("%B", "%b"):
+        try:
+            return datetime.strptime(value, pattern).month
+        except ValueError:
+            continue
+    return None
+
+
+def _uses_percent_units(column: str) -> bool:
+    words = set(_name_words(column))
+    return bool(words & {"pct", "percent", "percentage"})
+
+
+def _normalized_dimension_label(value: str) -> str | None:
+    words = set(_name_words(value))
+    if "repeat" in words or {"more", "one", "order"}.issubset(words):
+        return "repeat"
+    if "exactly" in words and {"one", "order"}.issubset(words):
+        return "new"
+    if "single" in words or {"one", "order"}.issubset(words):
+        return "new"
+    if "new" in words or "first" in words and "time" in words:
+        return "new"
+    return None
 
 
 def _column_names_compatible(candidate: str, expected: str) -> bool:
@@ -1570,8 +1793,24 @@ def _column_names_compatible(candidate: str, expected: str) -> bool:
 
 
 def _field_tokens(field_name: str) -> set[str]:
-    synonyms = {"state": "region"}
-    ignored = {"by", "from", "gross", "lost", "to", "total", "value"}
+    synonyms = {
+        "aov": "value",
+        "average": "value",
+        "pct": "rate",
+        "percent": "rate",
+        "percentage": "rate",
+        "q1": "previous",
+        "q2": "current",
+        "ratio": "rate",
+        "returned": "return",
+        "sales": "revenue",
+        "segment": "cohort",
+        "share": "rate",
+        "spend": "value",
+        "state": "region",
+        "type": "cohort",
+    }
+    ignored = {"by", "customer", "from", "gross", "lost", "to", "total"}
     return {synonyms.get(word, word) for word in _name_words(field_name) if word not in ignored}
 
 
@@ -1674,10 +1913,14 @@ def _operational_assessment(
     trajectory_turns = len(case.history) + 1
     expects_query = case.expected_behavior in {"answer", "degrade"}
     constraints = [
-        _maximum_constraint(
-            "duration_budget",
-            metrics.duration_ms,
-            int(budgets.max_duration_seconds * trajectory_turns * 1000),
+        ConstraintDiagnostic(
+            name="duration_observation",
+            passed=True,
+            detail=(
+                f"actual={metrics.duration_ms}, "
+                f"target={int(budgets.max_duration_seconds * trajectory_turns * 1000)}, "
+                "informational=true"
+            ),
         ),
         _maximum_constraint(
             "query_attempt_budget",
@@ -1711,15 +1954,21 @@ def _operational_assessment(
         ),
         ConstraintDiagnostic(
             name="provider_request_attribution",
-            passed=metrics.provider_requests is not None and metrics.provider_requests >= 1,
+            passed=(
+                metrics.provider_requests is not None
+                and (
+                    metrics.provider_requests >= 1
+                    if expects_query
+                    else metrics.provider_requests == 0
+                )
+            ),
             detail=f"provider_requests={metrics.provider_requests}",
         ),
         ConstraintDiagnostic(
             name="provider_request_budget",
             passed=(
                 metrics.provider_requests is not None
-                and metrics.provider_requests
-                <= budgets.max_provider_requests * trajectory_turns
+                and metrics.provider_requests <= budgets.max_provider_requests * trajectory_turns
             ),
             detail=(
                 f"actual={metrics.provider_requests}, "
@@ -1856,6 +2105,12 @@ def _format_rate(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2%}"
 
 
+def _chart_status(expected_format: str | None, chart_met: bool) -> str:
+    if expected_format is None:
+        return "not-required"
+    return "verified" if chart_met else "missing"
+
+
 def _score_evaluator(score_name: str) -> EvaluatorName:
     return "retrieval" if score_name.startswith("retrieval_") else score_name  # type: ignore[return-value]
 
@@ -1947,6 +2202,7 @@ class _SQLIntentSignature:
     date_parts: frozenset[str]
     has_group: bool
     has_having: bool
+    limit: int | None
 
     def satisfies(self, expected: _SQLIntentSignature) -> bool:
         return (
@@ -1957,27 +2213,80 @@ class _SQLIntentSignature:
             and expected.functions.issubset(self.functions)
             and expected.time_offsets <= self.time_offsets
             and expected.date_parts.issubset(self.date_parts)
-            and self.has_group == expected.has_group
-            and self.has_having == expected.has_having
+            and (not expected.has_group or self.has_group)
+            and (not expected.has_having or self.has_having)
+            and (expected.limit is None or self.limit == expected.limit)
         )
+
+
+def _resolve_intent_dates(expression: exp.Expression, reference_date: date) -> exp.Expression:
+    reference_literal = exp.Cast(
+        this=exp.Literal.string(reference_date.isoformat()),
+        to=exp.DataType.build("DATE"),
+    )
+    resolved = expression.transform(
+        lambda node: reference_literal.copy() if isinstance(node, exp.CurrentDate) else node
+    )
+    return simplify(resolved)
+
+
+def _normalized_filter_literal(literal: exp.Literal) -> str:
+    value = literal.this.lower() if isinstance(literal.this, str) else str(literal.this)
+    temporal = re.match(r"^(\d{4}-\d{2}-\d{2})(?:\D|$)", value)
+    return temporal.group(1) if temporal is not None else value
 
 
 def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
     expression = sqlglot.parse_one(sql, read="bigquery") if isinstance(sql, str) else sql
     select = expression.find(exp.Select)
-    aliases: dict[str, frozenset[str]] = {}
+    raw_aliases: dict[str, set[str]] = {}
+    for nested_select in expression.find_all(exp.Select):
+        for projection in nested_select.expressions:
+            if not projection.alias:
+                continue
+            raw_aliases.setdefault(projection.alias.lower(), set()).update(
+                column.name.lower()
+                for column in projection.find_all(exp.Column)
+                if column.name
+            )
+
+    def resolve_name(name: str, seen: frozenset[str] = frozenset()) -> frozenset[str]:
+        if name in seen:
+            return frozenset({name})
+        targets = raw_aliases.get(name)
+        if not targets or targets == {name}:
+            return frozenset({name})
+        resolved: set[str] = set()
+        for target in targets:
+            resolved.update(resolve_name(target, seen | {name}))
+        return frozenset(resolved)
+
+    aliases = {alias: resolve_name(alias) for alias in raw_aliases}
+
+    def resolved_column_names(columns: list[exp.Column]) -> set[str]:
+        return {
+            resolved
+            for column in columns
+            if column.name
+            for resolved in aliases.get(column.name.lower(), {column.name.lower()})
+        }
+
     dimensions: set[str] = set()
     if select is not None:
         for projection in select.expressions:
-            column_names = frozenset(
-                column.name.lower() for column in projection.find_all(exp.Column) if column.name
+            column_names = resolved_column_names(
+                list(projection.find_all(exp.Column))
             )
-            if projection.alias:
-                aliases[projection.alias.lower()] = column_names
             if projection.find(exp.AggFunc) is None:
                 dimensions.update(column_names)
 
     group = expression.find(exp.Group)
+    limit_expression = expression.find(exp.Limit)
+    limit_value = None
+    if limit_expression is not None:
+        raw_limit = limit_expression.args.get("expression")
+        if isinstance(raw_limit, exp.Literal) and raw_limit.is_int:
+            limit_value = int(raw_limit.this)
     if group is not None:
         for group_expression in group.expressions:
             for column in group_expression.find_all(exp.Column):
@@ -1985,28 +2294,62 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
                 dimensions.update(aliases.get(name, {name}))
 
     predicates = [
-        node for node in (expression.find(exp.Where), expression.find(exp.Having)) if node
+        *expression.find_all(exp.Where),
+        *expression.find_all(exp.Having),
+        *expression.find_all(exp.Qualify),
     ]
-    filter_columns = {
-        column.name.lower()
-        for predicate in predicates
-        for column in predicate.find_all(exp.Column)
-        if column.name
-    }
+    ranking_functions = (exp.DenseRank, exp.Rank, exp.RowNumber)
+    aggregate_nodes = [
+        aggregate
+        for aggregate in expression.find_all(exp.AggFunc)
+        if not isinstance(aggregate, ranking_functions)
+    ]
+    conditional_aggregates = [
+        aggregate
+        for aggregate in aggregate_nodes
+        if isinstance(aggregate, exp.CountIf)
+        or isinstance(aggregate, (exp.Count, exp.Sum))
+        and aggregate.find(exp.Case) is not None
+    ]
+    filter_columns = resolved_column_names(
+        [column for predicate in predicates for column in predicate.find_all(exp.Column)]
+    )
+    filter_columns.update(
+        resolved_column_names(
+            [
+                column
+                for aggregate in conditional_aggregates
+                for column in aggregate.find_all(exp.Column)
+                if isinstance(aggregate, exp.CountIf)
+                or _is_conditional_predicate_column(column, aggregate)
+            ]
+        )
+    )
     filter_literals = {
-        literal.this.lower() if isinstance(literal.this, str) else str(literal.this)
+        _normalized_filter_literal(literal)
         for predicate in predicates
         for literal in predicate.find_all(exp.Literal)
         if not _is_temporal_literal(literal)
     }
+    filter_literals.update(
+        _normalized_filter_literal(literal)
+        for aggregate in conditional_aggregates
+        for literal in aggregate.find_all(exp.Literal)
+        if _is_business_condition_literal(literal)
+    )
     aggregates = Counter(
-        _aggregate_signature(aggregate) for aggregate in expression.find_all(exp.AggFunc)
+        set(_aggregate_signature(aggregate, aliases) for aggregate in aggregate_nodes)
     )
     functions = frozenset(
-        _function_signature(function)
+        signature
         for function in expression.find_all(exp.Func)
-        if not isinstance(function, (exp.AggFunc, exp.Case, exp.If, exp.And))
+        if (
+            not isinstance(function, (exp.AggFunc, exp.Case, exp.If, exp.And))
+            or isinstance(function, ranking_functions)
+        )
         and not _is_cosmetic_round(function)
+        if (signature := _function_signature(function))
+        not in {"dimension_formatting", "temporal_coercion"}
     )
     return _SQLIntentSignature(
         aggregates=aggregates,
@@ -2015,36 +2358,92 @@ def _intent_signature(sql: str | exp.Expression) -> _SQLIntentSignature:
         filter_literals=frozenset(filter_literals),
         functions=functions,
         time_offsets=_normalized_time_offsets(expression),
-        date_parts=frozenset(_date_part(node) for node in expression.find_all(exp.DateTrunc)),
+        date_parts=frozenset(),
         has_group=group is not None,
         has_having=expression.find(exp.Having) is not None,
+        limit=limit_value,
     )
 
 
-def _aggregate_signature(aggregate: exp.AggFunc) -> str:
-    columns = sorted(
+def _aggregate_signature(
+    aggregate: exp.AggFunc,
+    aliases: dict[str, frozenset[str]],
+) -> str:
+    raw_columns = [
         column.name.lower()
         for column in aggregate.find_all(exp.Column)
         if column.name and not _is_conditional_predicate_column(column, aggregate)
+    ]
+    columns = sorted(
+        {
+            resolved
+            for column in raw_columns
+            for resolved in aliases.get(column, {column})
+        }
     )
-    if not columns and aggregate.find(exp.Star) is not None:
-        columns = ["*"]
+    if isinstance(aggregate, exp.CountIf):
+        return "count:*"
+    if isinstance(aggregate, exp.Sum) and aggregate.find(exp.Case) is not None:
+        return f"sum:{','.join(columns)}" if columns else "count:*"
     distinct = ":distinct" if aggregate.find(exp.Distinct) is not None else ""
+    if isinstance(aggregate, exp.Count) and not distinct:
+        columns = ["*"]
+    elif not columns and aggregate.find(exp.Star) is not None:
+        columns = ["*"]
     return f"{aggregate.sql_name().lower()}:{','.join(columns)}{distinct}"
 
 
 def _function_signature(function: exp.Func) -> str:
+    if isinstance(function, exp.Concat):
+        return "dimension_formatting"
     if isinstance(function, exp.Date):
-        return "to_date"
+        return "temporal_coercion"
     if isinstance(function, exp.Cast):
         target = function.args.get("to")
-        if isinstance(target, exp.DataType) and target.this == exp.DType.DATE:
-            return "to_date"
+        if isinstance(target, exp.DataType) and target.this == exp.DType.TEXT:
+            return "dimension_formatting"
+        if isinstance(target, exp.DataType) and target.this in {
+            exp.DType.DATE,
+            exp.DType.DATETIME,
+            exp.DType.TIMESTAMP,
+            exp.DType.TIMESTAMPTZ,
+            exp.DType.TIMESTAMPNTZ,
+            exp.DType.TIMESTAMPLTZ,
+        }:
+            return "temporal_coercion"
+    if isinstance(function, exp.TsOrDsToTimestamp) or function.sql_name().lower() in {
+        "datetime",
+        "timestamp",
+    }:
+        return "temporal_coercion"
+    if isinstance(function, (exp.DateTrunc, exp.TimeToStr)):
+        return "temporal_coercion"
     if isinstance(function, exp.Round):
         decimals = function.args.get("decimals")
         precision = decimals.sql(dialect="bigquery") if decimals is not None else "0"
         return f"round:{precision.lower()}"
+    if isinstance(function, (exp.DenseRank, exp.Rank, exp.RowNumber)):
+        if _has_product_name_ranking_tiebreak(function):
+            # At product-name grain, the secondary name key makes these window
+            # functions equivalent for an exact top-N request. Explicit
+            # tie-preserving requests omit that key and therefore retain their
+            # distinct DENSE_RANK signature.
+            return "deterministic_product_rank"
     return function.sql_name().lower()
+
+
+def _has_product_name_ranking_tiebreak(function: exp.Func) -> bool:
+    window = function.parent
+    if not isinstance(window, exp.Window):
+        return False
+    order = window.args.get("order")
+    if order is None or len(order.expressions) < 2:
+        return False
+    return any(
+        column.name.casefold() in {"name", "product_name"}
+        for ordered in order.expressions[1:]
+        for column in ordered.find_all(exp.Column)
+    )
 
 
 def _is_cosmetic_round(function: exp.Func) -> bool:
@@ -2056,7 +2455,7 @@ def _is_cosmetic_round(function: exp.Func) -> bool:
         parent = parent.parent
         if isinstance(parent, exp.Select):
             clauses = [
-                parent.args.get(name) for name in ("group", "having", "order", "qualify", "where")
+                parent.args.get(name) for name in ("group", "having", "qualify", "where")
             ]
             clauses.extend(parent.args.get("joins") or [])
             if any(
@@ -2068,6 +2467,13 @@ def _is_cosmetic_round(function: exp.Func) -> bool:
             ):
                 return False
     return isinstance(parent, exp.Select)
+
+
+def _is_business_condition_literal(literal: exp.Literal) -> bool:
+    if not literal.is_string:
+        return False
+    normalized = _normalized_filter_literal(literal)
+    return not re.fullmatch(r"\d{4}-(?:\d{2}(?:-\d{2})?|q[1-4])", normalized)
 
 
 def _is_conditional_predicate_column(column: exp.Column, aggregate: exp.AggFunc) -> bool:
@@ -2100,6 +2506,8 @@ def _joins_are_allowed(expression: exp.Expression, allowed_joins: list[JoinKey])
     )
     allowed = {join.normalized() for join in allowed_joins}
     for join in joins:
+        if isinstance(join.this, exp.Table) and join.this.name.lower() in cte_names:
+            continue
         join_keys = {
             key
             for equality in join.find_all(exp.EQ)

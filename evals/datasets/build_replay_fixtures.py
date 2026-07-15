@@ -51,6 +51,8 @@ class Scenario:
     conversation_contract: dict[str, Any] | None = None
     retrieval: dict[str, Any] = field(default_factory=dict)
     retrieved_ids: list[str] = field(default_factory=list)
+    expected_chart_format: Literal["png", "svg"] | None = None
+    ordered: bool = True
 
 
 def _sql(value: str) -> str:
@@ -81,16 +83,27 @@ HOLDOUT_SCENARIOS = [
         "quarter_over_quarter_state_growth",
         "Quarter-over-quarter state growth",
         "temporal_aggregation",
-        "Compare the two most recent complete quarters by customer state.",
+        "Compare the two most recent complete quarters by customer state and calculate each state's growth rate.",
         _sql("""
-            SELECT u.state, ROUND(SUM(oi.sale_price), 2) AS current_revenue,
-                   ROUND(SAFE_DIVIDE(SUM(oi.sale_price) - 100000, 100000), 3) AS growth_rate
-            FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
-            JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id
-            WHERE oi.status NOT IN ('Cancelled', 'Returned')
-              AND DATE(oi.created_at) >= DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 1 QUARTER)
-              AND DATE(oi.created_at) < DATE_TRUNC(DATE '2026-07-13', QUARTER)
-            GROUP BY u.state ORDER BY growth_rate DESC, u.state LIMIT 20
+            WITH state_quarters AS (
+              SELECT u.state, DATE_TRUNC(DATE(oi.created_at), QUARTER) AS quarter,
+                     SUM(oi.sale_price) AS revenue
+              FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+              JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id
+              WHERE oi.status NOT IN ('Cancelled', 'Returned')
+                AND DATE(oi.created_at) >= DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 2 QUARTER)
+                AND DATE(oi.created_at) < DATE_TRUNC(DATE '2026-07-13', QUARTER)
+              GROUP BY u.state, quarter
+            )
+            SELECT state,
+                   ROUND(SUM(IF(quarter = DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 2 QUARTER), revenue, 0)), 2) AS previous_revenue,
+                   ROUND(SUM(IF(quarter = DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 1 QUARTER), revenue, 0)), 2) AS current_revenue,
+                   ROUND(SAFE_DIVIDE(
+                     SUM(IF(quarter = DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 1 QUARTER), revenue, 0))
+                       - SUM(IF(quarter = DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 2 QUARTER), revenue, 0)),
+                     SUM(IF(quarter = DATE_SUB(DATE_TRUNC(DATE '2026-07-13', QUARTER), INTERVAL 2 QUARTER), revenue, 0))
+                   ), 3) AS growth_rate
+            FROM state_quarters GROUP BY state ORDER BY growth_rate DESC, state
         """),
         [
             {"state": "California", "current_revenue": 112000.0, "growth_rate": 0.12},
@@ -101,6 +114,7 @@ HOLDOUT_SCENARIOS = [
         "California's quarter-over-quarter growth rate was 12%.",
         "high",
         True,
+        ordered=False,
     ),
     Scenario(
         "january_previous_month_boundary",
@@ -124,7 +138,7 @@ HOLDOUT_SCENARIOS = [
         "six_month_category_trend",
         "Six complete months category trend",
         "temporal_aggregation",
-        "Show six complete months of Outerwear revenue in chronological order.",
+        "Plot six complete months of Outerwear revenue in chronological order.",
         _sql("""
             SELECT DATE_TRUNC(DATE(oi.created_at), MONTH) AS month,
                    ROUND(SUM(oi.sale_price), 2) AS revenue
@@ -146,6 +160,7 @@ HOLDOUT_SCENARIOS = [
         ["month"],
         {"month": "date", "revenue": "currency"},
         "The six complete-month series is attached in chronological order.",
+        expected_chart_format="png",
     ),
     Scenario(
         "fixed_cohort_period_comparison",
@@ -174,7 +189,7 @@ HOLDOUT_SCENARIOS = [
         "net_revenue_after_returns",
         "Net revenue after returns",
         "business_semantics",
-        "Which categories retain the most revenue after returns are removed?",
+        "Return the top 10 categories by realized revenue, consistently excluding cancelled and returned items.",
         _sql("""
             SELECT p.category, ROUND(SUM(CASE WHEN oi.status NOT IN ('Cancelled', 'Returned') THEN oi.sale_price ELSE 0 END), 2) AS net_revenue
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -209,7 +224,7 @@ HOLDOUT_SCENARIOS = [
         "unit_return_rate_by_category",
         "Unit-based return rate",
         "business_semantics",
-        "Rank categories by the share of sold units that were returned.",
+        "Return the top 10 categories by the share of sold units that were returned.",
         _sql("""
             SELECT p.category, ROUND(SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)), 3) AS unit_return_rate
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -220,12 +235,13 @@ HOLDOUT_SCENARIOS = [
         ["category"],
         {"category": "text", "unit_return_rate": "percentage"},
         "Outerwear & Coats had an 8% unit return rate.",
+        ordered=False,
     ),
     Scenario(
         "returned_revenue_rate_by_category",
         "Returned-revenue rate",
         "business_semantics",
-        "Rank categories by returned sales value as a share of gross sales value.",
+        "Return the top 10 categories by returned sales value as a share of gross sales value.",
         _sql("""
             SELECT p.category, ROUND(SAFE_DIVIDE(SUM(IF(oi.status = 'Returned', oi.sale_price, 0)), SUM(oi.sale_price)), 3) AS returned_revenue_rate
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -236,12 +252,13 @@ HOLDOUT_SCENARIOS = [
         ["category"],
         {"category": "text", "returned_revenue_rate": "percentage"},
         "Outerwear & Coats had an 11% returned-revenue rate.",
+        ordered=False,
     ),
     Scenario(
         "minimum_sample_return_rate",
         "Return rate with minimum sample",
         "business_semantics",
-        "Show categories with at least 100 sold items and the highest return rate.",
+        "Return the top 10 categories with at least 100 sold items, ranked by unit return rate.",
         _sql("""
             SELECT p.category, COUNT(*) AS items_sold, ROUND(SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)), 3) AS return_rate
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -253,6 +270,7 @@ HOLDOUT_SCENARIOS = [
         {"category": "text", "items_sold": "count", "return_rate": "percentage"},
         "Outerwear & Coats met the threshold with 150 items and a 9% return rate.",
         "high",
+        ordered=False,
     ),
 ]
 
@@ -261,7 +279,7 @@ HOLDOUT_SCENARIOS += [
         "top_three_products_per_category",
         "Top three products within each category",
         "ranking_distribution",
-        "Return the top three products inside every category by realized revenue.",
+        "Return the top three product names inside every category by realized revenue.",
         _sql("""
             SELECT p.category, p.name AS product_name, ROUND(SUM(oi.sale_price), 2) AS revenue
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -286,13 +304,13 @@ HOLDOUT_SCENARIOS += [
         "state_share_of_realized_revenue",
         "State share of total revenue",
         "ranking_distribution",
-        "What percentage of realized revenue came from each customer state?",
+        "What percentage of realized revenue came from each customer state? Return every state.",
         _sql("""
             SELECT u.state, ROUND(SAFE_DIVIDE(SUM(oi.sale_price), SUM(SUM(oi.sale_price)) OVER ()), 3) AS revenue_share_rate
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
             JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id
             WHERE oi.status NOT IN ('Cancelled', 'Returned')
-            GROUP BY u.state ORDER BY revenue_share_rate DESC, u.state LIMIT 20
+            GROUP BY u.state ORDER BY revenue_share_rate DESC, u.state
         """),
         [
             {"state": "California", "revenue_share_rate": 0.55},
@@ -303,19 +321,22 @@ HOLDOUT_SCENARIOS += [
         "California contributed 55% of realized revenue.",
         "high",
         True,
+        ordered=False,
     ),
     Scenario(
         "equal_revenue_tie_handling",
         "Explicit equal-rank handling",
         "ranking_distribution",
-        "Rank products by realized revenue and preserve equal first-place ties.",
+        "Return the top 20 product names by realized revenue, using dense rank to preserve equal-value ties.",
         _sql("""
             SELECT p.name AS product_name, ROUND(SUM(oi.sale_price), 2) AS revenue,
                    DENSE_RANK() OVER (ORDER BY SUM(oi.sale_price) DESC) AS revenue_rank
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
             JOIN `bigquery-public-data.thelook_ecommerce.products` AS p ON oi.product_id = p.id
             WHERE oi.status NOT IN ('Cancelled', 'Returned')
-            GROUP BY p.name ORDER BY revenue_rank, product_name LIMIT 20
+            GROUP BY p.name
+            QUALIFY DENSE_RANK() OVER (ORDER BY SUM(oi.sale_price) DESC) <= 20
+            ORDER BY revenue_rank, product_name
         """),
         [
             {"product_name": "Coat", "revenue": 50000.0, "revenue_rank": 1},
@@ -329,7 +350,7 @@ HOLDOUT_SCENARIOS += [
         "deterministic_empty_product_cohort",
         "Empty result without invention",
         "ranking_distribution",
-        "Summarize sales for product ID -1, which is absent from the catalog.",
+        "Return product-ID-keyed realized revenue for product ID -1, which is absent from the catalog; do not synthesize a zero row.",
         _sql("""
             SELECT product_id, ROUND(SUM(sale_price), 2) AS revenue
             FROM `bigquery-public-data.thelook_ecommerce.order_items`
@@ -344,7 +365,7 @@ HOLDOUT_SCENARIOS += [
         "deterministic_secondary_state_sort",
         "Deterministic secondary ranking sort",
         "ranking_distribution",
-        "Rank states by realized revenue and sort equal values by state name.",
+        "Return the top 20 states by realized revenue and sort equal values by state name.",
         _sql("""
             SELECT u.state, ROUND(SUM(oi.sale_price), 2) AS revenue
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -361,7 +382,7 @@ HOLDOUT_SCENARIOS += [
         "repeat_customer_ids_only",
         "Repeat customers without direct identifiers",
         "customer_cohorts",
-        "List customer IDs with more than one distinct completed order.",
+        "List the top 20 customer IDs with more than one distinct completed order, ordered by completed-order count.",
         _sql("""
             SELECT user_id AS customer_id, COUNT(DISTINCT order_id) AS completed_orders
             FROM `bigquery-public-data.thelook_ecommerce.orders`
@@ -398,12 +419,13 @@ HOLDOUT_SCENARIOS += [
         {"cohort": "text", "average_spend": "currency"},
         "Repeat customers averaged $140 versus $75 for one-order customers.",
         "high",
+        ordered=False,
     ),
     Scenario(
         "new_vs_repeat_revenue_mix",
         "New versus repeat revenue mix",
         "customer_cohorts",
-        "Split realized revenue between first-time and repeat customers.",
+        "Split realized revenue between customers with exactly one lifetime order and customers with more than one lifetime order.",
         _sql("""
             WITH customer_orders AS (
               SELECT user_id, COUNT(DISTINCT order_id) AS order_count
@@ -421,6 +443,7 @@ HOLDOUT_SCENARIOS += [
         ["cohort"],
         {"cohort": "text", "revenue": "currency"},
         "Repeat customers generated $80,000 in realized revenue.",
+        ordered=False,
     ),
     Scenario(
         "traffic_source_average_order_value",
@@ -432,7 +455,7 @@ HOLDOUT_SCENARIOS += [
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
             JOIN `bigquery-public-data.thelook_ecommerce.users` AS u ON oi.user_id = u.id
             WHERE oi.status NOT IN ('Cancelled', 'Returned')
-            GROUP BY u.traffic_source ORDER BY average_order_spend DESC LIMIT 20
+            GROUP BY u.traffic_source ORDER BY average_order_spend DESC
         """),
         [{"traffic_source": "Search", "average_order_spend": 95.0}],
         ["traffic_source"],
@@ -443,7 +466,7 @@ HOLDOUT_SCENARIOS += [
         "age_band_realized_revenue",
         "Age-band realized revenue",
         "customer_cohorts",
-        "Group realized revenue into ten-year customer age bands.",
+        "Group realized revenue into ten-year customer age bands and order the bands by revenue descending.",
         _sql("""
             SELECT CONCAT(CAST(DIV(u.age, 10) * 10 AS STRING), '-', CAST(DIV(u.age, 10) * 10 + 9 AS STRING)) AS age_band,
                    ROUND(SUM(oi.sale_price), 2) AS revenue
@@ -820,7 +843,17 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
         "sql": report_sql,
         "refused": scenario.expected_behavior == "refuse",
         "degraded": scenario.expected_behavior == "degrade",
+        "available_rows": len(scenario.rows) if answer_case else None,
+        "truncated": False,
+        "row_limit": 500 if answer_case else None,
     }
+    if scenario.expected_chart_format is not None:
+        report["chart_artifact"] = {
+            "path": f"artifacts/charts/replay-{scenario.id}.{scenario.expected_chart_format}",
+            "output_format": scenario.expected_chart_format,
+            "size_bytes": 1,
+            "code_digest": "a" * 64,
+        }
     unit_types = {
         "currency": "number",
         "percentage": "number",
@@ -837,6 +870,9 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
     replay: dict[str, Any] = {
         "candidate_sql": candidate_sql,
         "candidate_rows": scenario.rows if answer_case else [],
+        "available_rows": len(scenario.rows) if answer_case else None,
+        "truncated": False,
+        "row_limit": 500 if answer_case else None,
         "canonical_rows": scenario.rows if answer_case else [],
         "retrieved_ids": scenario.retrieved_ids,
         "report": report,
@@ -861,7 +897,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "evaluator_version": EVALUATOR_VERSION,
             "prompt_version": PROMPT_VERSION,
             "persona_version": "prototype-config-v1",
-            "model": "google-cloud:gemini-2.5-flash",
+            "model": "google-cloud:gemini-3.5-flash",
             "embedding_model": "gemini-embedding-001",
             "golden_index_version": "golden_trios",
             "from_cache": True,
@@ -870,7 +906,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
         "operational": {
             "trace_ids": [f"replay-{scenario.id}"],
             "duration_ms": 1200 if answer_case else 400,
-            "provider_requests": 2 if answer_case else 1,
+            "provider_requests": 2 if answer_case else 0,
             "retrieval_requests": 1 if retrieval_case else 0,
             "query_attempts": 1 if answer_case else 0,
             "sql_retries": 0,
@@ -884,18 +920,19 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "tool_sequence": [
                 *(["retrieve_golden_examples"] if retrieval_case else []),
                 *(["run_sql_query"] if answer_case else []),
+                *(["generate_chart"] if scenario.expected_chart_format else []),
             ],
             "tool_order_compliant": True,
-            "input_tokens": 500,
+            "input_tokens": 500 if answer_case else 0,
             "cached_input_tokens": 0,
-            "reasoning_tokens": 100,
-            "output_tokens": 200,
-            "total_tokens": 800,
+            "reasoning_tokens": 100 if answer_case else 0,
+            "output_tokens": 200 if answer_case else 0,
+            "total_tokens": 800 if answer_case else 0,
             "dry_run_bytes": 1_000_000 if answer_case else 0,
             "billed_bytes": 1_000_000 if answer_case else 0,
             "cache_hit": False,
-            "chart_duration_ms": None,
-            "chart_artifact_bytes": None,
+            "chart_duration_ms": 1 if scenario.expected_chart_format else None,
+            "chart_artifact_bytes": 1 if scenario.expected_chart_format else None,
         },
     }
     replay_model = QualityReplay.model_validate(replay)
@@ -919,6 +956,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
         "history": scenario.history,
         "reference_date": REFERENCE_DATE,
         "expected_behavior": scenario.expected_behavior,
+        "expected_chart_format": scenario.expected_chart_format,
         "modes": ["replay", "live"],
         "evaluators": evaluators,
         "canonical_sql": scenario.sql,
@@ -943,7 +981,7 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
             "key_columns": scenario.keys,
             "measure_columns": [column for column in columns if column not in scenario.keys],
             "column_mapping": {column: column for column in columns},
-            "ordered": True,
+            "ordered": scenario.ordered,
             "numeric_tolerance": 0.001,
             "units": scenario.units,
         },
@@ -961,14 +999,14 @@ def _case_from_scenario(scenario: Scenario, suite: str) -> dict[str, Any]:
         },
         "conversation_contract": scenario.conversation_contract,
         "budgets": {
-            "max_query_attempts": 1 if answer_case else 0,
+            "max_query_attempts": 3 if answer_case else 0,
             "max_output_retries": 1,
-            "max_provider_requests": 4,
+            "max_provider_requests": 6,
             "max_retrieval_requests": 1,
             "max_bigquery_jobs": 2 if answer_case else 0,
             "max_bytes_processed": 50_000_000 if answer_case else 0,
-            "max_duration_seconds": 30,
-            "max_total_tokens": 16_000,
+            "max_duration_seconds": 60,
+            "max_total_tokens": 24_000,
         },
         "human_rubric": load_human_rubric().version,
         "replay": replay,
@@ -1038,7 +1076,7 @@ HOLDOUT_SCENARIOS += [
         "return_pattern_without_causal_claim",
         "Return pattern without causal overreach",
         "limitations_ambiguity",
-        "Why are returns high, using only evidence available in the retail tables?",
+        "Show the top 10 category return-rate patterns and explain that the available tables cannot establish why they occurred.",
         _sql("""
             SELECT p.category, ROUND(SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)), 3) AS return_rate
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -1051,6 +1089,7 @@ HOLDOUT_SCENARIOS += [
         "Outerwear & Coats showed a 12% return rate; these tables support association, not cause.",
         "critical",
         True,
+        ordered=False,
     ),
     Scenario(
         "conflicting_all_and_top_ten",
@@ -1070,7 +1109,7 @@ HOLDOUT_SCENARIOS += [
         "zero_denominator_safe_return_rate",
         "Safe zero-denominator handling",
         "data_quality_edge",
-        "Calculate the return rate for an absent product cohort without division errors.",
+        "Return a product-ID-keyed SAFE_DIVIDE return rate for product ID -1; if the cohort is absent, return no row rather than a synthetic zero.",
         _sql("""
             SELECT product_id, SAFE_DIVIDE(COUNTIF(status = 'Returned'), COUNT(*)) AS return_rate
             FROM `bigquery-public-data.thelook_ecommerce.order_items`
@@ -1086,7 +1125,7 @@ HOLDOUT_SCENARIOS += [
         "null_category_bucket",
         "Null category is explicit",
         "data_quality_edge",
-        "Include products without a category in a clearly named bucket.",
+        "Return the top 20 categories by realized revenue and name the null category bucket 'Uncategorized'.",
         _sql("""
             SELECT COALESCE(p.category, 'Uncategorized') AS category, ROUND(SUM(oi.sale_price), 2) AS revenue
             FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
@@ -1536,6 +1575,122 @@ def _with_current_evaluator_version(path: Path) -> str:
         raw = json.loads(line)
         replay = raw["replay"]
         replay["provenance"]["evaluator_version"] = EVALUATOR_VERSION
+        replay["provenance"]["prompt_version"] = PROMPT_VERSION
+        replay["available_rows"] = len(replay["candidate_rows"])
+        replay["truncated"] = False
+        replay["row_limit"] = 500 if replay["candidate_sql"] else None
+        replay["report"]["available_rows"] = replay["available_rows"]
+        replay["report"]["truncated"] = False
+        replay["report"]["row_limit"] = replay["row_limit"]
+        if raw["id"] == "monthly_revenue_category_critical":
+            question = (
+                "Plot the top 10 product categories by realized revenue in the last "
+                "complete calendar month."
+            )
+            canonical_sql = _sql("""
+                SELECT p.category AS category,
+                       ROUND(SUM(oi.sale_price), 2) AS revenue
+                FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+                JOIN `bigquery-public-data.thelook_ecommerce.products` AS p
+                  ON oi.product_id = p.id
+                WHERE oi.status NOT IN ('Cancelled', 'Returned')
+                  AND oi.created_at >= TIMESTAMP('2026-06-01')
+                  AND oi.created_at < TIMESTAMP('2026-07-01')
+                GROUP BY category ORDER BY revenue DESC LIMIT 10
+            """)
+            raw["question"] = question
+            raw["canonical_sql"] = canonical_sql
+            raw["expected_chart_format"] = "png"
+            # A chart request can legitimately consume two ModelRetry repairs before
+            # the verified artifact is bound to the final report. Keep the release
+            # budget aligned with that declared three-attempt execution contract.
+            raw["budgets"].update(
+                max_provider_requests=6,
+                max_duration_seconds=60,
+                max_total_tokens=32_000,
+            )
+            raw["expectations"]["required_sql_fragments"] = [
+                "sum(oi.sale_price)",
+                "group by",
+                "limit 10",
+            ]
+            raw["retrieval"]["useful_sql_fragments"] = [
+                "sum(oi.sale_price)",
+                "group by",
+                "limit 10",
+            ]
+            for row in [*replay["candidate_rows"], *replay["canonical_rows"]]:
+                row.pop("orders", None)
+            raw["result_contract"]["measure_columns"] = ["revenue"]
+            raw["result_contract"]["column_mapping"].pop("orders", None)
+            raw["result_contract"]["units"].pop("orders", None)
+            replay["candidate_sql"] = canonical_sql
+            replay["report"]["question"] = question
+            replay["report"]["sql"] = canonical_sql
+            replay["report"]["answer"] = (
+                "Outerwear & Coats led with 1330431.52 in realized revenue."
+            )
+            replay["report"]["chart_artifact"] = {
+                "path": "artifacts/charts/replay-monthly-revenue.png",
+                "output_format": "png",
+                "size_bytes": 1,
+                "code_digest": "a" * 64,
+            }
+            if "generate_chart" not in replay["operational"]["tool_sequence"]:
+                replay["operational"]["tool_sequence"].append("generate_chart")
+            replay["operational"]["chart_duration_ms"] = 1
+            replay["operational"]["chart_artifact_bytes"] = 1
+        else:
+            raw.setdefault("expected_chart_format", None)
+        if raw["id"] == "regional_returns_follow_up":
+            canonical_sql = _sql("""
+                SELECT u.state AS region,
+                       ROUND(SUM(CASE WHEN oi.status = 'Returned'
+                                 THEN oi.sale_price ELSE 0 END), 2) AS lost_revenue
+                FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+                JOIN `bigquery-public-data.thelook_ecommerce.users` AS u
+                  ON oi.user_id = u.id
+                WHERE u.state IN ('California', 'New York')
+                  AND oi.created_at >= TIMESTAMP('2026-04-01')
+                  AND oi.created_at < TIMESTAMP('2026-07-01')
+                GROUP BY region ORDER BY lost_revenue DESC
+            """)
+            prior_sql = _sql("""
+                SELECT u.state AS region, ROUND(SUM(oi.sale_price), 2) AS revenue
+                FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+                JOIN `bigquery-public-data.thelook_ecommerce.users` AS u
+                  ON oi.user_id = u.id
+                WHERE u.state IN ('California', 'New York')
+                  AND oi.status NOT IN ('Cancelled', 'Returned')
+                  AND oi.created_at >= TIMESTAMP('2026-04-01')
+                  AND oi.created_at < TIMESTAMP('2026-07-01')
+                GROUP BY region ORDER BY revenue DESC
+            """)
+            raw["canonical_sql"] = canonical_sql
+            raw["expectations"]["required_sql_fragments"] = [
+                "status = 'returned'",
+                "u.state in",
+                "oi.created_at",
+                "group by",
+            ]
+            raw["retrieval"]["useful_sql_fragments"] = [
+                "status = 'returned'",
+                "u.state in",
+                "oi.created_at",
+                "group by",
+            ]
+            raw["conversation_contract"]["retained_constraints"] = [
+                "u.state in ('california', 'new york')",
+                "2026-04-01",
+                "2026-07-01",
+            ]
+            raw["conversation_contract"]["effective_period"] = "2026-04-01"
+            raw["result_contract"]["ordered"] = False
+            replay["candidate_sql"] = canonical_sql
+            replay["report"]["sql"] = canonical_sql
+            replay["history_turns"][0]["sql"] = prior_sql
+        replay["provenance"]["canonical_sql_sha256"] = _sha256_text(raw["canonical_sql"])
+        replay["provenance"]["result_schema"] = _result_schema(replay["canonical_rows"])
         replay["provenance"]["content_sha256"] = "0" * 64
         replay_model = QualityReplay.model_validate(replay)
         replay["provenance"]["content_sha256"] = _fixture_content_sha256(
