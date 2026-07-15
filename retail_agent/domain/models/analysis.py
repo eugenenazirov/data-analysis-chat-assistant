@@ -25,6 +25,10 @@ class AnalysisReport(BaseModel):
     answer: str
     highlights: list[str] = Field(default_factory=list)
     table: list[dict[str, Any]] = Field(default_factory=list)
+    total_rows: int | None = Field(default=None, ge=0)
+    available_rows: int | None = Field(default=None, ge=0)
+    truncated: bool = False
+    row_limit: int | None = Field(default=None, ge=1)
     sql: str | None = None
     assumptions: list[str] = Field(default_factory=list)
     caveats: list[str] = Field(default_factory=list)
@@ -48,17 +52,14 @@ type AnalysisResponse = AnalysisReport | AgentFailure
 
 class DataAnalysisResult(BaseModel):
     kind: Literal["data_analysis"] = "data_analysis"
-    direct_answer: str
+    direct_answer: str = Field(min_length=1, max_length=1_500)
     highlights: list[str] = Field(
         default_factory=list,
+        max_length=5,
         description=f"Concise evidence-backed findings. {NARRATIVE_OUTPUT_RULE}",
     )
-    supporting_evidence: list[str] = Field(
-        default_factory=list,
-        description=f"Short prose evidence only. {NARRATIVE_OUTPUT_RULE}",
-    )
-    caveats: list[str] = Field(default_factory=list)
-    followups: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list, max_length=5)
+    followups: list[str] = Field(default_factory=list, max_length=3)
     chart_artifact: ChartArtifact | None = None
 
 

@@ -105,7 +105,7 @@ def test_validate_blocks_destructive_sql(test_config):
         )
 
 
-def test_validate_adds_limit_when_missing(test_config):
+def test_validate_preserves_query_without_fabricated_limit(test_config):
     validation = validate_and_prepare_sql(
         """
         SELECT product_id, COUNT(*) AS item_count
@@ -116,7 +116,24 @@ def test_validate_adds_limit_when_missing(test_config):
         test_config,
     )
 
-    assert "LIMIT 25" in validation.safe_sql
+    assert "LIMIT" not in validation.safe_sql.upper()
+
+
+def test_validate_normalizes_timestamp_column_against_calendar_date_bounds(test_config):
+    validation = validate_and_prepare_sql(
+        """
+        SELECT COUNT(*) AS item_count
+        FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+        WHERE oi.created_at >= DATE_SUB(
+          DATE_TRUNC(CURRENT_DATE(), QUARTER), INTERVAL 1 QUARTER
+        )
+          AND oi.created_at < DATE_TRUNC(CURRENT_DATE(), QUARTER)
+        """,
+        test_config,
+    )
+
+    assert validation.safe_sql.count("DATE(oi.created_at)") == 2
+    assert "INTERVAL 1 QUARTER" in validation.safe_sql
 
 
 def test_validate_blocks_excessive_existing_limit(test_config):

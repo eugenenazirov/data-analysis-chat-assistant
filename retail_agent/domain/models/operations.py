@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class OperationalMetrics(BaseModel):
     trace_ids: list[str] = Field(default_factory=list)
     duration_ms: int = Field(default=0, ge=0)
+    turn_durations_ms: list[int] = Field(default_factory=list)
     provider_requests: int | None = Field(default=None, ge=0)
     retrieval_requests: int = Field(default=0, ge=0)
     query_attempts: int = Field(default=0, ge=0)
@@ -51,6 +52,11 @@ def merge_operational_metrics(
     return OperationalMetrics(
         trace_ids=[trace_id for item in metrics for trace_id in item.trace_ids],
         duration_ms=sum(item.duration_ms for item in metrics),
+        turn_durations_ms=[
+            duration
+            for item in metrics
+            for duration in (item.turn_durations_ms or [item.duration_ms])
+        ],
         provider_requests=optional_sum("provider_requests"),
         retrieval_requests=sum(item.retrieval_requests for item in metrics),
         query_attempts=sum(item.query_attempts for item in metrics),

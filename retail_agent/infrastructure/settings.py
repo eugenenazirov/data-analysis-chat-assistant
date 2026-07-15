@@ -32,7 +32,7 @@ class BigQuerySettings(BaseModel):
     )
     max_bytes_billed: int = Field(default=200_000_000, gt=0)
     timeout_seconds: int = Field(default=60, gt=0, le=600)
-    max_result_rows: int = Field(default=100, gt=0, le=10_000)
+    max_result_rows: int = Field(default=500, gt=0, le=10_000)
     job_label_app: str = "retail-agent"
 
 
@@ -45,12 +45,20 @@ class RetrievalSettings(BaseModel):
 
 
 class ModelSettings(BaseModel):
-    llm_model: str = "google-cloud:gemini-2.5-flash"
+    llm_model: str = "google-cloud:gemini-3.5-flash"
     embedding_provider: Literal["gemini", "hash"] = "gemini"
     embedding_model: str = "gemini-embedding-001"
     google_api_key: SecretStr | None = None
-    google_cloud_location: str = "us-central1"
-    temperature: float = Field(default=0.1, ge=0, le=2)
+    google_cloud_location: str | None = None
+    google_cloud_llm_location: str = "global"
+    google_cloud_llm_fallback_location: str | None = "us-central1"
+    google_cloud_embedding_location: str = "us-central1"
+    provider_retry_attempts: int = Field(default=3, ge=1, le=5)
+    provider_retry_initial_delay: float = Field(default=1.0, ge=0, le=30)
+    provider_retry_max_delay: float = Field(default=4.0, ge=0, le=60)
+    thinking_budget: int = Field(default=0, ge=-1, le=24_576)
+    max_output_tokens: int = Field(default=2_048, ge=256, le=65_536)
+    temperature: float = Field(default=0.0, ge=0, le=2)
 
 
 class AgentLimitSettings(BaseModel):
@@ -58,7 +66,8 @@ class AgentLimitSettings(BaseModel):
     tool_calls_limit: int = Field(default=6, ge=1, le=50)
     total_tokens_limit: int = Field(default=32_000, ge=1_000)
     max_sql_retries: int = Field(default=DEFAULT_SQL_RETRIES, ge=0, le=3)
-    output_retries: int = Field(default=2, ge=0, le=3)
+    max_chart_retries: int = Field(default=2, ge=0, le=3)
+    output_retries: int = Field(default=1, ge=0, le=3)
 
 
 class ChartExecutionSettings(BaseModel):
@@ -184,7 +193,19 @@ _ENV_ALIASES: dict[str, tuple[str, str]] = {
     "EMBEDDING_MODEL": ("model", "embedding_model"),
     "GOOGLE_API_KEY": ("model", "google_api_key"),
     "GOOGLE_CLOUD_LOCATION": ("model", "google_cloud_location"),
+    "GOOGLE_CLOUD_LLM_LOCATION": ("model", "google_cloud_llm_location"),
+    "GOOGLE_CLOUD_LLM_FALLBACK_LOCATION": (
+        "model",
+        "google_cloud_llm_fallback_location",
+    ),
+    "GOOGLE_CLOUD_EMBEDDING_LOCATION": (
+        "model",
+        "google_cloud_embedding_location",
+    ),
+    "LLM_THINKING_BUDGET": ("model", "thinking_budget"),
+    "LLM_MAX_OUTPUT_TOKENS": ("model", "max_output_tokens"),
     "MAX_SQL_RETRIES": ("agent_limits", "max_sql_retries"),
+    "MAX_CHART_RETRIES": ("agent_limits", "max_chart_retries"),
     "MAX_AGENT_REQUESTS": ("agent_limits", "request_limit"),
     "MAX_TOOL_CALLS": ("agent_limits", "tool_calls_limit"),
     "MAX_AGENT_TOKENS": ("agent_limits", "total_tokens_limit"),
@@ -220,6 +241,11 @@ class _FlatAliasSettingsSource(PydanticBaseSettingsSource):
             if value in {None, ""}:
                 continue
             result.setdefault(section, {})[field] = value
+        legacy_location = self._values.get("google_cloud_location")
+        if legacy_location not in {None, ""}:
+            model = result.setdefault("model", {})
+            model.setdefault("google_cloud_llm_location", legacy_location)
+            model.setdefault("google_cloud_embedding_location", legacy_location)
         if result.get("observability", {}).get("logfire_token"):
             result["observability"]["enable_logfire"] = True
         return result
@@ -231,6 +257,7 @@ class ApplicationSettings(BaseSettings):
         env_file_encoding="utf-8",
         env_ignore_empty=True,
         env_nested_delimiter="__",
+        env_prefix="RETAIL_AGENT_",
         extra="ignore",
         yaml_file="config/agent.yaml",
         yaml_file_encoding="utf-8",
@@ -242,9 +269,7 @@ class ApplicationSettings(BaseSettings):
     bigquery: BigQuerySettings = Field(default_factory=BigQuerySettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     agent_limits: AgentLimitSettings = Field(default_factory=AgentLimitSettings)
-    chart_execution: ChartExecutionSettings = Field(
-        default_factory=ChartExecutionSettings
-    )
+    chart_execution: ChartExecutionSettings = Field(default_factory=ChartExecutionSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
@@ -280,22 +305,16 @@ class ApplicationSettings(BaseSettings):
         if not isinstance(value, dict):
             return value
         return {
-            user_id: {"user_id": user_id, **profile}
-            if isinstance(profile, dict)
-            else profile
+            user_id: {"user_id": user_id, **profile} if isinstance(profile, dict) else profile
             for user_id, profile in value.items()
         }
 
     @model_validator(mode="after")
     def validate_safe_table_configuration(self) -> ApplicationSettings:
-        missing = set(self.bigquery.allowed_tables) - set(
-            self.safety.safe_columns_by_table
-        )
+        missing = set(self.bigquery.allowed_tables) - set(self.safety.safe_columns_by_table)
         if missing:
             tables = ", ".join(sorted(missing))
-            raise ValueError(
-                f"Missing safety.safe_columns_by_table entries for: {tables}."
-            )
+            raise ValueError(f"Missing safety.safe_columns_by_table entries for: {tables}.")
         return self
 
     @property

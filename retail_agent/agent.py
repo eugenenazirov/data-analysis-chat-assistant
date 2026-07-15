@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import re
 import time
 import uuid
 from collections.abc import Sequence
@@ -22,6 +24,7 @@ from pydantic_ai import (
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (
     ModelAPIError,
+    ModelHTTPError,
     ToolRetryError,
     UnexpectedModelBehavior,
     UsageLimitExceeded,
@@ -49,12 +52,14 @@ from retail_agent.bigquery import (
 from retail_agent.config import DEFAULT_HISTORY_BYTES, AgentConfig
 from retail_agent.domain.errors import ChartExecutionError, ChartExecutionFailureCode
 from retail_agent.domain.policies.analysis_output import (
-    NARRATIVE_OUTPUT_RULE,
     narrative_output_violation,
 )
+from retail_agent.domain.policies.query_semantics import validate_query_semantics
 from retail_agent.domain.policies.report_evidence import assess_report_evidence
+from retail_agent.domain.policies.request_routing import classify_non_query_request
 from retail_agent.domain.policies.retrieval import (
     RETRIEVAL_ROUTING_RULE,
+    is_schema_question,
     requires_golden_precedent,
 )
 from retail_agent.infrastructure.agents.runner import AnalysisAgentRunner
@@ -88,14 +93,48 @@ class GoldenRetrievalResult(BaseModel):
     error_code: str | None = None
 
 
+class QueryToolResult(BaseModel):
+    """Bounded query evidence returned to the model.
+
+    The complete verified result stays in ``AgentDependencies.last_query_result`` for
+    the final table, evidence validation, and chart input. Sending only a typed preview
+    here prevents a wide but complete result from consuming the next model turn's token
+    budget.
+    """
+
+    columns: list[str]
+    preview_rows: list[dict[str, Any]]
+    preview_row_count: int = Field(ge=0)
+    returned_rows: int = Field(ge=0)
+    available_rows: int = Field(ge=0)
+    truncated: bool
+    row_limit: int | None = Field(default=None, ge=1)
+    guidance: str = (
+        "preview_rows is bounded model context; the runtime retains and attaches all "
+        "returned rows. Treat the result as incomplete only when truncated is true."
+    )
+
+
 class ChartToolResult(BaseModel):
     status: Literal["ok", "error"]
     artifact: ChartArtifact | None = None
     error_code: str | None = None
+    repair_hint: str | None = None
 
 
 type ChartFailureCode = (
-    ChartExecutionFailureCode | Literal["executor_unavailable", "verified_query_required"]
+    ChartExecutionFailureCode
+    | Literal[
+        "executor_unavailable",
+        "not_generated",
+        "truncated_query",
+        "verified_query_required",
+    ]
+)
+
+_CHART_REQUEST_PATTERN = re.compile(
+    r"\b(?:chart|graph|plot|visuali[sz](?:ation|e)?)\b",
+    re.IGNORECASE,
 )
 
 
@@ -106,22 +145,28 @@ class AgentDependencies:
     logger: Telemetry
     user: UserProfile
     trace_id: str
+    question: str = ""
     reference_date: date = field(default_factory=lambda: datetime.now(UTC).date())
     golden_store: GoldenExampleRepository | None = None
     chart_executor: ChartCodeExecutor | None = None
     last_query_result: QueryResult | None = None
+    prior_query_results: tuple[QueryResult, ...] = ()
     last_tool_failure_code: FailureCode | None = None
     last_tool_failure_retryable: bool = False
     sql_tool_invoked: bool = False
     retrieval_attempted: bool = False
     retrieval_required: bool = False
     retrieval_degraded: bool = False
+    schema_only: bool = False
+    chart_requested: bool = False
     retrieved_trio_ids: list[str] = field(default_factory=list)
+    retrieved_trios: list[RetrievedTrio] = field(default_factory=list)
     tool_sequence: list[str] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     output_validation_retries: int = 0
     last_chart_artifact: ChartArtifact | None = None
     last_chart_failure_code: ChartFailureCode | None = None
+    chart_attempts: int = 0
     sql_retry_reasons: list[str] = field(default_factory=list)
     output_retry_reasons: list[str] = field(default_factory=list)
     bigquery_job_ids: list[str] = field(default_factory=list)
@@ -130,6 +175,9 @@ class AgentDependencies:
     billed_bytes: int = 0
     cache_hits: list[bool] = field(default_factory=list)
     bigquery_dry_runs: int = 0
+    model_behavior_retries: int = 0
+    failed_provider_requests: int = 0
+    model_attempt_tool_event_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -138,6 +186,7 @@ class ConversationState:
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     completed_turns: tuple[tuple[ModelMessage, ...], ...] = ()
+    completed_query_results: tuple[QueryResult | None, ...] = ()
     turn_index: int = 0
 
     def message_history(
@@ -157,6 +206,7 @@ class ConversationState:
         self,
         *,
         messages: Sequence[ModelMessage],
+        query_result: QueryResult | None = None,
         max_turns: int,
         max_bytes: int = DEFAULT_HISTORY_BYTES,
     ) -> ConversationState:
@@ -164,20 +214,24 @@ class ConversationState:
         if messages:
             compacted = tuple(_compact_tool_returns(messages, max_bytes))
             turns = (*turns, compacted)[-max_turns:]
+        query_results = (*self.completed_query_results, query_result)[-max_turns:]
         return ConversationState(
             session_id=self.session_id,
             completed_turns=turns,
+            completed_query_results=query_results,
             turn_index=self.turn_index + 1,
         )
 
     def fail_turn(
         self,
         *,
+        query_result: QueryResult | None = None,
         max_turns: int,
         max_bytes: int = DEFAULT_HISTORY_BYTES,
     ) -> ConversationState:
         return self.complete_turn(
             messages=(),
+            query_result=query_result,
             max_turns=max_turns,
             max_bytes=max_bytes,
         )
@@ -216,50 +270,89 @@ async def retrieve_golden_examples(
 ) -> GoldenRetrievalResult:
     """Retrieve approved metric, cohort, join, filter, and time-window precedent."""
 
+    return await _retrieve_golden_context(
+        ctx.deps,
+        question=question,
+        limit=limit,
+        retry=getattr(ctx, "retry", 0),
+        max_retries=getattr(ctx, "max_retries", 0),
+    )
+
+
+async def _retrieve_golden_context(
+    deps: AgentDependencies,
+    *,
+    question: str,
+    limit: int | None = None,
+    retry: int = 0,
+    max_retries: int = 0,
+) -> GoldenRetrievalResult:
+    """Run one bounded retrieval, whether orchestrated by the app or the model."""
+
     started = time.perf_counter()
-    ctx.deps.retrieval_attempted = True
-    ctx.deps.tool_sequence.append("retrieve_golden_examples")
-    selected_limit = min(limit or ctx.deps.config.retrieval.top_k, 20)
-    if ctx.deps.golden_store is None:
-        ctx.deps.retrieval_degraded = True
-        _record_tool_event(ctx, "retrieve_golden_examples", "degraded", started)
+    deps.retrieval_attempted = True
+    deps.tool_sequence.append("retrieve_golden_examples")
+    selected_limit = min(limit or deps.config.retrieval.top_k, 20)
+    if deps.golden_store is None:
+        deps.retrieval_degraded = True
+        _record_dependency_tool_event(deps, "retrieve_golden_examples", "degraded", started)
         return GoldenRetrievalResult(
             status="degraded",
             error_code="retrieval_not_configured",
         )
     try:
         examples = await asyncio.to_thread(
-            ctx.deps.golden_store.search,
+            deps.golden_store.search,
             question.strip(),
-            ctx.deps.trace_id,
+            deps.trace_id,
             selected_limit,
         )
     except Exception as exc:
-        ctx.deps.retrieval_degraded = True
-        ctx.deps.logger.event(
-            ctx.deps.trace_id,
+        deps.retrieval_degraded = True
+        deps.logger.event(
+            deps.trace_id,
             "golden_knowledge_unavailable",
             failure_class=exc.__class__.__name__,
-            error=str(exc),
+            retry_attempt=retry,
+            max_retries=max_retries,
         )
-        _record_tool_event(ctx, "retrieve_golden_examples", "degraded", started)
+        _record_dependency_tool_event(
+            deps,
+            "retrieve_golden_examples",
+            "degraded",
+            started,
+        )
         return GoldenRetrievalResult(
             status="degraded",
             error_code="retrieval_unavailable",
         )
 
-    ctx.deps.retrieved_trio_ids = [example.id for example in examples]
-    _record_tool_event(ctx, "retrieve_golden_examples", "succeeded", started)
+    deps.retrieved_trios = list(examples)
+    deps.retrieved_trio_ids = [example.id for example in examples]
+    _record_dependency_tool_event(
+        deps,
+        "retrieve_golden_examples",
+        "succeeded",
+        started,
+    )
     return GoldenRetrievalResult(status="ok", examples=examples)
 
 
-async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryResult:
+async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryToolResult:
     """Validate and run a read-only BigQuery SQL query."""
 
     started = time.perf_counter()
     ctx.deps.sql_tool_invoked = True
     ctx.deps.tool_sequence.append("run_sql_query")
     try:
+        validate_query_semantics(
+            sql,
+            question=ctx.deps.question,
+            reference_date=ctx.deps.reference_date,
+            prior_sql=(
+                ctx.deps.prior_query_results[-1].sql if ctx.deps.prior_query_results else None
+            ),
+        )
         result = await asyncio.to_thread(
             ctx.deps.bigquery.execute,
             sql,
@@ -282,7 +375,7 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
             "empty" if result.total_rows == 0 else "succeeded",
             started,
         )
-        return result
+        return _query_tool_result(result)
     except QueryCostExceeded as exc:
         ctx.deps.bigquery_dry_runs += 1
         _record_tool_event(ctx, "run_sql_query", "rejected", started)
@@ -317,20 +410,53 @@ async def run_sql_query(ctx: RunContext[AgentDependencies], sql: str) -> QueryRe
         raise ModelRetry(str(exc)) from exc
 
 
+def _query_tool_result(result: QueryResult, *, preview_limit: int = 10) -> QueryToolResult:
+    preview_rows, _ = redact_value(result.rows[:preview_limit])
+    columns = sorted({column for row in result.rows for column in row})
+    return QueryToolResult(
+        columns=columns,
+        preview_rows=preview_rows,
+        preview_row_count=len(preview_rows),
+        returned_rows=result.total_rows,
+        available_rows=(
+            result.available_rows if result.available_rows is not None else result.total_rows
+        ),
+        truncated=result.truncated,
+        row_limit=result.row_limit,
+    )
+
+
 async def prepare_chart_tool(
     ctx: RunContext[AgentDependencies],
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
-    if ctx.deps.last_query_result is not None and ctx.deps.chart_executor is not None:
+    if (
+        not ctx.deps.schema_only
+        and ctx.deps.last_query_result is not None
+        and not ctx.deps.last_query_result.truncated
+        and ctx.deps.chart_executor is not None
+        and ctx.deps.chart_attempts <= ctx.deps.config.agent_limits.max_chart_retries
+    ):
         return tool_definition
     return None
+
+
+async def prepare_retrieval_tool(
+    ctx: RunContext[AgentDependencies],
+    tool_definition: ToolDefinition,
+) -> ToolDefinition | None:
+    return None if ctx.deps.schema_only or ctx.deps.retrieval_attempted else tool_definition
 
 
 async def prepare_sql_tool(
     ctx: RunContext[AgentDependencies],
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
-    if ctx.deps.retrieval_required and not ctx.deps.retrieval_attempted:
+    if (
+        ctx.deps.schema_only
+        or ctx.deps.last_query_result is not None
+        or (ctx.deps.retrieval_required and not ctx.deps.retrieval_attempted)
+    ):
         return None
     return tool_definition
 
@@ -347,6 +473,9 @@ async def generate_chart(
     """
 
     started = time.perf_counter()
+    retry_attempt = getattr(ctx, "retry", 0)
+    max_retries = getattr(ctx, "max_retries", 0)
+    ctx.deps.chart_attempts += 1
     ctx.deps.tool_sequence.append("generate_chart")
     digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
     if ctx.deps.last_query_result is None:
@@ -355,6 +484,16 @@ async def generate_chart(
         ctx.deps.last_chart_artifact = None
         ctx.deps.last_chart_failure_code = error_code
         return ChartToolResult(status="error", error_code=error_code)
+    if ctx.deps.last_query_result.truncated:
+        _record_tool_event(ctx, "generate_chart", "rejected", started)
+        error_code = "truncated_query"
+        ctx.deps.last_chart_artifact = None
+        ctx.deps.last_chart_failure_code = error_code
+        return ChartToolResult(
+            status="error",
+            error_code=error_code,
+            repair_hint="Narrow the query until all rows fit within the result limit.",
+        )
     if ctx.deps.chart_executor is None:
         _record_tool_event(ctx, "generate_chart", "unavailable", started)
         error_code = "executor_unavailable"
@@ -362,9 +501,10 @@ async def generate_chart(
         ctx.deps.last_chart_failure_code = error_code
         return ChartToolResult(status="error", error_code=error_code)
 
+    redacted_rows, redaction_count = redact_value(ctx.deps.last_query_result.rows)
     request = ChartRequest(
         code=code,
-        data=ctx.deps.last_query_result.rows,
+        data=redacted_rows,
         output_format=output_format,
     )
     try:
@@ -378,8 +518,17 @@ async def generate_chart(
             "chart_execution_failed",
             code_digest=digest,
             error_code=exc.code,
+            retry_attempt=retry_attempt,
+            max_retries=max_retries,
         )
-        return ChartToolResult(status="error", error_code=exc.code)
+        repair_hint = exc.repair_hint or (f"Fix the chart program and save chart.{output_format}.")
+        if retry_attempt < max_retries:
+            raise ModelRetry(repair_hint) from exc
+        return ChartToolResult(
+            status="error",
+            error_code=exc.code,
+            repair_hint=repair_hint,
+        )
 
     ctx.deps.last_chart_artifact = artifact
     ctx.deps.last_chart_failure_code = None
@@ -391,6 +540,7 @@ async def generate_chart(
         output_format=artifact.output_format,
         size_bytes=artifact.size_bytes,
         artifact_path=artifact.path,
+        input_redactions=redaction_count,
     )
     return ChartToolResult(status="ok", artifact=artifact)
 
@@ -399,14 +549,17 @@ def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependen
     toolset = FunctionToolset[AgentDependencies](
         instructions=(
             f"{RETRIEVAL_ROUTING_RULE}\n\n"
-            "Tool mechanics: run_sql_query returns the only verified current rows. "
-            "generate_chart appears only after a successful query and must use those rows."
+            "Tool mechanics: run_sql_query returns bounded preview_rows from the only "
+            "verified current result; the runtime retains and attaches the complete table. "
+            "generate_chart appears only after a successful query and reads the complete "
+            "verified rows from input.json."
         ),
         sequential=True,
     )
     toolset.add_function(
         retrieve_golden_examples,
         retries=0,
+        prepare=prepare_retrieval_tool,
         timeout=config.retrieval.timeout_seconds,
     )
     toolset.add_function(
@@ -417,7 +570,7 @@ def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependen
     )
     toolset.add_function(
         generate_chart,
-        retries=0,
+        retries=config.agent_limits.max_chart_retries,
         prepare=prepare_chart_tool,
         timeout=config.chart_execution.timeout_seconds + 5,
     )
@@ -435,7 +588,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
         instructions=prompt.instructions,
         retries={"output": config.agent_limits.output_retries},
         toolsets=[build_analysis_toolset(config)],
-        model_settings=ModelSettings(temperature=config.model.temperature),
+        model_settings=_analysis_model_settings(config),
         capabilities=[ProcessHistory(_process_message_history)],
         defer_model_check=True,
     )
@@ -460,86 +613,218 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
                 max_retries=ctx.max_retries,
             )
             raise ModelRetry("A data analysis result requires a successful run_sql_query call.")
+        if query_result.truncated:
+            return output
+        output = output.model_copy(update={"highlights": output.highlights[:2]})
+        if (
+            ctx.deps.chart_requested
+            and ctx.deps.chart_executor is not None
+            and ctx.deps.last_chart_artifact is None
+            and ctx.deps.last_chart_failure_code is None
+        ):
+            ctx.deps.output_validation_retries = ctx.retry + 1
+            ctx.deps.output_retry_reasons.append("chart_required")
+            ctx.deps.logger.event(
+                ctx.deps.trace_id,
+                "output_validation_retry",
+                reason="chart_required",
+                retry_attempt=ctx.retry,
+                max_retries=ctx.max_retries,
+            )
+            raise ModelRetry(
+                "The user explicitly requested a chart. Do not finish yet and do not rerun "
+                "SQL; call generate_chart with the verified rows, then return the narrative."
+            )
         report = _data_result_to_report("", output, query_result)
         if query_result.total_rows == 0 and not _empty_result_is_disclosed(
             " ".join(
                 [
                     output.direct_answer,
                     *output.highlights,
-                    *output.supporting_evidence,
                     *output.caveats,
                 ]
             )
         ):
-            ctx.deps.output_validation_retries = ctx.retry + 1
-            ctx.deps.output_retry_reasons.append("empty_result_not_disclosed")
-            ctx.deps.logger.event(
-                ctx.deps.trace_id,
-                "output_validation_retry",
+            return _normalize_verified_output(
+                ctx,
+                query_result,
                 reason="empty_result_not_disclosed",
-                retry_attempt=ctx.retry,
-                max_retries=ctx.max_retries,
-            )
-            raise ModelRetry(
-                "The verified query returned no rows. State explicitly that no matching data "
-                "was found; do not broaden the query or fabricate a value."
             )
         evidence = assess_report_evidence(
             report,
             query_result.rows,
             query_result.sql,
             reference_date=ctx.deps.reference_date,
+            prior_verified_rows=[
+                row
+                for prior_result in ctx.deps.prior_query_results
+                for row in prior_result.rows
+                if not prior_result.truncated
+            ],
         )
         if not evidence.is_supported:
-            ctx.deps.output_validation_retries = ctx.retry + 1
-            ctx.deps.output_retry_reasons.append("unsupported_numeric_claim")
-            ctx.deps.logger.event(
-                ctx.deps.trace_id,
-                "output_validation_retry",
+            return _normalize_verified_output(
+                ctx,
+                query_result,
                 reason="unsupported_numeric_claim",
-                retry_attempt=ctx.retry,
-                max_retries=ctx.max_retries,
                 unsupported_claim_count=len(evidence.unsupported_numeric_claims),
             )
-            raise ModelRetry(
-                "Revise the answer so every numeric claim is supported by the verified query "
-                f"result. Remove or correct these unsupported values: "
-                f"{list(evidence.unsupported_numeric_claims[:10])}. {NARRATIVE_OUTPUT_RULE}"
-            )
         narrative_violation = narrative_output_violation(
-            [output.direct_answer, *output.highlights, *output.supporting_evidence],
+            [output.direct_answer, *output.highlights],
             query_result.rows,
         )
         if narrative_violation is not None:
-            ctx.deps.output_validation_retries = ctx.retry + 1
-            ctx.deps.output_retry_reasons.append(narrative_violation)
-            ctx.deps.logger.event(
-                ctx.deps.trace_id,
-                "output_validation_retry",
+            return _normalize_verified_output(
+                ctx,
+                query_result,
                 reason=narrative_violation,
-                retry_attempt=ctx.retry,
-                max_retries=ctx.max_retries,
             )
-            raise ModelRetry(NARRATIVE_OUTPUT_RULE)
         if output.chart_artifact is not None and (
             ctx.deps.last_chart_artifact is None
             or output.chart_artifact != ctx.deps.last_chart_artifact
         ):
-            ctx.deps.output_validation_retries = ctx.retry + 1
-            ctx.deps.output_retry_reasons.append("unverified_chart_artifact")
             ctx.deps.logger.event(
                 ctx.deps.trace_id,
-                "output_validation_retry",
+                "output_validation_normalized",
                 reason="unverified_chart_artifact",
                 retry_attempt=ctx.retry,
                 max_retries=ctx.max_retries,
             )
-            raise ModelRetry(
-                "A chart reference must exactly match the current generate_chart result."
-            )
+            return output.model_copy(update={"chart_artifact": None})
         return output
 
     return analysis_agent
+
+
+def _analysis_model_settings(config: AgentConfig) -> ModelSettings:
+    settings: dict[str, Any] = {
+        "temperature": config.model.temperature,
+        "max_tokens": config.model.max_output_tokens,
+    }
+    if config.model.llm_model.partition(":")[0] in {"google", "google-cloud"}:
+        settings["google_thinking_config"] = {
+            "thinking_budget": config.model.thinking_budget,
+        }
+    return ModelSettings(**settings)
+
+
+def _record_output_retry(
+    ctx: RunContext[AgentDependencies],
+    reason: str,
+    **details: Any,
+) -> None:
+    ctx.deps.output_validation_retries = ctx.retry + 1
+    ctx.deps.output_retry_reasons.append(reason)
+    ctx.deps.logger.event(
+        ctx.deps.trace_id,
+        "output_validation_retry",
+        reason=reason,
+        retry_attempt=ctx.retry,
+        max_retries=ctx.max_retries,
+        **details,
+    )
+
+
+def _normalize_verified_output(
+    ctx: RunContext[AgentDependencies],
+    query_result: QueryResult,
+    *,
+    reason: str,
+    **details: Any,
+) -> DataAnalysisResult:
+    ctx.deps.logger.event(
+        ctx.deps.trace_id,
+        "output_validation_normalized",
+        reason=reason,
+        retry_attempt=ctx.retry,
+        max_retries=ctx.max_retries,
+        **details,
+    )
+    if not query_result.rows:
+        return DataAnalysisResult(
+            direct_answer="No matching data was found in the verified query result.",
+            caveats=["The verified warehouse query returned zero matching rows."],
+        )
+
+    summaries = [_verified_row_summary(row) for row in query_result.rows[:2]]
+    return DataAnalysisResult(
+        direct_answer=f"Leading verified result — {summaries[0]}.",
+        highlights=[f"Next verified result — {summaries[1]}."] if len(summaries) > 1 else [],
+        caveats=["Summary is limited to exact values returned by the warehouse query."],
+    )
+
+
+def _verified_row_summary(row: dict[str, Any]) -> str:
+    return "; ".join(
+        f"{column.replace('_', ' ')}: {_format_verified_value(column, value)}"
+        for column, value in row.items()
+    )
+
+
+def _format_verified_value(column: str, value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return str(value)
+    normalized = column.casefold()
+    column_words = set(re.findall(r"[a-z0-9]+", normalized))
+    if column_words & {"pct", "percent", "percentage"}:
+        return f"{value:.2f}".rstrip("0").rstrip(".") + "%"
+    if any(token in normalized for token in ("rate", "ratio", "share")):
+        return f"{value * 100:.2f}".rstrip("0").rstrip(".") + "%"
+    if any(
+        token in normalized
+        for token in ("amount", "cost", "price", "revenue", "sales", "spend", "value")
+    ):
+        return f"${value:,.2f}"
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{value:,.3f}".rstrip("0").rstrip(".")
+
+
+def _retrieval_query(
+    question: str,
+    prior_query_results: tuple[QueryResult, ...],
+) -> str:
+    if not prior_query_results:
+        return question
+    return (
+        f"Follow-up question: {question}\nPrior verified cohort SQL: {prior_query_results[-1].sql}"
+    )
+
+
+def _prior_cohort_context(prior_query_results: tuple[QueryResult, ...]) -> str:
+    if not prior_query_results:
+        return ""
+    return (
+        "Most recent verified cohort SQL from this conversation:\n"
+        f"{prior_query_results[-1].sql}\n"
+        "When the user refers to the same or that cohort, preserve its source timestamp, "
+        "entity filters, status filters, and relative time bounds exactly unless the user "
+        "explicitly changes one of them. Change only the requested measure or grouping.\n"
+    )
+
+
+def _retrieved_golden_context(deps: AgentDependencies) -> str:
+    if not deps.retrieval_attempted:
+        return ""
+    if not deps.retrieved_trios:
+        return (
+            "Approved Golden Knowledge retrieval was attempted but unavailable. "
+            "Proceed only with the verified schema and disclose degradation.\n"
+        )
+    examples = [
+        {
+            "id": example.id,
+            "question": example.question,
+            "sql": example.sql,
+            "analyst_report": example.analyst_report,
+        }
+        for example in deps.retrieved_trios
+    ]
+    return (
+        "Approved Golden Knowledge already retrieved by the application; do not call "
+        "retrieve_golden_examples again. Apply relevant definitions, then run SQL:\n"
+        f"{json.dumps(examples, separators=(',', ':'))}\n"
+    )
 
 
 async def run_question(
@@ -553,11 +838,13 @@ async def run_question(
     user_id: str,
     conversation: ConversationState | None = None,
     analysis_agent: AnalysisAgentRunner | None = None,
+    analysis_model: Any | None = None,
+    reference_date_override: date | None = None,
 ) -> TurnResult:
     state = conversation or ConversationState()
     turn_index = state.turn_index + 1
     trace_id = new_trace_id()
-    reference_date = datetime.now(UTC).date()
+    reference_date = reference_date_override or datetime.now(UTC).date()
     started = time.perf_counter()
     user = config.user_profile(user_id)
     history = state.message_history(
@@ -568,6 +855,8 @@ async def run_question(
         question,
         has_history=bool(history),
     )
+    schema_only = is_schema_question(question)
+    non_query_disposition = classify_non_query_request(question)
     logger.event(
         trace_id,
         "agent_run_started",
@@ -577,6 +866,10 @@ async def run_question(
         turn_index=turn_index,
         history_messages=len(history),
         retrieval_required=retrieval_required,
+        schema_only=schema_only,
+        deterministic_disposition=(
+            non_query_disposition.kind if non_query_disposition is not None else None
+        ),
         reference_date=reference_date.isoformat(),
         model=config.model.llm_model,
         prompt_version=build_analysis_prompt().version,
@@ -584,36 +877,108 @@ async def run_question(
         golden_index_version=config.retrieval.collection,
     )
 
+    if schema_only or non_query_disposition is not None:
+        if schema_only:
+            response = _safe_schema_report(question, config, trace_id)
+            deterministic_route = "schema"
+        else:
+            assert non_query_disposition is not None
+            response = AnalysisReport(
+                question=question,
+                answer=non_query_disposition.answer,
+                refused=non_query_disposition.refused,
+                trace_id=trace_id,
+            )
+            deterministic_route = non_query_disposition.kind
+        return _complete_deterministic_turn(
+            response=response,
+            route=deterministic_route,
+            config=config,
+            logger=logger,
+            state=state,
+            trace_id=trace_id,
+            turn_index=turn_index,
+            reference_date=reference_date,
+            started=started,
+        )
+
     deps = AgentDependencies(
         config=config,
         bigquery=bigquery,
         logger=logger,
         user=user,
         trace_id=trace_id,
+        question=question,
         reference_date=reference_date,
         golden_store=golden_store,
         chart_executor=chart_executor,
+        prior_query_results=tuple(
+            result
+            for result in state.completed_query_results
+            if result is not None and not result.truncated
+        ),
         retrieval_required=retrieval_required,
+        schema_only=schema_only,
+        chart_requested=bool(_CHART_REQUEST_PATTERN.search(question)),
     )
+
+    if retrieval_required:
+        await _retrieve_golden_context(
+            deps,
+            question=_retrieval_query(question, deps.prior_query_results),
+            limit=1,
+        )
 
     prompt = (
         f"User question: {question}\n"
         "Use the bounded conversation history to resolve follow-up references. "
         "Call only the tools needed for this question.\n"
+        f"{_prior_cohort_context(deps.prior_query_results)}"
+        f"{_retrieved_golden_context(deps)}"
         f"Return a report matching preferred format {user.preferred_format}."
     )
     runner = analysis_agent or build_analysis_agent(config)
+    deps.model_attempt_tool_event_offset = len(deps.tool_events)
     try:
-        result = await runner.run(
-            prompt,
-            deps=deps,
-            model=config.model.llm_model,
-            message_history=history or None,
-            conversation_id=state.session_id,
-            model_settings=ModelSettings(temperature=config.model.temperature),
-            usage_limits=_usage_limits(config),
-        )
+        while True:
+            try:
+                result = await runner.run(
+                    prompt,
+                    deps=deps,
+                    model=analysis_model or config.model.llm_model,
+                    message_history=history or None,
+                    conversation_id=state.session_id,
+                    model_settings=_analysis_model_settings(config),
+                    usage_limits=_usage_limits(config),
+                )
+                break
+            except UnexpectedModelBehavior as exc:
+                can_recover_without_repeating_warehouse_work = (
+                    deps.model_behavior_retries < 1
+                    and deps.last_tool_failure_code is None
+                    and (not deps.sql_tool_invoked or deps.last_query_result is not None)
+                )
+                if not can_recover_without_repeating_warehouse_work:
+                    raise
+                deps.failed_provider_requests += _minimum_current_model_requests(deps)
+                deps.model_behavior_retries += 1
+                logger.event(
+                    trace_id,
+                    "model_behavior_retry",
+                    retry_attempt=deps.model_behavior_retries,
+                    failure_category=_model_behavior_failure_category(exc),
+                    query_already_verified=deps.last_query_result is not None,
+                    warehouse_will_repeat=False,
+                )
+                prompt = _model_behavior_recovery_prompt(prompt, deps)
+                deps.model_attempt_tool_event_offset = len(deps.tool_events)
     except Exception as exc:
+        if (
+            deps.chart_requested
+            and deps.last_chart_artifact is None
+            and deps.last_chart_failure_code is None
+        ):
+            deps.last_chart_failure_code = "not_generated"
         failure_code, retryable = _classify_failure(
             exc,
             tool_failure_code=deps.last_tool_failure_code,
@@ -625,6 +990,10 @@ async def run_question(
             deps,
             duration_ms=duration_ms,
             usage=None,
+        )
+        provider_failure = _provider_failure_details(
+            exc,
+            configured_attempts=config.model.provider_retry_attempts,
         )
         logger.event(
             trace_id,
@@ -652,9 +1021,10 @@ async def run_question(
             ),
             duration_ms=duration_ms,
             operational=operational.model_dump(),
-            error=str(exc),
+            **provider_failure,
         )
         next_state = state.fail_turn(
+            query_result=deps.last_query_result,
             max_turns=config.conversation.max_history_turns,
             max_bytes=config.conversation.max_history_bytes,
         )
@@ -695,6 +1065,7 @@ async def run_question(
     new_messages = _new_messages(result)
     next_state = state.complete_turn(
         messages=new_messages,
+        query_result=deps.last_query_result,
         max_turns=config.conversation.max_history_turns,
         max_bytes=config.conversation.max_history_bytes,
     )
@@ -739,6 +1110,88 @@ async def run_question(
         reference_date=reference_date,
         trace_id=trace_id,
         operational=operational,
+    )
+
+
+def _complete_deterministic_turn(
+    *,
+    response: AnalysisReport,
+    route: str,
+    config: AgentConfig,
+    logger: Telemetry,
+    state: ConversationState,
+    trace_id: str,
+    turn_index: int,
+    reference_date: date,
+    started: float,
+) -> TurnResult:
+    duration_ms = _duration_ms(started)
+    operational = OperationalMetrics(
+        trace_ids=[trace_id],
+        duration_ms=duration_ms,
+        turn_durations_ms=[duration_ms],
+        provider_requests=0,
+    )
+    next_state = state.complete_turn(
+        messages=(),
+        query_result=None,
+        max_turns=config.conversation.max_history_turns,
+        max_bytes=config.conversation.max_history_bytes,
+    )
+    logger.event(
+        trace_id,
+        "agent_run_completed",
+        session_id=state.session_id,
+        turn_index=turn_index,
+        refused=response.refused,
+        degraded=False,
+        sql=None,
+        retrieved_trio_ids=[],
+        retrieval_attempted=False,
+        retrieval_degraded=False,
+        tool_sequence=[],
+        tool_events=[],
+        usage=None,
+        output_validation_retries=0,
+        chart_artifact=None,
+        duration_ms=duration_ms,
+        operational=operational.model_dump(),
+        prompt_version=build_analysis_prompt().version,
+        persona_version=config.persona_version,
+        golden_index_version=config.retrieval.collection,
+        deterministic_route=route,
+    )
+    return TurnResult(
+        response=response,
+        conversation=next_state,
+        reference_date=reference_date,
+        trace_id=trace_id,
+        operational=operational,
+    )
+
+
+def _safe_schema_report(
+    question: str,
+    config: AgentConfig,
+    trace_id: str,
+) -> AnalysisReport:
+    lines = ["Safe analyzable schema:"]
+    for table_name in config.bigquery.allowed_tables:
+        columns = config.safety.safe_columns_by_table[table_name]
+        rendered_columns = ", ".join(f"`{column}`" for column in columns)
+        full_name = f"{config.bigquery.dataset}.{table_name}"
+        lines.append(f"- `{full_name}`: {rendered_columns}")
+    return AnalysisReport(
+        question=question,
+        answer="\n".join(lines),
+        caveats=[
+            "Columns not listed are unavailable to analysis, including direct "
+            "identifiers and precise location fields."
+        ],
+        followups=[
+            "Ask for an aggregate metric, comparison, trend, or chart using these fields."
+        ],
+        trace_id=trace_id,
     )
 
 
@@ -831,11 +1284,17 @@ def _data_result_to_report(
     *,
     chart_artifact: ChartArtifact | None = None,
 ) -> AnalysisReport:
+    if query_result.truncated:
+        return _truncated_query_report(question, query_result)
     return AnalysisReport(
         question=question,
         answer=output.direct_answer,
-        highlights=[*output.highlights, *output.supporting_evidence],
+        highlights=output.highlights,
         table=query_result.rows,
+        total_rows=query_result.total_rows,
+        available_rows=query_result.available_rows,
+        truncated=query_result.truncated,
+        row_limit=query_result.row_limit,
         sql=query_result.sql,
         caveats=output.caveats,
         followups=output.followups,
@@ -848,12 +1307,21 @@ def _finalize_report(
     deps: AgentDependencies,
     trace_id: str,
 ) -> AnalysisReport:
+    caveats = _with_chart_failure_caveat(
+        report.caveats,
+        deps.last_chart_failure_code,
+    )
+    if deps.retrieval_degraded:
+        warning = (
+            "Approved Golden Knowledge was unavailable; this report used only the "
+            "verified warehouse result."
+        )
+        if warning not in caveats:
+            caveats = [*caveats, warning]
     report = report.model_copy(
         update={
-            "caveats": _with_chart_failure_caveat(
-                report.caveats,
-                deps.last_chart_failure_code,
-            )
+            "caveats": caveats,
+            "degraded": report.degraded or deps.retrieval_degraded,
         }
     )
     return _sanitize_report(report, trace_id)
@@ -924,6 +1392,21 @@ def _record_tool_event(
     ctx.deps.logger.event(ctx.deps.trace_id, "agent_tool_completed", **event)
 
 
+def _record_dependency_tool_event(
+    deps: AgentDependencies,
+    tool_name: str,
+    status: str,
+    started: float,
+) -> None:
+    event = {
+        "tool": tool_name,
+        "status": status,
+        "duration_ms": _duration_ms(started),
+    }
+    deps.tool_events.append(event)
+    deps.logger.event(deps.trace_id, "agent_tool_completed", **event)
+
+
 def _sanitize_report(report: AnalysisReport, trace_id: str) -> AnalysisReport:
     data: dict[str, Any] = report.model_dump()
     redacted, _ = redact_value(data)
@@ -939,6 +1422,11 @@ def _build_degraded_report(
     chart_artifact: ChartArtifact | None = None,
     chart_failure_code: ChartFailureCode | None = None,
 ) -> AnalysisReport:
+    if query_result.truncated:
+        report = _truncated_query_report(question, query_result).model_copy(
+            update={"degraded": True}
+        )
+        return _sanitize_report(report, trace_id)
     return _sanitize_report(
         AnalysisReport(
             question=question,
@@ -947,6 +1435,10 @@ def _build_degraded_report(
                 "The verified query results are shown below."
             ),
             table=query_result.rows,
+            total_rows=query_result.total_rows,
+            available_rows=query_result.available_rows,
+            truncated=query_result.truncated,
+            row_limit=query_result.row_limit,
             sql=query_result.sql,
             caveats=_with_chart_failure_caveat(
                 ["Narrative interpretation is unavailable; retry for a full report."],
@@ -957,6 +1449,98 @@ def _build_degraded_report(
         ),
         trace_id,
     )
+
+
+def _truncated_query_report(
+    question: str,
+    query_result: QueryResult,
+) -> AnalysisReport:
+    available_rows = query_result.available_rows or query_result.total_rows
+    preview_size = min(20, query_result.total_rows)
+    return AnalysisReport(
+        question=question,
+        answer=(
+            f"The query produced {available_rows} rows, which exceeds the "
+            f"{query_result.row_limit or query_result.total_rows}-row analysis limit. "
+            "Narrow the date range or dimensions before drawing conclusions or a chart."
+        ),
+        table=query_result.rows[:preview_size],
+        total_rows=query_result.total_rows,
+        available_rows=available_rows,
+        truncated=True,
+        row_limit=query_result.row_limit,
+        sql=query_result.sql,
+        caveats=[f"Showing a {preview_size}-row preview only; the result is incomplete."],
+        followups=["Which date range or dimension should I narrow first?"],
+    )
+
+
+def _provider_failure_details(
+    exc: Exception,
+    *,
+    configured_attempts: int,
+) -> dict[str, Any]:
+    provider_exc = _nested_provider_exception(exc)
+    status_code = provider_exc.status_code if isinstance(provider_exc, ModelHTTPError) else None
+    if status_code == 429:
+        category = "rate_limited"
+    elif status_code in {408, 500, 502, 503, 504}:
+        category = "transient_provider_error"
+    elif isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError)):
+        category = "provider_unavailable"
+    else:
+        category = "non_provider_error"
+    retry_count = (
+        max(0, configured_attempts - 1) if status_code in {408, 429, 500, 502, 503, 504} else 0
+    )
+    return {
+        "provider_status": (
+            f"http_{status_code}"
+            if status_code is not None
+            else (
+                "transport_error"
+                if isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError))
+                else "not_applicable"
+            )
+        ),
+        "provider_status_code": status_code,
+        "provider_retry_count": retry_count,
+        "provider_terminal_category": category,
+        "provider_error_category": category,
+    }
+
+
+def _model_behavior_failure_category(exc: UnexpectedModelBehavior) -> str:
+    normalized = " ".join(str(exc).casefold().split())
+    if "output" in normalized and "retr" in normalized:
+        return "output_retry_exhausted"
+    if "tool" in normalized and "retr" in normalized:
+        return "tool_retry_exhausted"
+    if "validation" in normalized:
+        return "structured_output_invalid"
+    return "unexpected_model_behavior"
+
+
+def _model_behavior_recovery_prompt(prompt: str, deps: AgentDependencies) -> str:
+    context: list[str] = [
+        "Recovery instruction: the prior model response did not satisfy the tool or "
+        "structured-output contract. Continue once without repeating any successful "
+        "warehouse query."
+    ]
+    if deps.retrieved_trios:
+        context.append(_retrieved_golden_context(deps))
+    if deps.last_query_result is not None:
+        rows, _ = redact_value(deps.last_query_result.rows[:2])
+        columns = sorted(
+            {column for row in deps.last_query_result.rows for column in row}
+        )
+        context.append(
+            "The warehouse query already succeeded and run_sql_query is now hidden. "
+            f"Available columns: {columns}. "
+            f"Verified sample rows: {json.dumps(rows, default=str, sort_keys=True)}. "
+            "Use the existing verified result for the final narrative and any requested chart."
+        )
+    return f"{prompt}\n\n" + "\n".join(part for part in context if part)
 
 
 def _classify_failure(
@@ -975,9 +1559,27 @@ def _classify_failure(
         return "retry_exhausted", False
     if isinstance(exc, UsageLimitExceeded):
         return "model_unavailable", False
-    if isinstance(exc, (ModelAPIError, ConnectionError, TimeoutError)):
+    if isinstance(
+        _nested_provider_exception(exc),
+        (ModelAPIError, ConnectionError, TimeoutError),
+    ):
         return "model_unavailable", True
     return "internal_error", False
+
+
+def _nested_provider_exception(exc: Exception) -> Exception:
+    if isinstance(exc, (ModelAPIError, ConnectionError, TimeoutError)):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for nested in reversed(exc.exceptions):
+            if isinstance(nested, Exception):
+                provider_exc = _nested_provider_exception(nested)
+                if isinstance(
+                    provider_exc,
+                    (ModelAPIError, ConnectionError, TimeoutError),
+                ):
+                    return provider_exc
+    return exc
 
 
 def _failure_message(failure_code: FailureCode) -> str:
@@ -1035,10 +1637,16 @@ def _operational_metrics(
     total_tokens = getattr(usage, "total_tokens", None)
     if callable(total_tokens):
         total_tokens = total_tokens()
+    provider_requests = deps.failed_provider_requests + (
+        getattr(usage, "requests", 1)
+        if usage is not None
+        else _minimum_current_model_requests(deps)
+    )
     return OperationalMetrics(
         trace_ids=[deps.trace_id],
         duration_ms=duration_ms,
-        provider_requests=getattr(usage, "requests", 1),
+        turn_durations_ms=[duration_ms],
+        provider_requests=provider_requests,
         retrieval_requests=len(retrieval_events),
         query_attempts=len(query_events),
         sql_retries=max(0, len(query_events) - 1),
@@ -1065,6 +1673,15 @@ def _operational_metrics(
         chart_artifact_bytes=(
             deps.last_chart_artifact.size_bytes if deps.last_chart_artifact is not None else None
         ),
+    )
+
+
+def _minimum_current_model_requests(deps: AgentDependencies) -> int:
+    model_tool_events = deps.tool_events[deps.model_attempt_tool_event_offset :]
+    return 1 + sum(
+        event["tool"]
+        in {"retrieve_golden_examples", "run_sql_query", "generate_chart"}
+        for event in model_tool_events
     )
 
 

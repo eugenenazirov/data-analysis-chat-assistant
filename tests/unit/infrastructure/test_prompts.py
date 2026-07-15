@@ -10,13 +10,20 @@ from retail_agent.infrastructure.prompts.builder import (
 def test_analysis_prompt_combines_versioned_role_and_safety_rules():
     prompt = build_analysis_prompt()
 
-    assert prompt.version == "analysis-v4"
+    assert prompt.version == "analysis-v10"
+    assert "Do not calculate or state averages, ratios, percentages" in prompt.instructions
+    assert "must not introduce a new number" in prompt.instructions
     assert "retail data analysis assistant" in prompt.instructions
     assert "Safety rules:" in prompt.instructions
     assert "personally identifiable information" in prompt.instructions
     assert "must call retrieve_golden_examples" in prompt.instructions
     assert "audit every numeric value" in prompt.instructions
     assert "instead of enumerating query rows" in prompt.instructions
+    assert "Default to PNG" in prompt.instructions
+    assert "156 cells" in prompt.instructions
+    assert "Match the requested grain and scope exactly" in prompt.instructions
+    assert "never use `CURRENT_DATE()`" in prompt.instructions
+    assert "putting product name inside the ranking window destroys" in prompt.instructions
 
 
 def test_missing_prompt_resource_fails_clearly():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import sqlglot
@@ -66,11 +67,68 @@ def validate_and_prepare_sql(sql: str, config: AgentConfig) -> SQLValidation:
 
     _validate_column_safety(expression, table_refs, cte_names, config)
 
-    safe_sql = _ensure_limit(sql.strip(), config.bigquery.max_result_rows)
+    calendar_dates_normalized = _normalize_calendar_date_comparisons(expression)
+    prepared_sql = (
+        expression.sql(dialect="bigquery") if calendar_dates_normalized else sql.strip()
+    )
+    if calendar_dates_normalized:
+        prepared_sql = re.sub(
+            r"\bINTERVAL\s+'(\d+)'\s+",
+            r"INTERVAL \1 ",
+            prepared_sql,
+            flags=re.IGNORECASE,
+        )
+    safe_sql = _validate_limit(prepared_sql, config.bigquery.max_result_rows)
     return SQLValidation(
         original_sql=sql,
         safe_sql=safe_sql,
         tables=[ref.name for ref in table_refs],
+    )
+
+
+def _normalize_calendar_date_comparisons(expression: exp.Expression) -> bool:
+    """Coerce known warehouse timestamp columns for calendar-date comparisons."""
+
+    changed = False
+    comparison_types = (exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NEQ)
+    for comparison in expression.find_all(*comparison_types):
+        left = comparison.args.get("this")
+        right = comparison.args.get("expression")
+        if _is_timestamp_column(left) and _is_calendar_date_expression(right):
+            comparison.set("this", exp.Date(this=left.copy()))
+            changed = True
+        elif _is_calendar_date_expression(left) and _is_timestamp_column(right):
+            comparison.set("expression", exp.Date(this=right.copy()))
+            changed = True
+
+    for between in expression.find_all(exp.Between):
+        value = between.args.get("this")
+        low = between.args.get("low")
+        high = between.args.get("high")
+        if (
+            _is_timestamp_column(value)
+            and _is_calendar_date_expression(low)
+            and _is_calendar_date_expression(high)
+        ):
+            between.set("this", exp.Date(this=value.copy()))
+            changed = True
+    return changed
+
+
+def _is_timestamp_column(expression: exp.Expression | None) -> bool:
+    return isinstance(expression, exp.Column) and expression.name.casefold().endswith("_at")
+
+
+def _is_calendar_date_expression(expression: exp.Expression | None) -> bool:
+    if isinstance(
+        expression,
+        (exp.CurrentDate, exp.Date, exp.DateAdd, exp.DateSub, exp.DateTrunc),
+    ):
+        return True
+    return bool(
+        isinstance(expression, exp.Cast)
+        and isinstance(expression.to, exp.DataType)
+        and expression.to.this is exp.DataType.Type.DATE
     )
 
 
@@ -314,7 +372,7 @@ def _is_select_alias_reference(column: exp.Column) -> bool:
     return True
 
 
-def _ensure_limit(sql: str, max_rows: int) -> str:
+def _validate_limit(sql: str, max_rows: int) -> str:
     try:
         expression = sqlglot.parse_one(sql, read="bigquery")
     except SqlglotError as exc:
@@ -323,8 +381,7 @@ def _ensure_limit(sql: str, max_rows: int) -> str:
     if limit is not None:
         if limit > max_rows:
             raise SQLSafetyError(f"LIMIT {limit} exceeds maximum row limit {max_rows}.")
-        return sql.rstrip(";")
-    return f"{sql.rstrip(';')}\nLIMIT {max_rows}"
+    return sql.rstrip(";")
 
 
 def _top_level_limit_value(expression: exp.Expression) -> int | None:

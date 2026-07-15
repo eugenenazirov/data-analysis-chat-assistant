@@ -9,7 +9,7 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from retail_agent.bootstrap import Runtime, RuntimeOperationError
-from retail_agent.domain.errors import RetrievalError
+from retail_agent.domain.errors import ChartExecutionError, RetrievalError
 from retail_agent.presentation.cli.renderer import render_report
 
 app = typer.Typer(help="Retail data analysis chat assistant")
@@ -93,6 +93,57 @@ def bq_smoke(
     console.print(f"[dim]trace_id={smoke.trace_id}[/dim]")
 
 
+@app.command("chart-smoke")
+def chart_smoke(
+    config_path: Annotated[str, typer.Option("--config")] = "config/agent.yaml",
+) -> None:
+    """Run known-good chart programs through the configured production executor."""
+
+    try:
+        artifacts = asyncio.run(_runtime(config_path).chart_smoke())
+    except ChartExecutionError as exc:
+        detail = f" {exc.repair_hint}" if exc.repair_hint else ""
+        console.print(
+            f"[bold red]Chart smoke test failed ({exc.code}):[/bold red]{detail}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="Chart runtime smoke test")
+    table.add_column("Case")
+    table.add_column("Format")
+    table.add_column("Bytes", justify="right")
+    table.add_column("Artifact")
+    for item in artifacts:
+        table.add_row(
+            item.case,
+            item.artifact.output_format,
+            str(item.artifact.size_bytes),
+            item.artifact.path,
+        )
+    console.print(table)
+    console.print(f"[bold green]All {len(artifacts)} chart runtime checks passed.[/bold green]")
+
+
+@app.command()
+def diagnostics(
+    config_path: Annotated[str, typer.Option("--config")] = "config/agent.yaml",
+) -> None:
+    """Print safe build and runtime configuration for reviewer verification."""
+
+    diagnostics_result = _runtime(config_path).reviewer_diagnostics()
+    table = Table(title="Reviewer diagnostics")
+    table.add_column("Setting")
+    table.add_column("Value")
+    for key, value in diagnostics_result.values:
+        table.add_row(key, value)
+    console.print(table)
+    if not diagnostics_result.revision_matches:
+        console.print(
+            "[bold red]The application image is stale; rebuild it before review.[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def chat(
     user: Annotated[str, typer.Option("--user")] = "manager_a",
@@ -100,8 +151,14 @@ def chat(
 ) -> None:
     """Start an interactive CLI chat session."""
 
+    asyncio.run(_chat_loop(user=user, config_path=config_path))
+
+
+async def _chat_loop(*, user: str, config_path: str) -> None:
+    """Keep the reusable provider and every turn on one event loop."""
+
     runtime = _runtime(config_path)
-    conversation_id = asyncio.run(runtime.start_conversation.execute())
+    conversation_id = await runtime.start_conversation.execute()
     console.print("[bold]Retail analysis assistant[/bold]. Type 'exit' to stop.")
     while True:
         question = console.input("[bold cyan]you>[/bold cyan] ").strip()
@@ -109,12 +166,10 @@ def chat(
             break
         if not question:
             continue
-        result = asyncio.run(
-            runtime.analyze(
-                question,
-                user_id=user,
-                conversation_id=conversation_id,
-            )
+        result = await runtime.analyze(
+            question,
+            user_id=user,
+            conversation_id=conversation_id,
         )
         conversation_id = result.conversation_id
         render_report(console, result.response)

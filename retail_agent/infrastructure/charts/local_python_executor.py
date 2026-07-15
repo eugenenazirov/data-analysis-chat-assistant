@@ -5,21 +5,26 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import sys
 import tempfile
 import uuid
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from retail_agent.domain.errors import ChartExecutionError
+from retail_agent.domain.errors import ChartExecutionError, ChartExecutionFailureCode
 from retail_agent.domain.models import ChartArtifact, ChartRequest
 from retail_agent.infrastructure.settings import ChartExecutionSettings
 
 _OUTPUT_BASENAME = "chart"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MATPLOTLIB_SVG_DOCTYPE = re.compile(
+    br'\s*<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1\.1//EN"\s+'
+    br'"http://www\.w3\.org/Graphics/SVG/1\.1/DTD/svg11\.dtd">\s*'
+)
 _FORBIDDEN_SVG_ELEMENTS = {
     "animate",
     "animatemotion",
@@ -30,7 +35,6 @@ _FORBIDDEN_SVG_ELEMENTS = {
     "object",
     "script",
     "set",
-    "style",
 }
 _ALLOWED_IMPORT_ROOTS = {
     "collections",
@@ -85,10 +89,23 @@ class _CaptureBudget:
     exceeded: bool = False
 
 
+@dataclass
+class _CaptureTail:
+    limit: int
+    content: bytearray = field(default_factory=bytearray)
+
+    def append(self, chunk: bytes) -> None:
+        self.content.extend(chunk)
+        overflow = len(self.content) - self.limit
+        if overflow > 0:
+            del self.content[:overflow]
+
+
 @dataclass(frozen=True)
 class _ProcessResult:
     return_code: int
     output_exceeded: bool
+    stderr_tail: bytes
 
 
 class LocalPythonChartExecutor:
@@ -113,6 +130,7 @@ class LocalPythonChartExecutor:
             raise ChartExecutionError(
                 "Chart source exceeds the configured size limit.",
                 code="source_too_large",
+                repair_hint="Shorten the chart program and keep only plotting logic.",
             )
         _validate_chart_source(request.code)
 
@@ -137,11 +155,17 @@ class LocalPythonChartExecutor:
                 raise ChartExecutionError(
                     "Chart process exceeded the captured output limit.",
                     code="captured_output_limit",
+                    repair_hint="Remove print calls and generate only the requested chart file.",
                 )
             if result.return_code != 0:
+                error_code, repair_hint = _diagnose_process_failure(
+                    result.stderr_tail,
+                    request,
+                )
                 raise ChartExecutionError(
-                    f"Chart process exited with status {result.return_code}.",
-                    code="process_failed",
+                    "Chart process failed before producing a valid artifact.",
+                    code=error_code,
+                    repair_hint=repair_hint,
                 )
 
             size_bytes = self._validate_output(output_path, request.output_format)
@@ -190,8 +214,11 @@ class LocalPythonChartExecutor:
         assert process.stdout is not None
         assert process.stderr is not None
         budget = _CaptureBudget(self.settings.max_captured_output_bytes)
+        stderr_tail = _CaptureTail(min(self.settings.max_captured_output_bytes, 8_192))
         stdout_task = asyncio.create_task(_drain_bounded(process.stdout, budget))
-        stderr_task = asyncio.create_task(_drain_bounded(process.stderr, budget))
+        stderr_task = asyncio.create_task(
+            _drain_bounded(process.stderr, budget, capture=stderr_tail)
+        )
         try:
             await asyncio.wait_for(
                 process.wait(),
@@ -209,6 +236,7 @@ class LocalPythonChartExecutor:
             raise ChartExecutionError(
                 "Chart process exceeded the configured timeout.",
                 code="timeout",
+                repair_hint="Simplify the chart program and avoid unbounded loops.",
             ) from exc
         finally:
             _kill_process_group(process)
@@ -217,6 +245,7 @@ class LocalPythonChartExecutor:
         return _ProcessResult(
             return_code=process.returncode or 0,
             output_exceeded=budget.exceeded,
+            stderr_tail=bytes(stderr_tail.content),
         )
 
     def _validate_output(self, output_path: Path, output_format: str) -> int:
@@ -224,6 +253,10 @@ class LocalPythonChartExecutor:
             raise ChartExecutionError(
                 "Chart process did not create the expected output file.",
                 code="output_missing",
+                repair_hint=(
+                    f'Save exactly one file named "{_OUTPUT_BASENAME}.{output_format}" '
+                    "in the current working directory."
+                ),
             )
         size_bytes = output_path.stat().st_size
         if size_bytes <= 0:
@@ -245,7 +278,10 @@ class LocalPythonChartExecutor:
                     code="invalid_output",
                 )
         elif output_format == "svg":
-            _validate_svg(content)
+            sanitized = _validate_svg(content)
+            if sanitized != content:
+                output_path.write_bytes(sanitized)
+                size_bytes = len(sanitized)
         else:  # ChartRequest validation should make this unreachable.
             raise ChartExecutionError(
                 "Chart output format is unsupported.",
@@ -278,8 +314,12 @@ class LocalPythonChartExecutor:
 async def _drain_bounded(
     stream: asyncio.StreamReader,
     budget: _CaptureBudget,
+    *,
+    capture: _CaptureTail | None = None,
 ) -> None:
     while chunk := await stream.read(64 * 1024):
+        if capture is not None:
+            capture.append(chunk)
         if len(chunk) > budget.remaining:
             budget.exceeded = True
             budget.remaining = 0
@@ -298,14 +338,15 @@ def _kill_process_group(process: asyncio.subprocess.Process) -> None:
         process.kill()
 
 
-def _validate_svg(content: bytes) -> None:
-    if b"<!DOCTYPE" in content.upper():
+def _validate_svg(content: bytes) -> bytes:
+    sanitized = _MATPLOTLIB_SVG_DOCTYPE.sub(b"\n", content, count=1)
+    if b"<!DOCTYPE" in sanitized.upper():
         raise ChartExecutionError(
             "Chart SVG contains a disallowed document type declaration.",
             code="invalid_output",
         )
     try:
-        root = ET.fromstring(content)
+        root = ET.fromstring(sanitized)
     except ET.ParseError as exc:
         raise ChartExecutionError(
             "Chart output is not valid SVG XML.",
@@ -317,11 +358,21 @@ def _validate_svg(content: bytes) -> None:
             code="invalid_output",
         )
     for element in root.iter():
-        if _local_name(element.tag) in _FORBIDDEN_SVG_ELEMENTS:
+        element_name = _local_name(element.tag)
+        if element_name in _FORBIDDEN_SVG_ELEMENTS:
             raise ChartExecutionError(
                 "Chart SVG contains disallowed active content.",
                 code="invalid_output",
             )
+        if element_name == "style":
+            style_text = "".join(element.itertext()).strip().casefold()
+            if "@import" in style_text or (
+                "url(" in style_text and "url(#" not in style_text
+            ):
+                raise ChartExecutionError(
+                    "Chart SVG contains a disallowed external style resource.",
+                    code="invalid_output",
+                )
         for name, value in element.attrib.items():
             attribute = _local_name(name)
             normalized_value = value.strip().lower()
@@ -337,6 +388,7 @@ def _validate_svg(content: bytes) -> None:
                     "Chart SVG contains a disallowed external resource.",
                     code="invalid_output",
                 )
+    return sanitized
 
 
 def _local_name(name: str) -> str:
@@ -349,7 +401,8 @@ def _validate_chart_source(source: str) -> None:
     except SyntaxError as exc:
         raise ChartExecutionError(
             "Chart source is not valid Python.",
-            code="unsafe_source",
+            code="syntax_error",
+            repair_hint=f"Fix the Python syntax near line {exc.lineno or 1}.",
         ) from exc
 
     for node in ast.walk(tree):
@@ -394,3 +447,40 @@ def _reject_unsafe_source() -> None:
         "Chart source requests file, network, process, environment, or dynamic-code access.",
         code="unsafe_source",
     )
+
+
+def _diagnose_process_failure(
+    stderr_tail: bytes,
+    request: ChartRequest,
+) -> tuple[ChartExecutionFailureCode, str]:
+    stderr = stderr_tail.decode("utf-8", errors="replace").strip()
+    if "ModuleNotFoundError" in stderr or "ImportError" in stderr:
+        error_code: ChartExecutionFailureCode = "missing_dependency"
+    elif "SyntaxError" in stderr or "IndentationError" in stderr:
+        error_code = "syntax_error"
+    elif any(name in stderr for name in ("KeyError", "TypeError", "ValueError", "IndexError")):
+        error_code = "data_shape_error"
+    else:
+        error_code = "runtime_error"
+
+    line_match = re.search(r'File "[^"]*chart_program\.py", line (\d+)', stderr)
+    line_hint = f" at line {line_match.group(1)}" if line_match else ""
+    detail = _last_exception_line(stderr)
+    columns = sorted({str(key) for row in request.data for key in row})
+    column_hint = ", ".join(columns[:30]) if columns else "(no columns; the result was empty)"
+    expected_output = f"chart.{request.output_format}"
+    return (
+        error_code,
+        f"Chart execution failed with {error_code}{line_hint}. {detail} "
+        f"Available columns: {column_hint}. Read input.json and save {expected_output}.",
+    )
+
+
+def _last_exception_line(stderr: str) -> str:
+    for line in reversed(stderr.splitlines()):
+        normalized = line.strip()
+        if not normalized or normalized.startswith(("Traceback ", "File ")):
+            continue
+        normalized = re.sub(r'"[^"\n]*chart_program\.py"', '"chart_program.py"', normalized)
+        return normalized[:300]
+    return "The chart program exited without a Python error message."

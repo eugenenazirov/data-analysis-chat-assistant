@@ -5,16 +5,30 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        APP_REVISION: ${APP_REVISION:-unknown}
+        PROMPT_VERSION: analysis-v10
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_healthy
     env_file:
       - path: .env
         required: false
     environment:
       QDRANT_URL: http://qdrant:6333
+      LLM_MODEL: ${REVIEW_LLM_MODEL:-google-cloud:gemini-3.5-flash}
+      GOOGLE_CLOUD_LLM_LOCATION: ${GOOGLE_CLOUD_LLM_LOCATION:-global}
+      GOOGLE_CLOUD_LLM_FALLBACK_LOCATION: ${GOOGLE_CLOUD_LLM_FALLBACK_LOCATION:-us-central1}
+      GOOGLE_CLOUD_EMBEDDING_LOCATION: ${GOOGLE_CLOUD_EMBEDDING_LOCATION:-us-central1}
       GOOGLE_APPLICATION_CREDENTIALS: /gcp/application_default_credentials.json
     volumes:
       - ./logs:/app/logs

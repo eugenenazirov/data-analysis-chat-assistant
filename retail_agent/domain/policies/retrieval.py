@@ -27,6 +27,18 @@ _FOLLOW_UP_REFERENCE = re.compile(
     r"\b(?:prior|previous|same|that|them|those|what about|which one)\b",
     re.IGNORECASE,
 )
+_SCHEMA_QUESTION = re.compile(
+    r"\b(?:"
+    r"schema|database structure|"
+    r"(?:what|which)(?: safe)?(?: retail)? tables|"
+    r"(?:what|which|list|show|describe|explain)(?: are)?(?: the)? "
+    r"(?:available|safe)(?: retail)? tables|"
+    r"(?:what|which)(?: safe)? columns|available columns|"
+    r"what fields|which fields|"
+    r"data (?:can|could) you (?:access|analy[sz]e)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def requires_golden_precedent(question: str, *, has_history: bool) -> bool:
@@ -36,3 +48,9 @@ def requires_golden_precedent(question: str, *, has_history: bool) -> bool:
         _PRECEDENT_REQUIRED.search(question)
         or (has_history and _FOLLOW_UP_REFERENCE.search(question))
     )
+
+
+def is_schema_question(question: str) -> bool:
+    """Identify high-confidence schema introspection that must not use data tools."""
+
+    return bool(_SCHEMA_QUESTION.search(question))

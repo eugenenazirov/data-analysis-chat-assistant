@@ -16,6 +16,12 @@ from retail_agent.bigquery import (
 from retail_agent.observability import EventLogger
 
 
+class FakeRowIterator(list):
+    def __init__(self, rows, *, total_rows: int):
+        super().__init__(rows)
+        self.total_rows = total_rows
+
+
 class FakeJob:
     def __init__(
         self,
@@ -23,35 +29,57 @@ class FakeJob:
         total_bytes_processed: int = 0,
         total_bytes_billed: int = 0,
         rows: list[dict[str, object]] | None = None,
+        available_rows: int | None = None,
     ):
         self.total_bytes_processed = total_bytes_processed
         self.total_bytes_billed = total_bytes_billed
         self.rows = rows or []
+        self.available_rows = available_rows or len(self.rows)
+        self.max_results = None
         self.job_id = "fake-job"
         self.errors = None
         self.cancelled = False
 
-    def result(self, timeout: int):
-        return self.rows
+    def result(self, timeout: int, max_results: int | None = None):
+        self.max_results = max_results
+        return FakeRowIterator(
+            self.rows[:max_results],
+            total_rows=self.available_rows,
+        )
 
     def cancel(self):
         self.cancelled = True
 
 
 class FakeBigQueryClient:
-    def __init__(self, *, dry_run_bytes: int, rows: list[dict[str, object]] | None = None):
+    def __init__(
+        self,
+        *,
+        dry_run_bytes: int,
+        rows: list[dict[str, object]] | None = None,
+        available_rows: int | None = None,
+    ):
         self.dry_run_bytes = dry_run_bytes
         self.rows = rows or [{"category": "Jeans", "gross_sales": 123.45}]
+        self.available_rows = available_rows or len(self.rows)
         self.calls = []
+        self.execution_job = None
 
     def query(self, sql: str, job_config, **kwargs):
         self.calls.append((sql, job_config, kwargs))
         if job_config.dry_run:
             return FakeJob(total_bytes_processed=self.dry_run_bytes)
-        return FakeJob(total_bytes_billed=self.dry_run_bytes, rows=self.rows)
+        self.execution_job = FakeJob(
+            total_bytes_billed=self.dry_run_bytes,
+            rows=self.rows,
+            available_rows=self.available_rows,
+        )
+        return self.execution_job
 
 
-def test_bigquery_runner_dry_runs_then_executes_with_limit(test_config, tmp_path):
+def test_bigquery_runner_dry_runs_then_executes_with_bounded_client_fetch(
+    test_config, tmp_path
+):
     logger = EventLogger(tmp_path / "runs.jsonl")
     runner = BigQueryRunner(test_config, logger)
     fake_client = FakeBigQueryClient(dry_run_bytes=4096)
@@ -72,8 +100,12 @@ def test_bigquery_runner_dry_runs_then_executes_with_limit(test_config, tmp_path
     assert len(fake_client.calls) == 2
     assert fake_client.calls[0][1].dry_run is True
     assert fake_client.calls[1][1].dry_run is None
-    assert result.sql.endswith("LIMIT 25")
+    assert "LIMIT" not in result.sql.upper()
     assert result.rows == [{"category": "Jeans", "gross_sales": 123.45}]
+    assert result.available_rows == 1
+    assert result.truncated is False
+    assert result.row_limit == 25
+    assert fake_client.execution_job.max_results == 25
     assert result.dry_run_bytes == 4096
     assert result.job_id == fake_client.calls[1][2]["job_id"]
     assert fake_client.calls[1][2]["job_retry"] is None
@@ -84,6 +116,76 @@ def test_bigquery_runner_dry_runs_then_executes_with_limit(test_config, tmp_path
     ]
     assert any(event["event"] == "sql_validation_succeeded" for event in events)
     assert any(event["event"] == "bigquery_query_succeeded" for event in events)
+
+
+def test_bigquery_runner_marks_results_above_client_cap_as_truncated(
+    test_config, tmp_path
+):
+    rows = [{"order_id": index} for index in range(30)]
+    fake_client = FakeBigQueryClient(
+        dry_run_bytes=4096,
+        rows=rows,
+        available_rows=30,
+    )
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = fake_client
+
+    result = runner.execute(
+        "SELECT order_id FROM `bigquery-public-data.thelook_ecommerce.orders`",
+        trace_id="trace-id",
+    )
+
+    assert result.total_rows == 25
+    assert result.available_rows == 30
+    assert result.truncated is True
+    assert result.row_limit == 25
+    assert len(result.rows) == 25
+
+
+def test_six_month_category_result_returns_all_156_cells(test_config, tmp_path):
+    configured = test_config.model_copy(
+        update={
+            "bigquery": test_config.bigquery.model_copy(
+                update={"max_result_rows": 500}
+            )
+        }
+    )
+    rows = [
+        {
+            "month": f"2026-{month:02d}-01",
+            "category": f"Category {category:02d}",
+            "revenue": month * category * 100,
+        }
+        for category in range(1, 27)
+        for month in range(1, 7)
+    ]
+    fake_client = FakeBigQueryClient(
+        dry_run_bytes=4096,
+        rows=rows,
+        available_rows=156,
+    )
+    runner = BigQueryRunner(configured, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = fake_client
+
+    result = runner.execute(
+        """
+        SELECT DATE_TRUNC(DATE(oi.created_at), MONTH) AS month,
+               p.category,
+               SUM(oi.sale_price) AS revenue
+        FROM `bigquery-public-data.thelook_ecommerce.order_items` AS oi
+        JOIN `bigquery-public-data.thelook_ecommerce.products` AS p
+          ON oi.product_id = p.id
+        GROUP BY month, p.category
+        ORDER BY month, p.category
+        """,
+        trace_id="trace-id",
+    )
+
+    assert result.total_rows == 156
+    assert result.available_rows == 156
+    assert result.truncated is False
+    assert result.row_limit == 500
+    assert "LIMIT" not in result.sql.upper()
 
 
 def test_bigquery_runner_blocks_over_budget_before_execution(test_config, tmp_path):
@@ -153,6 +255,29 @@ def test_describe_allowed_tables_tolerates_per_table_schema_failure(test_config,
     assert client.calls == len(test_config.bigquery.allowed_tables)
 
 
+def test_describe_allowed_tables_exposes_only_configured_safe_columns(
+    test_config, tmp_path
+):
+    class SchemaClient:
+        def get_table(self, full_name):
+            return SimpleNamespace(
+                schema=[
+                    SimpleNamespace(name="order_id", field_type="INTEGER"),
+                    SimpleNamespace(name="postal_code", field_type="STRING"),
+                    SimpleNamespace(name="email", field_type="STRING"),
+                ]
+            )
+
+    runner = BigQueryRunner(test_config, EventLogger(tmp_path / "runs.jsonl"))
+    runner._client = SchemaClient()
+
+    description = runner.describe_allowed_tables()
+
+    assert "order_id INTEGER" in description
+    assert "postal_code" not in description
+    assert "email" not in description
+
+
 def test_bigquery_runner_logs_validation_failure(test_config, tmp_path):
     log_path = tmp_path / "runs.jsonl"
     runner = BigQueryRunner(test_config, EventLogger(log_path))
@@ -208,7 +333,7 @@ def test_bigquery_runner_wraps_execution_api_failure(test_config, tmp_path):
 def test_bigquery_runner_cancels_timed_out_job(test_config, tmp_path):
     timeout_job = FakeJob(total_bytes_billed=10)
 
-    def timeout_result(timeout):
+    def timeout_result(timeout, max_results=None):
         raise TimeoutError("slow")
 
     timeout_job.result = timeout_result

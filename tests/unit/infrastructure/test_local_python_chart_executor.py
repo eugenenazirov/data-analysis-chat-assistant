@@ -8,6 +8,7 @@ import pytest
 from retail_agent.domain.errors import ChartExecutionError
 from retail_agent.domain.models import ChartRequest
 from retail_agent.infrastructure.charts import LocalPythonChartExecutor
+from retail_agent.infrastructure.charts.smoke import run_chart_smoke
 from retail_agent.infrastructure.settings import ChartExecutionSettings
 
 
@@ -101,6 +102,65 @@ plt.savefig("chart.png")
     assert list(temporary_root.iterdir()) == []
 
 
+def test_chart_smoke_exercises_all_supported_libraries_and_heatmap(tmp_path):
+    settings = _settings(
+        tmp_path,
+        timeout_seconds=15,
+        max_output_bytes=5_000_000,
+    )
+
+    artifacts = asyncio.run(run_chart_smoke(settings))
+
+    assert [item.case for item in artifacts] == [
+        "matplotlib-png",
+        "matplotlib-svg",
+        "pandas-line",
+        "seaborn-bar",
+        "six-month-category-heatmap",
+    ]
+    assert all(Path(item.artifact.path).is_file() for item in artifacts)
+    assert {item.artifact.output_format for item in artifacts} == {"png", "svg"}
+
+
+def test_executor_runs_grouped_bar_template_with_pandas(tmp_path):
+    executor, temporary_root = _executor(
+        tmp_path,
+        timeout_seconds=10,
+        max_output_bytes=5_000_000,
+    )
+    code = """
+import json
+from pathlib import Path
+import matplotlib.pyplot as plt
+import pandas as pd
+
+rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
+frame = pd.DataFrame(rows)
+pivot = frame.pivot(index="month", columns="category", values="revenue")
+fig, ax = plt.subplots(figsize=(8, 4))
+pivot.plot.bar(ax=ax)
+fig.tight_layout()
+fig.savefig("chart.png", dpi=160, bbox_inches="tight")
+"""
+
+    artifact = asyncio.run(
+        executor.execute(
+            ChartRequest(
+                code=code,
+                data=[
+                    {"month": "2026-01", "category": "A", "revenue": 10},
+                    {"month": "2026-01", "category": "B", "revenue": 20},
+                    {"month": "2026-02", "category": "A", "revenue": 15},
+                    {"month": "2026-02", "category": "B", "revenue": 25},
+                ],
+            )
+        )
+    )
+
+    assert Path(artifact.path).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert list(temporary_root.iterdir()) == []
+
+
 def test_executor_times_out_and_cleans_temporary_directory(tmp_path):
     executor, temporary_root = _executor(tmp_path, timeout_seconds=0.05)
 
@@ -157,6 +217,12 @@ def test_executor_cancellation_reaps_process_and_reader_tasks(tmp_path):
             "invalid_output",
         ),
         (
+            "from pathlib import Path\n"
+            "Path('chart.svg').write_text("
+            "'<!DOCTYPE svg SYSTEM \"https://example.com/evil.dtd\"><svg/>')",
+            "invalid_output",
+        ),
+        (
             "print('x' * 2048)\n"
             "from pathlib import Path\n"
             "Path('chart.svg').write_text('<svg xmlns=\"http://www.w3.org/2000/svg\"/>')",
@@ -181,6 +247,80 @@ def test_executor_rejects_oversized_source_before_starting_process(tmp_path):
         asyncio.run(executor.execute(ChartRequest(code="#" * 1_001, data=[], output_format="png")))
 
     assert exc_info.value.code == "source_too_large"
+    assert list(temporary_root.iterdir()) == []
+
+
+def test_executor_classifies_syntax_failure_with_line_hint(tmp_path):
+    executor, temporary_root = _executor(tmp_path)
+
+    with pytest.raises(ChartExecutionError) as exc_info:
+        asyncio.run(
+            executor.execute(
+                ChartRequest(code="if True print('broken')", data=[], output_format="png")
+            )
+        )
+
+    assert exc_info.value.code == "syntax_error"
+    assert "line 1" in (exc_info.value.repair_hint or "")
+    assert list(temporary_root.iterdir()) == []
+
+
+def test_executor_classifies_missing_allowed_dependency(tmp_path):
+    executor, temporary_root = _executor(tmp_path)
+
+    with pytest.raises(ChartExecutionError) as exc_info:
+        asyncio.run(
+            executor.execute(
+                ChartRequest(
+                    code="import pandas.definitely_missing",
+                    data=[{"revenue": 42}],
+                    output_format="png",
+                )
+            )
+        )
+
+    assert exc_info.value.code == "missing_dependency"
+    assert "chart.png" in (exc_info.value.repair_hint or "")
+    assert "revenue" in (exc_info.value.repair_hint or "")
+    assert list(temporary_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected_code"),
+    [
+        ('raise KeyError("missing")', "data_shape_error"),
+        ('raise TypeError("wrong shape")', "data_shape_error"),
+        ('raise RuntimeError("plot failed")', "runtime_error"),
+    ],
+)
+def test_executor_returns_bounded_actionable_runtime_diagnostics(
+    tmp_path, statement, expected_code
+):
+    executor, temporary_root = _executor(tmp_path)
+    code = f"""
+import json
+from pathlib import Path
+rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
+{statement}
+"""
+
+    with pytest.raises(ChartExecutionError) as exc_info:
+        asyncio.run(
+            executor.execute(
+                ChartRequest(
+                    code=code,
+                    data=[{"month": "2026-01", "revenue": 42}],
+                    output_format="svg",
+                )
+            )
+        )
+
+    hint = exc_info.value.repair_hint or ""
+    assert exc_info.value.code == expected_code
+    assert "line" in hint
+    assert "Available columns: month, revenue" in hint
+    assert "chart.svg" in hint
+    assert len(hint) < 1_000
     assert list(temporary_root.iterdir()) == []
 
 

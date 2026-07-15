@@ -54,7 +54,15 @@ class BigQueryAnalyticsAdapter:
             full_name = f"{self.config.bigquery.dataset}.{table_name}"
             try:
                 table = self.client.get_table(full_name)
-                columns = ", ".join(f"{field.name} {field.field_type}" for field in table.schema)
+                safe_columns = {
+                    column.lower()
+                    for column in self.config.safety.safe_columns_by_table[table_name]
+                }
+                columns = ", ".join(
+                    f"{field.name} {field.field_type}"
+                    for field in table.schema
+                    if field.name.lower() in safe_columns
+                )
                 lines.append(f"- `{full_name}`: {columns}")
             except Exception:
                 lines.append(f"- `{full_name}`: schema unavailable at startup")
@@ -132,7 +140,10 @@ class BigQueryAnalyticsAdapter:
                 job_id=execution_job_id,
                 job_retry=None,
             )
-            rows_iter = job.result(timeout=self.config.bigquery.timeout_seconds)
+            rows_iter = job.result(
+                timeout=self.config.bigquery.timeout_seconds,
+                max_results=self.config.bigquery.max_result_rows,
+            )
             rows = [dict(row.items()) for row in rows_iter]
         except exceptions.GoogleAPICallError as exc:
             errors = getattr(locals().get("job", None), "errors", None)
@@ -163,12 +174,20 @@ class BigQueryAnalyticsAdapter:
                 job_id=execution_job_id,
             ) from exc
 
+        available_rows = getattr(rows_iter, "total_rows", None)
+        if available_rows is None:
+            available_rows = len(rows)
+        available_rows = int(available_rows)
+        truncated = available_rows > len(rows)
         duration_ms = int((time.perf_counter() - start) * 1000)
         self.logger.event(
             trace_id,
             "bigquery_query_succeeded",
             tables=validation.tables,
             rows=len(rows),
+            available_rows=available_rows,
+            truncated=truncated,
+            row_limit=self.config.bigquery.max_result_rows,
             dry_run_bytes=dry_bytes,
             total_bytes_billed=getattr(job, "total_bytes_billed", None),
             job_id=execution_job_id,
@@ -178,6 +197,9 @@ class BigQueryAnalyticsAdapter:
             sql=validation.safe_sql,
             rows=rows,
             total_rows=len(rows),
+            available_rows=available_rows,
+            truncated=truncated,
+            row_limit=self.config.bigquery.max_result_rows,
             dry_run_bytes=dry_bytes,
             total_bytes_billed=getattr(job, "total_bytes_billed", None),
             job_id=execution_job_id,

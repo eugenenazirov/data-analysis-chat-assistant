@@ -15,7 +15,7 @@ class AnalysisAgentRunner(Protocol):
         user_prompt: str,
         *,
         deps: Any,
-        model: str,
+        model: Any,
         message_history: Sequence[ModelMessage] | None = None,
         conversation_id: str | None = None,
         model_settings: ModelSettings | None = None,

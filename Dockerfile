@@ -21,9 +21,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
+ARG APP_REVISION=unknown
+ARG PROMPT_VERSION=analysis-v10
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    APP_REVISION=${APP_REVISION} \
+    PROMPT_VERSION=${PROMPT_VERSION} \
+    MPLBACKEND=Agg \
     PATH="/app/.venv/bin:$PATH"
+
+LABEL org.opencontainers.image.revision=${APP_REVISION} \
+    io.opsfleet.retail-agent.prompt-version=${PROMPT_VERSION}
 
 WORKDIR /app
 
@@ -38,6 +47,9 @@ COPY --from=builder /app/.venv /app/.venv
 COPY retail_agent ./retail_agent
 COPY config ./config
 COPY data ./data
+
+RUN APP_REVISION="${APP_REVISION}" PROMPT_VERSION="${PROMPT_VERSION}" python -c \
+    'import json, os; from importlib.metadata import version; import matplotlib, numpy, pandas, seaborn; open("/app/build-metadata.json", "w", encoding="utf-8").write(json.dumps({"revision": os.environ["APP_REVISION"], "prompt_version": os.environ["PROMPT_VERSION"], "chart_runtime": {name: version(name) for name in ("matplotlib", "numpy", "pandas", "seaborn")}}, sort_keys=True))'
 
 RUN install -d -o appuser -g appuser /app/logs /app/artifacts/charts
 

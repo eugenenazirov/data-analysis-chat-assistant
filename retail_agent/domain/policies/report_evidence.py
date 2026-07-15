@@ -22,9 +22,9 @@ MAX_MEASURE_MENTION_DISTANCE = 48
 MONETARY_MEASURE_TOKENS = frozenset(
     {"amount", "cost", "price", "revenue", "sales", "spend", "value"}
 )
-RATE_MEASURE_TOKENS = frozenset({"percentage", "rate", "ratio"})
+RATE_MEASURE_TOKENS = frozenset({"pct", "percentage", "rate", "ratio", "share"})
 IDENTIFIER_SEPARATOR_PATTERN = r"\s*(?:[:#-]\s*)?"
-type _ContextKind = Literal["interval", "limit", "month", "year"]
+type _ContextKind = Literal["interval", "limit", "month", "threshold", "year"]
 type _DerivationCache = dict[tuple[str, bool, bool], tuple[float, ...]]
 
 
@@ -63,13 +63,16 @@ def assess_report_evidence(
     tolerance: float = 0.001,
     *,
     reference_date: date | None = None,
+    prior_verified_rows: list[dict[str, Any]] | None = None,
 ) -> ReportEvidenceAssessment:
+    evidence_rows = [*(prior_verified_rows or []), *rows]
     score, unsupported = _faithfulness_details(
         report,
-        rows,
+        evidence_rows,
         sql,
         tolerance,
         reference_date or datetime.now(UTC).date(),
+        current_row_count=len(rows),
     )
     return ReportEvidenceAssessment(score, tuple(unsupported))
 
@@ -88,6 +91,8 @@ def _faithfulness_details(
     sql: str,
     tolerance: float,
     reference_date: date,
+    *,
+    current_row_count: int | None = None,
 ) -> tuple[float, list[float]]:
     text = " ".join(
         [
@@ -114,7 +119,13 @@ def _faithfulness_details(
     claims = [_build_numeric_claim(text, match, measures, tolerance) for match in claim_matches]
     context_values = _supported_context_numbers(sql, reference_date)
     derivation_cache: _DerivationCache = {}
-    if not measures and not numeric_identifiers and not context_values and not dimension_counts:
+    if (
+        not measures
+        and not numeric_identifiers
+        and not context_values
+        and not dimension_counts
+        and not dimension_spans
+    ):
         return 0.0, [claim.value for claim in claims]
     unsupported = [
         claim.value
@@ -123,7 +134,7 @@ def _faithfulness_details(
         and not _claim_is_derived_count(
             text,
             claim,
-            row_count=len(rows),
+            row_count=len(rows) if current_row_count is None else current_row_count,
             dimension_counts=dimension_counts,
             count_nouns=count_nouns,
         )
@@ -171,13 +182,17 @@ def _returned_numeric_dimension_spans(
     text: str, rows: list[dict[str, Any]]
 ) -> list[tuple[int, int]]:
     values = {
-        value.strip()
+        normalized
         for row in rows
         for value in row.values()
-        if isinstance(value, str)
-        and any(character.isdigit() for character in value)
-        and any(character.isalpha() for character in value)
-        and value.strip()
+        if (normalized := _numeric_dimension_text(value)) is not None
+        and any(character.isdigit() for character in normalized)
+        and (
+            any(character.isalpha() for character in normalized)
+            or re.match(r"^\d{4}-\d{2}(?:-\d{2})?(?:\D|$)", normalized) is not None
+            or re.match(r"^\d+\s*-\s*\d+$", normalized) is not None
+        )
+        and normalized
     }
     spans: list[tuple[int, int]] = []
     for value in values:
@@ -185,6 +200,16 @@ def _returned_numeric_dimension_spans(
         pattern = re.compile(rf"(?<!\w){flexible_value}(?!\w)", re.IGNORECASE)
         spans.extend(match.span() for match in pattern.finditer(text))
     return spans
+
+
+def _numeric_dimension_text(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return str(value).strip()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return value.strip()
+    return None
 
 
 def _claim_is_returned_dimension(
@@ -312,6 +337,18 @@ def _supported_context_numbers(sql: str, reference_date: date) -> list[_ContextN
             re.IGNORECASE,
         )
     )
+    values.extend(
+        _ContextNumber(
+            value=float(raw),
+            kind="threshold",
+            unit=column.rsplit(".", 1)[-1].strip("`").replace("_", " ").lower(),
+        )
+        for column, raw in re.findall(
+            r"\bHAVING\s+([`\w.]+)\s*(?:>=|>)\s*(\d+(?:\.\d+)?)\b",
+            sql,
+            re.IGNORECASE,
+        )
+    )
     if "CURRENT_DATE" in sql.upper():
         previous_month = reference_date.replace(day=1) - timedelta(days=1)
         values.extend(
@@ -351,6 +388,8 @@ def _claim_supported(
         if len(measures) != 1:
             return False
         measure_names = set(measures)
+    else:
+        measure_names = _expand_related_measure_names(measures, measure_names)
 
     if claim.percentage:
         return _percentage_claim_supported(
@@ -388,9 +427,24 @@ def _percentage_claim_supported(
     normalized_claim = claim / 100
     rate_measures = measure_names & _measures_with_tokens(measures, RATE_MEASURE_TOKENS)
     if any(
-        _numbers_match(normalized_claim, value, tolerance)
+        _numbers_match(
+            normalized_claim,
+            value / 100 if _measure_uses_percent_units(name) else value,
+            tolerance,
+        )
         for name in rate_measures
         for value in measures[name]
+    ):
+        return True
+
+    selected_values = [
+        value
+        for name in measure_names
+        for value in measures[name][:MAX_DERIVATION_VALUES_PER_MEASURE]
+    ]
+    if len(measure_names) > 1 and any(
+        _numbers_match(normalized_claim, ratio, tolerance)
+        for ratio in _cross_measure_ratios(selected_values)
     ):
         return True
 
@@ -405,6 +459,21 @@ def _percentage_claim_supported(
             cache=derivation_cache,
         )
     )
+
+
+def _measure_uses_percent_units(name: str) -> bool:
+    return bool(set(_name_words(name)) & {"pct", "percent", "percentage"})
+
+
+def _cross_measure_ratios(values: list[float]) -> Iterator[float]:
+    for left_index, left in enumerate(values):
+        for right in values[left_index + 1 :]:
+            if right:
+                yield left / right
+                yield (left - right) / right
+            if left:
+                yield right / left
+                yield (right - left) / left
 
 
 def _cached_measure_derivations(
@@ -485,6 +554,23 @@ def _claim_has_context_structure(
         )
     if context.kind == "month":
         return bool(re.search(r"\bmonth\s*$", prefix) or re.match(r"^\s*months?\b", suffix))
+    if context.kind == "threshold" and context.unit is not None:
+        unit_words = [word for word in context.unit.split() if word not in {"count", "total"}]
+        unit_pattern = "|".join(re.escape(word.rstrip("s")) for word in unit_words)
+        return bool(
+            unit_pattern
+            and (
+                (
+                    re.search(r"\b(?:at\s+least|minimum|min\.?)\s*$", prefix)
+                    and re.match(rf"^\s*(?:{unit_pattern})s?\b", suffix)
+                )
+                or re.match(rf"^\s*\+\s*(?:{unit_pattern})s?\b", suffix)
+                or re.match(
+                    rf"^\s+or\s+more\s+(?:{unit_pattern})s?\b",
+                    suffix,
+                )
+            )
+        )
     return False
 
 
@@ -503,6 +589,14 @@ def _measure_names_for_claim(
     if len(eligible_measures) == 1:
         return eligible_measures
 
+    explicitly_labeled = _measure_names_from_explicit_label(
+        normalized_text,
+        claim,
+        eligible_measures,
+    )
+    if explicitly_labeled:
+        return explicitly_labeled
+
     candidates: list[tuple[int, int, str]] = []
     for measure_name in eligible_measures:
         for alias in _measure_aliases(measure_name):
@@ -519,6 +613,23 @@ def _measure_names_for_claim(
         for distance, alias_length, measure_name in candidates
         if (distance, alias_length) == (best_distance, best_length)
     }
+
+
+def _measure_names_from_explicit_label(
+    text: str,
+    claim: re.Match[str],
+    eligible_measures: set[str],
+) -> set[str]:
+    prefix = text[max(0, claim.start() - MAX_MEASURE_MENTION_DISTANCE) : claim.start()]
+    matches: list[tuple[int, str]] = []
+    for measure_name in eligible_measures:
+        for alias in _measure_aliases(measure_name):
+            if re.search(rf"\b{re.escape(alias)}\s*:\s*$", prefix):
+                matches.append((len(alias), measure_name))
+    if not matches:
+        return set()
+    longest = max(length for length, _ in matches)
+    return {measure_name for length, measure_name in matches if length == longest}
 
 
 def _measure_aliases(measure_name: str) -> set[str]:
@@ -545,6 +656,16 @@ def _measure_aliases(measure_name: str) -> set[str]:
 
 def _measure_tokens(measure_name: str) -> set[str]:
     return set(_name_words(measure_name))
+
+
+def _expand_related_measure_names(measures: dict[str, list[float]], selected: set[str]) -> set[str]:
+    ignored_modifiers = {"count", "gross", "number", "total"}
+    selected_cores = {frozenset(_measure_tokens(name) - ignored_modifiers) for name in selected}
+    return selected | {
+        name
+        for name in measures
+        if frozenset(_measure_tokens(name) - ignored_modifiers) in selected_cores
+    }
 
 
 def _measures_with_tokens(measures: dict[str, list[float]], tokens: frozenset[str]) -> set[str]:

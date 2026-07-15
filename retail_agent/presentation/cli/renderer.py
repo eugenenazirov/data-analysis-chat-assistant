@@ -6,6 +6,8 @@ from rich.table import Table
 
 from retail_agent.application.dto import AgentFailure, AnalysisResponse
 
+MAX_RENDERED_ROWS = 20
+
 
 def render_report(console: Console, report: AnalysisResponse) -> None:
     if isinstance(report, AgentFailure):
@@ -24,7 +26,20 @@ def render_report(console: Console, report: AnalysisResponse) -> None:
     console.print(Markdown(f"{title}\n{report.answer}"))
     _render_list_section(console, "Highlights", report.highlights)
     if report.table:
-        _render_table(console, report.table)
+        _render_table(console, report.table[:MAX_RENDERED_ROWS])
+        if len(report.table) > MAX_RENDERED_ROWS:
+            console.print(
+                f"[dim]showing_first={MAX_RENDERED_ROWS} of_attached_rows={len(report.table)}[/dim]"
+            )
+    if report.total_rows is not None:
+        available = (
+            report.available_rows if report.available_rows is not None else report.total_rows
+        )
+        completeness = "partial" if report.truncated else "complete"
+        console.print(
+            f"[dim]rows_returned={report.total_rows} "
+            f"rows_available={available} result={completeness}[/dim]"
+        )
     _render_list_section(console, "Assumptions", report.assumptions)
     _render_list_section(console, "Caveats", report.caveats)
     _render_list_section(console, "Follow-ups", report.followups)

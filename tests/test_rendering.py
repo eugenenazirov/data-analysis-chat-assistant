@@ -71,3 +71,21 @@ def test_render_refusal_stops_before_report_sections():
     assert "Refused" in output
     assert "I cannot expose PII" in output
     assert "## SQL" not in output
+
+
+def test_render_large_complete_result_as_explicit_preview():
+    output = _render(
+        AnalysisReport(
+            question="List regions",
+            answer="The complete result contains 25 regions.",
+            table=[{"region": f"region-{index}"} for index in range(25)],
+            total_rows=25,
+            available_rows=25,
+            truncated=False,
+        )
+    )
+
+    assert "region-19" in output
+    assert "region-20" not in output
+    assert "showing_first=20 of_attached_rows=25" in output
+    assert "rows_returned=25 rows_available=25 result=complete" in output

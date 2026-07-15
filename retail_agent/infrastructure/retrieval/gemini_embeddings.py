@@ -25,7 +25,8 @@ class GeminiEmbedder:
             except ImportError as exc:
                 raise RuntimeError("google-genai is not installed.") from exc
             api_key = self.config.model.google_api_key
-            if api_key is not None:
+            use_vertex = self.config.model.llm_model.startswith("google-cloud:")
+            if api_key is not None and not use_vertex:
                 try:
                     self._client = genai.Client(api_key=api_key.get_secret_value())
                 except Exception as exc:
@@ -43,7 +44,7 @@ class GeminiEmbedder:
                     self._client = genai.Client(
                         vertexai=True,
                         project=project,
-                        location=self.config.model.google_cloud_location,
+                        location=self.config.model.google_cloud_embedding_location,
                     )
                 except Exception as exc:
                     raise RetrievalError(

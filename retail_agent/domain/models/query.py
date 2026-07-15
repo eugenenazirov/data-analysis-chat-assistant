@@ -52,7 +52,10 @@ RetrievedTrio = GoldenExample
 class QueryResult(BaseModel):
     sql: str
     rows: list[dict[str, Any]]
-    total_rows: int
+    total_rows: int = Field(ge=0)
+    available_rows: int | None = Field(default=None, ge=0)
+    truncated: bool = False
+    row_limit: int | None = Field(default=None, ge=1)
     dry_run_bytes: int | None = None
     total_bytes_billed: int | None = None
     job_id: str | None = None

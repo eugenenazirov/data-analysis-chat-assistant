@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -69,6 +70,39 @@ def test_chat_continues_after_model_failure(test_config, tmp_path, monkeypatch):
     cli.chat()
 
     assert runtime.calls == 1
+
+
+def test_chat_reuses_one_event_loop_for_provider_across_turns(monkeypatch):
+    loop_ids = []
+
+    class Runtime:
+        def __init__(self):
+            self.start_conversation = SimpleNamespace(execute=self.start)
+
+        async def start(self):
+            loop_ids.append(id(asyncio.get_running_loop()))
+            return "conversation"
+
+        async def analyze(self, question, *, user_id, conversation_id=None):
+            loop_ids.append(id(asyncio.get_running_loop()))
+            return AnalyzeQuestionResponse(
+                response=AgentFailure(
+                    question=question,
+                    message="temporary",
+                    failure_code="model_unavailable",
+                    retryable=True,
+                ),
+                conversation_id=conversation_id,
+            )
+
+    inputs = iter(["first", "second", "exit"])
+    monkeypatch.setattr(cli, "_runtime", lambda *args, **kwargs: Runtime())
+    monkeypatch.setattr(cli.console, "input", lambda prompt: next(inputs))
+
+    cli.chat()
+
+    assert len(loop_ids) == 3
+    assert len(set(loop_ids)) == 1
 
 
 def test_bq_smoke_renders_success(test_config, tmp_path, monkeypatch):

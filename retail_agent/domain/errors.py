@@ -2,11 +2,15 @@ from typing import Literal
 
 type ChartExecutionFailureCode = Literal[
     "captured_output_limit",
+    "data_shape_error",
     "invalid_output",
+    "missing_dependency",
     "output_missing",
     "output_too_large",
     "process_failed",
+    "runtime_error",
     "source_too_large",
+    "syntax_error",
     "timeout",
     "unsafe_source",
 ]
@@ -47,6 +51,13 @@ class RetrievalError(RetailAgentError):
 class ChartExecutionError(RetailAgentError):
     """Chart code could not produce a valid artifact."""
 
-    def __init__(self, message: str, *, code: ChartExecutionFailureCode):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ChartExecutionFailureCode,
+        repair_hint: str | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.repair_hint = repair_hint

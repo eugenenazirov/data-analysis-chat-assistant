@@ -55,6 +55,9 @@ class ToolResultSummary(BaseModel):
     sql: str | None = None
     rows: tuple[dict[str, Any], ...] = Field(default=(), max_length=20)
     total_rows: int | None = Field(default=None, ge=0)
+    available_rows: int | None = Field(default=None, ge=0)
+    truncated: bool = False
+    row_limit: int | None = Field(default=None, ge=1)
     artifact_path: str | None = None
 
 
