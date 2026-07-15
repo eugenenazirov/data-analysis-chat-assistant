@@ -42,7 +42,7 @@ The credential-free suite covers:
 - evaluation contracts, deterministic scoring, reliability statistics, human
   calibration, release decisions, CI definitions, and image separation.
 
-Verified on 2026-07-14: 320 tests passed with 90.84% branch-aware runtime
+Verified on 2026-07-15: 448 tests passed with 89.64% branch-aware runtime
 coverage, above the 85% gate. The dated execution record is maintained in
 [`live-test-findings.md`](live-test-findings.md).
 
@@ -114,6 +114,24 @@ The evaluator checks:
   observations;
 - analyst usefulness when human scores are available.
 
+Quality-v8 makes a three-way decision for SQL intent and result equivalence:
+
+- `PASS` requires structural proof from the parsed SQL, projection lineage, and
+  exact complete result values. Equivalent CTE placement, filtered versus
+  conditional aggregates, deterministic ranking functions, harmless aliases,
+  fixed-year month labels, and helper measures may differ from the canonical
+  query when those proofs agree.
+- `FAIL` means a declared invariant differs, including source tables, joins,
+  filters/literals, time bounds, output grain, aggregate multiplicity, ranking
+  semantics, numeric results, completeness, privacy, or required artifacts.
+- `REVIEW` is reserved for a value-compatible mapping whose semantic lineage is
+  genuinely ambiguous. It blocks the suite but is not included in model failure
+  or critical-failure counts. Human usefulness review remains a separate flag
+  and message.
+
+This is deliberately conservative: correctness thresholds and hard constraints
+are unchanged, and no LLM judge or case-specific alias allowlist can waive them.
+
 Replay is reproducible evidence, not proof of current model or warehouse
 behavior. Release cases therefore remain `AUTO PASS` until live and structured
 human gates are complete.
@@ -155,6 +173,25 @@ ADC. It uses two bounded global-endpoint transport attempts, then one regional
 `us-central1` attempt within the same provider request budget. An explicitly
 selected `google:` model instead uses `GOOGLE_API_KEY` and all three attempts on
 the Gemini Developer API.
+
+When a completed run identifies a bounded set of failures, rerun only those
+checks by repeating `--case-id`:
+
+```bash
+uv run python -m evals.run quality \
+  --mode live \
+  --automated-only \
+  --cases evals/datasets/release_holdout.jsonl \
+  --case-id first_failed_case \
+  --case-id second_failed_case \
+  --repetitions 5 \
+  --output artifacts/quality-eval-live-failed-rerun.json
+```
+
+The command rejects unknown IDs. Keep the dataset, model, reference dates,
+prompt, and provider settings identical to the failed run. This subset is
+targeted remediation evidence only; it cannot satisfy the complete release or
+human-review gate by itself.
 
 ## CI Tiers And Immutable Evidence
 

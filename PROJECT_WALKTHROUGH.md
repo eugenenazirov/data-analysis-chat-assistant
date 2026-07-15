@@ -195,7 +195,10 @@ must replace it with a separately isolated worker.
 
 - `guardrails.py`: `pydantic-evals` dataset for SQL/privacy controls;
 - `quality.py`: deterministic replay, credentialed repeated-live scoring,
-  trajectory telemetry, reliability intervals, and reference-query accounting;
+  trajectory telemetry, reliability intervals, reference-query accounting, and
+  quality-v8 three-way semantic decisions. Proven CTE/window/formula/alias
+  equivalence passes, hard invariant violations fail, and only unresolved
+  lineage/result ambiguity produces a release-blocking `REVIEW`;
 - `human.py` and `rubrics/`: separate blinded A/B and pointwise review packets,
   structured reviewer calibration, and final release decisions;
 - `datasets/smoke.jsonl`: four fast release sentinels;
@@ -281,6 +284,13 @@ inside the same bounded model request, and keeps embeddings in `us-central1`;
 | `rows_available` exceeds `rows_returned` | The result is intentionally partial; narrow the request before interpreting or plotting it. |
 | Golden Knowledge caveat | Qdrant degraded; the report may still be valid because SQL was independently verified. |
 | Provider 408/429/5xx | The shared transport retries up to three attempts without restarting the agent or repeating completed BigQuery work. |
+| Provider 400/401/403 | The request is non-retryable; it fails once with normalized safe telemetry and does not trigger regional fallback. |
+| `REVIEW` in an eval | Semantic equivalence could not be proven or disproven. It blocks the suite but is not counted as a Gemini failure. Inspect the stored SQL/result diagnostics. |
+
+For a targeted remediation probe, repeat `--case-id` on the evaluation CLI. It
+must use the same dataset, model, reference dates, and provider settings as the
+failed run. A subset proves the fix for those cases only; it does not replace
+the full 34-case release candidate or two-reviewer packet.
 
 ## Known Prototype Boundaries
 

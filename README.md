@@ -158,6 +158,14 @@ runs guardrails plus 67 replay cases across smoke, held-out analytical,
 multi-turn, retrieval, adversarial, and regression partitions. Individual
 commands remain available through `just quality-*` recipes.
 
+The quality-v8 evaluator uses a three-way semantic decision. Structurally and
+numerically proven SQL equivalence passes even when Gemini uses different CTEs,
+window functions, conditional aggregates, or aliases. A violated table,
+filter, period, grain, calculation, completeness, privacy, or chart invariant
+fails. Only genuinely ambiguous lineage/result mappings produce `REVIEW`, which
+blocks the suite without being counted as a model failure. The gate does not
+use an LLM judge, alias allowlist, or lowered correctness threshold.
+
 The dedicated container target provides the same entrypoint:
 
 ```bash
@@ -173,6 +181,12 @@ five times. Both run only from the default branch in the protected
 per-query BigQuery cap, record reference-query cost separately, and upload
 content-addressed evidence. Release approval consumes that frozen evidence
 without rerunning the model or warehouse.
+
+After a failed run, repeatable `--case-id` options can rerun only affected cases
+for remediation evidence. Such a subset is diagnostic and never substitutes
+for the complete 34-case release artifact and blinded human review. The latest
+reviewer-reliability evidence is recorded in
+[reports/EVALUATOR_REMEDIATION_2026-07-15.md](reports/EVALUATOR_REMEDIATION_2026-07-15.md).
 
 See [docs/qa.md](docs/qa.md) for the dataset contract, live tiers, separate
 blinded A/B and pointwise analyst packets, release thresholds, and the complete
@@ -197,7 +211,7 @@ Common environment aliases include:
 | Gemini | `LLM_MODEL` defaults to `google-cloud:gemini-3.5-flash`; `GOOGLE_CLOUD_LLM_LOCATION`, `GOOGLE_CLOUD_LLM_FALLBACK_LOCATION`, and `GOOGLE_CLOUD_EMBEDDING_LOCATION` configure its Vertex chat/embedding routes, while `GOOGLE_API_KEY` authenticates optional `google:` chat and embedding models; `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` select embeddings; legacy `GOOGLE_CLOUD_LOCATION` remains a compatibility fallback |
 | BigQuery | `GOOGLE_CLOUD_PROJECT`, `BIGQUERY_LOCATION`, `BQ_MAX_BYTES_BILLED` |
 | Retrieval | `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `GOLDEN_TOP_K` |
-| Agent limits | `MAX_AGENT_REQUESTS`, `MAX_TOOL_CALLS`, `MAX_AGENT_TOKENS`, `MAX_SQL_RETRIES`, `MAX_CHART_RETRIES`, `MAX_OUTPUT_RETRIES` |
+| Agent limits | `MAX_AGENT_REQUESTS`, `MAX_TOOL_CALLS`, `MAX_AGENT_TOKENS`, `MAX_SQL_RETRIES`, `MAX_CHART_RETRIES`, `MAX_OUTPUT_RETRIES`, `LLM_REQUEST_TIMEOUT_SECONDS` |
 | Conversation | `MAX_CHAT_HISTORY_TURNS`, `MAX_CHAT_HISTORY_BYTES` |
 | Charts | `CHART_TIMEOUT_SECONDS` |
 | Telemetry | `AGENT_LOG_PATH`, `LOGFIRE_TOKEN` |
