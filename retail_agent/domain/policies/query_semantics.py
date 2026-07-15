@@ -78,6 +78,8 @@ def validate_query_semantics(
     silently change the reviewer-visible cohort.
     """
 
+    expression = _parse_sql_expression(sql)
+
     if _uses_relative_period(question):
         if reference_date is not None and "current_date" in sql.casefold():
             raise QuerySemanticError(
@@ -96,21 +98,21 @@ def validate_query_semantics(
             "order items from the requested measure."
         )
 
-    if _requests_single_realized_total(question) and _outer_query_adds_breakdown(sql):
+    if _requests_single_realized_total(question) and _outer_query_adds_breakdown(expression):
         raise QuerySemanticError(
             "The question requests one realized-sales total, not a breakdown or "
             "additional measures. Return exactly one aggregate column and one row; "
             "do not add an unrequested metric, time grain, or dimension grouping."
         )
 
-    if _COMPLETED_ORDER_METRIC.search(question) and not _uses_exact_complete_status(sql):
+    if _COMPLETED_ORDER_METRIC.search(question) and not _uses_exact_complete_status(expression):
         raise QuerySemanticError(
             "A completed-order metric must count only rows whose status is exactly "
             "'Complete'. Use status = 'Complete' (or an equivalent conditional count), "
             "not the broader realized-status policy."
         )
 
-    if _PRODUCT_NAME_GRAIN.search(question) and _groups_by_product_identifier(sql):
+    if _PRODUCT_NAME_GRAIN.search(question) and _groups_by_product_identifier(expression):
         raise QuerySemanticError(
             "The requested entity grain is product name. Group by product name without "
             "splitting equal names by products.id or product_id."
@@ -118,24 +120,24 @@ def validate_query_semantics(
 
     if _TOP_PRODUCT_NAME_RANKING.search(question):
         if _TIE_PRESERVING_RANKING.search(question):
-            if not _has_tie_preserving_product_dense_rank(sql):
+            if not _has_tie_preserving_product_dense_rank(expression):
                 raise QuerySemanticError(
                     "A tie-preserving product ranking must use DENSE_RANK ordered only "
                     "by the requested metric. Do not put product name inside the ranking "
                     "window because that breaks equal-value ties."
                 )
-            if not _has_final_rank_product_name_sort(sql):
+            if not _has_final_rank_product_name_sort(expression):
                 raise QuerySemanticError(
                     "Keep tie rows deterministic by ordering the final result by rank "
                     "and then product name, outside the DENSE_RANK window."
                 )
-        elif not _has_product_name_rank_tiebreak(sql):
+        elif not _has_product_name_rank_tiebreak(expression):
             raise QuerySemanticError(
                 "A top product-name ranking needs a deterministic secondary product-name "
                 "sort inside the ranking window, after the requested metric."
             )
 
-    if _ORDER_ITEMS_CREATED.search(question) and not _uses_order_items_created_at(sql):
+    if _ORDER_ITEMS_CREATED.search(question) and not _uses_order_items_created_at(expression):
         raise QuerySemanticError(
             "The requested cohort is based on when order items were created. Filter "
             "order_items.created_at (for example oi.created_at), not orders.created_at."
@@ -144,12 +146,15 @@ def validate_query_semantics(
     if prior_sql is None or not _SAME_COHORT.search(question):
         return
 
+    prior_expression = _parse_sql_expression(prior_sql)
     if "current_date" in prior_sql.casefold() and "current_date" not in sql.casefold():
         raise QuerySemanticError(
             "The prior verified cohort used dynamic relative-date bounds. Preserve "
             "those CURRENT_DATE()/DATE_TRUNC bounds for this same-cohort follow-up."
         )
-    if _uses_order_items_created_at(prior_sql) and not _uses_order_items_created_at(sql):
+    if _uses_order_items_created_at(prior_expression) and not _uses_order_items_created_at(
+        expression
+    ):
         raise QuerySemanticError(
             "The prior verified cohort used order_items.created_at. Preserve that "
             "source timestamp for this same-cohort follow-up."
@@ -166,10 +171,15 @@ def _requests_single_realized_total(question: str) -> bool:
     )
 
 
-def _outer_query_adds_breakdown(sql: str) -> bool:
+def _parse_sql_expression(sql: str) -> exp.Expression | None:
     try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
+        return sqlglot.parse_one(sql, read="bigquery")
     except SqlglotError:
+        return None
+
+
+def _outer_query_adds_breakdown(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
 
     while isinstance(expression, exp.Subquery):
@@ -179,10 +189,8 @@ def _outer_query_adds_breakdown(sql: str) -> bool:
     )
 
 
-def _uses_order_items_created_at(sql: str) -> bool:
-    try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
-    except SqlglotError:
+def _uses_order_items_created_at(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
 
     aliases = normalized_table_aliases(expression)
@@ -207,10 +215,8 @@ def _uses_realized_status_policy(sql: str) -> bool:
     )
 
 
-def _uses_exact_complete_status(sql: str) -> bool:
-    try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
-    except SqlglotError:
+def _uses_exact_complete_status(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
 
     def is_status_column(node: exp.Expression) -> bool:
@@ -243,10 +249,8 @@ def _uses_exact_complete_status(sql: str) -> bool:
     return False
 
 
-def _groups_by_product_identifier(sql: str) -> bool:
-    try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
-    except SqlglotError:
+def _groups_by_product_identifier(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
     group = expression.find(exp.Group)
     if group is None:
@@ -263,10 +267,8 @@ def _groups_by_product_identifier(sql: str) -> bool:
     )
 
 
-def _has_product_name_rank_tiebreak(sql: str) -> bool:
-    try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
-    except SqlglotError:
+def _has_product_name_rank_tiebreak(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
     for window in expression.find_all(exp.Window):
         if not isinstance(window.this, (exp.DenseRank, exp.Rank, exp.RowNumber)):
@@ -282,10 +284,8 @@ def _has_product_name_rank_tiebreak(sql: str) -> bool:
     return False
 
 
-def _has_tie_preserving_product_dense_rank(sql: str) -> bool:
-    try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
-    except SqlglotError:
+def _has_tie_preserving_product_dense_rank(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
     for window in expression.find_all(exp.Window):
         if not isinstance(window.this, exp.DenseRank):
@@ -304,10 +304,8 @@ def _has_tie_preserving_product_dense_rank(sql: str) -> bool:
     return False
 
 
-def _has_final_rank_product_name_sort(sql: str) -> bool:
-    try:
-        expression = sqlglot.parse_one(sql, read="bigquery")
-    except SqlglotError:
+def _has_final_rank_product_name_sort(expression: exp.Expression | None) -> bool:
+    if expression is None:
         return False
     order = expression.args.get("order")
     if order is None:

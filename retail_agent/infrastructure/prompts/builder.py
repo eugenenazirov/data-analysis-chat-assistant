@@ -6,8 +6,9 @@ from importlib import resources
 
 from retail_agent.domain.policies.analysis_output import NARRATIVE_OUTPUT_RULE
 from retail_agent.domain.policies.retrieval import RETRIEVAL_ROUTING_RULE
+from retail_agent.infrastructure.charts.templates import render_tested_chart_templates
 
-PROMPT_VERSION = "analysis-v10"
+PROMPT_VERSION = "analysis-v11"
 PROMPT_RESOURCE = f"{PROMPT_VERSION}.md"
 
 SAFETY_RULES = (
@@ -47,8 +48,15 @@ def load_prompt_template(resource_name: str = PROMPT_RESOURCE) -> str:
 
 def build_analysis_prompt() -> AnalysisPrompt:
     safety = "\n".join(f"- {rule}" for rule in SAFETY_RULES)
+    template = load_prompt_template()
+    marker = "{{TESTED_CHART_TEMPLATES}}"
+    if template.count(marker) != 1:
+        raise PromptResourceError(
+            f"Packaged analysis prompt must contain exactly one {marker} marker."
+        )
+    template = template.replace(marker, render_tested_chart_templates())
     instructions = (
-        f"{load_prompt_template()}\n\nRetrieval routing rule:\n"
+        f"{template}\n\nRetrieval routing rule:\n"
         f"- {RETRIEVAL_ROUTING_RULE}\n\nNarrative output rule:\n"
         f"- {NARRATIVE_OUTPUT_RULE}\n\nSafety rules:\n{safety}"
     )

@@ -32,6 +32,11 @@ class ChartSmokeCase(BaseModel):
 class ReviewerDiagnostics(BaseModel):
     values: tuple[tuple[str, str], ...]
     revision_matches: bool
+    prompt_matches: bool
+
+    @property
+    def ready(self) -> bool:
+        return self.revision_matches and self.prompt_matches
 
 
 __all__ = [

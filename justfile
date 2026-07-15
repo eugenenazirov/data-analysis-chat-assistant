@@ -4,6 +4,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 MODEL := env_var_or_default("MODEL", "google-cloud:gemini-3.5-flash")
 export REVIEW_LLM_MODEL := MODEL
+export PROMPT_VERSION := `uv run python -c "from retail_agent.infrastructure.prompts.builder import PROMPT_VERSION; print(PROMPT_VERSION)"`
 
 # List the available developer and reviewer commands.
 default:

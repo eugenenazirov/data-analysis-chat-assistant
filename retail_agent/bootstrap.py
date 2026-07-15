@@ -159,13 +159,16 @@ class Runtime:
         build_metadata = (
             json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         )
+        stamped_prompt_version = str(build_metadata.get("prompt_version", "unknown"))
+        prompt_matches = stamped_prompt_version == PROMPT_VERSION
         uses_vertex = self.config.model.llm_model.startswith("google-cloud:")
         values = (
             ("Application revision", image_revision),
             ("Working-tree revision", worktree_revision or "(not supplied)"),
             ("Revision match", "yes" if revision_matches else "NO"),
             ("Prompt version", PROMPT_VERSION),
-            ("Stamped prompt version", str(build_metadata.get("prompt_version", "unknown"))),
+            ("Stamped prompt version", stamped_prompt_version),
+            ("Prompt match", "yes" if prompt_matches else "NO"),
             ("LLM model", self.config.model.llm_model),
             ("LLM route", "Vertex AI" if uses_vertex else "Gemini Developer API"),
             (
@@ -191,4 +194,8 @@ class Runtime:
             ("pandas", version("pandas")),
             ("seaborn", version("seaborn")),
         )
-        return ReviewerDiagnostics(values=values, revision_matches=revision_matches)
+        return ReviewerDiagnostics(
+            values=values,
+            revision_matches=revision_matches,
+            prompt_matches=prompt_matches,
+        )

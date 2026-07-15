@@ -38,7 +38,8 @@ just live-setup
 ```
 
 Expected outcome: Qdrant becomes healthy, the Golden index is recreated,
-diagnostics reports `Revision match: yes` and prompt `analysis-v10`, and five
+diagnostics reports `Revision match: yes`, `Prompt match: yes`, and prompt
+`analysis-v11`; five
 chart smoke cases produce validated artifacts, including PNG, SVG, pandas,
 seaborn, and the 156-cell heatmap.
 
@@ -259,8 +260,9 @@ dataset, while the Docker `evaluation` target adds both.
 `config/agent.yaml` is the readable baseline. Environment and `.env` aliases
 override it; explicit initialization has highest priority. Credentials use
 `SecretStr`. Prompt content is packaged at
-`retail_agent/infrastructure/prompts/templates/analysis-v10.md`, and its version
-is recorded in telemetry.
+`retail_agent/infrastructure/prompts/templates/analysis-v11.md`; the exact tested
+chart programs are injected from the shared chart-template module, and the prompt
+version is recorded in telemetry and image metadata.
 
 The locked stack uses Python 3.12, uv 0.10.8, PydanticAI 2.9, Pydantic Settings,
 BigQuery, Qdrant, Gemini, sqlglot, Matplotlib, NumPy, pandas, seaborn, Rich, and

@@ -56,7 +56,7 @@ def test_smoke_replay_suite_remains_comparable(test_config):
     assert result.results[0].scores.multi_turn is None
     assert result.results[-1].scores.multi_turn == 1
     assert result.versions.dataset_sha256 != "unknown"
-    assert result.versions.prompt == "analysis-v10"
+    assert result.versions.prompt == "analysis-v11"
 
 
 def test_quality_eval_rejects_unsupported_numeric_claim(test_config):

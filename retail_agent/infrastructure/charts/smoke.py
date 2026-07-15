@@ -6,6 +6,7 @@ from retail_agent.domain.models import ChartArtifact, ChartRequest
 from retail_agent.infrastructure.charts.local_python_executor import (
     LocalPythonChartExecutor,
 )
+from retail_agent.infrastructure.charts.templates import TESTED_CHART_TEMPLATES
 from retail_agent.infrastructure.settings import ChartExecutionSettings
 
 
@@ -42,100 +43,21 @@ def _smoke_requests() -> tuple[tuple[str, ChartRequest], ...]:
         for category in range(1, 27)
         for month in range(1, 7)
     ]
-    return (
+    data_by_case = {
+        "matplotlib-png": [{"category": "Outerwear", "revenue": 42_000}],
+        "matplotlib-svg": monthly_rows,
+        "pandas-line": monthly_rows,
+        "seaborn-grouped-bar": heatmap_rows,
+        "six-month-category-heatmap": heatmap_rows,
+    }
+    return tuple(
         (
-            "matplotlib-png",
+            template.name,
             ChartRequest(
-                code="""
-import json
-from pathlib import Path
-import matplotlib.pyplot as plt
-
-rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.bar([row["category"] for row in rows], [row["revenue"] for row in rows])
-fig.tight_layout()
-fig.savefig("chart.png", dpi=160, bbox_inches="tight")
-""",
-                data=[{"category": "Outerwear", "revenue": 42_000}],
+                code=template.code,
+                data=data_by_case[template.name],
+                output_format=template.output_format,
             ),
-        ),
-        (
-            "matplotlib-svg",
-            ChartRequest(
-                code="""
-import json
-from pathlib import Path
-import matplotlib.pyplot as plt
-
-rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
-fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot([row["month"] for row in rows], [row["revenue"] for row in rows])
-fig.tight_layout()
-fig.savefig("chart.svg", bbox_inches="tight")
-""",
-                data=monthly_rows,
-                output_format="svg",
-            ),
-        ),
-        (
-            "pandas-line",
-            ChartRequest(
-                code="""
-import json
-from pathlib import Path
-import matplotlib.pyplot as plt
-import pandas as pd
-
-rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
-frame = pd.DataFrame(rows)
-fig, ax = plt.subplots(figsize=(8, 4))
-ax.plot(frame["month"], frame["revenue"], marker="o")
-fig.tight_layout()
-fig.savefig("chart.png", dpi=160, bbox_inches="tight")
-""",
-                data=monthly_rows,
-            ),
-        ),
-        (
-            "seaborn-bar",
-            ChartRequest(
-                code="""
-import json
-from pathlib import Path
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
-
-rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
-frame = pd.DataFrame(rows)
-fig, ax = plt.subplots(figsize=(8, 4))
-sns.barplot(data=frame, x="month", y="revenue", ax=ax)
-fig.tight_layout()
-fig.savefig("chart.png", dpi=160, bbox_inches="tight")
-""",
-                data=monthly_rows,
-            ),
-        ),
-        (
-            "six-month-category-heatmap",
-            ChartRequest(
-                code="""
-import json
-from pathlib import Path
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
-
-rows = json.loads(Path("input.json").read_text(encoding="utf-8"))
-frame = pd.DataFrame(rows)
-pivot = frame.pivot(index="category", columns="month", values="revenue")
-fig, ax = plt.subplots(figsize=(12, 10))
-sns.heatmap(pivot, cmap="Blues", ax=ax)
-fig.tight_layout()
-fig.savefig("chart.png", dpi=160, bbox_inches="tight")
-""",
-                data=heatmap_rows,
-            ),
-        ),
+        )
+        for template in TESTED_CHART_TEMPLATES
     )

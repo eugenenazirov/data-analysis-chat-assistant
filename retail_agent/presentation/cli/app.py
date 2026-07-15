@@ -137,9 +137,10 @@ def diagnostics(
     for key, value in diagnostics_result.values:
         table.add_row(key, value)
     console.print(table)
-    if not diagnostics_result.revision_matches:
+    if not diagnostics_result.ready:
         console.print(
-            "[bold red]The application image is stale; rebuild it before review.[/bold red]"
+            "[bold red]The application image revision or prompt stamp is stale; "
+            "rebuild it before review.[/bold red]"
         )
         raise typer.Exit(code=1)
 

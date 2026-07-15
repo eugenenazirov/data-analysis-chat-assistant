@@ -16,7 +16,7 @@ services:
       context: .
       args:
         APP_REVISION: ${APP_REVISION:-unknown}
-        PROMPT_VERSION: analysis-v10
+        PROMPT_VERSION: ${PROMPT_VERSION:-unknown}
     depends_on:
       qdrant:
         condition: service_healthy

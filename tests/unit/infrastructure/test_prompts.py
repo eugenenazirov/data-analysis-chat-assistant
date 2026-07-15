@@ -1,5 +1,6 @@
 import pytest
 
+from retail_agent.infrastructure.charts.templates import TESTED_CHART_TEMPLATES
 from retail_agent.infrastructure.prompts.builder import (
     PromptResourceError,
     build_analysis_prompt,
@@ -10,7 +11,7 @@ from retail_agent.infrastructure.prompts.builder import (
 def test_analysis_prompt_combines_versioned_role_and_safety_rules():
     prompt = build_analysis_prompt()
 
-    assert prompt.version == "analysis-v10"
+    assert prompt.version == "analysis-v11"
     assert "Do not calculate or state averages, ratios, percentages" in prompt.instructions
     assert "must not introduce a new number" in prompt.instructions
     assert "retail data analysis assistant" in prompt.instructions
@@ -24,6 +25,7 @@ def test_analysis_prompt_combines_versioned_role_and_safety_rules():
     assert "Match the requested grain and scope exactly" in prompt.instructions
     assert "never use `CURRENT_DATE()`" in prompt.instructions
     assert "putting product name inside the ranking window destroys" in prompt.instructions
+    assert all(template.code.strip() in prompt.instructions for template in TESTED_CHART_TEMPLATES)
 
 
 def test_missing_prompt_resource_fails_clearly():

@@ -122,7 +122,7 @@ Implemented:
   credentials, two attempts use the global endpoint and the final attempt uses
   `us-central1` inside the same logical model request; completed tools are not
   restarted.
-  Gemini 2.5 Flash runs at temperature 0 with thinking disabled and a bounded
+  Gemini 3.5 Flash runs at temperature 0 with thinking disabled and a bounded
   output budget for predictable reviewer latency; the model remains configurable.
   Provider status, retry count, and terminal category are normalized without
   logging response bodies. Provider failures are translated at the agent boundary. If verified rows

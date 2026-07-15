@@ -7,7 +7,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from retail_agent.application.dto import AnalyzeQuestionResponse
+from retail_agent.application.dto import AnalyzeQuestionResponse, ReviewerDiagnostics
 from retail_agent.bootstrap import RuntimeOperationError
 from retail_agent.domain.errors import RetrievalError
 from retail_agent.domain.models import AgentFailure, QueryResult
@@ -164,3 +164,29 @@ def test_index_golden_converts_retrieval_failure_to_clean_exit(monkeypatch):
     assert result.exit_code == 1
     assert "Golden Knowledge indexing failed: Qdrant unavailable" in result.output
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("revision_matches", "prompt_matches"),
+    [(False, True), (True, False)],
+)
+def test_diagnostics_rejects_stale_revision_or_prompt_stamp(
+    monkeypatch, revision_matches, prompt_matches
+):
+    diagnostics_result = ReviewerDiagnostics(
+        values=(("Revision match", "yes"),),
+        revision_matches=revision_matches,
+        prompt_matches=prompt_matches,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime",
+        lambda *args, **kwargs: SimpleNamespace(
+            reviewer_diagnostics=lambda: diagnostics_result
+        ),
+    )
+
+    result = CliRunner().invoke(cli.app, ["diagnostics"])
+
+    assert result.exit_code == 1
+    assert "revision or prompt stamp is stale" in result.output

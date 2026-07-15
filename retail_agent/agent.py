@@ -16,19 +16,12 @@ from pydantic_ai import (
     Agent,
     FunctionToolset,
     ModelRetry,
-    ModelSettings,
     RunContext,
     ToolDefinition,
     UsageLimits,
 )
 from pydantic_ai.capabilities import ProcessHistory
-from pydantic_ai.exceptions import (
-    ModelAPIError,
-    ModelHTTPError,
-    ToolRetryError,
-    UnexpectedModelBehavior,
-    UsageLimitExceeded,
-)
+from pydantic_ai.exceptions import ToolRetryError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -61,6 +54,11 @@ from retail_agent.domain.policies.retrieval import (
     RETRIEVAL_ROUTING_RULE,
     is_schema_question,
     requires_golden_precedent,
+)
+from retail_agent.infrastructure.agents.google_model import (
+    analysis_model_settings,
+    is_provider_failure,
+    provider_failure_details,
 )
 from retail_agent.infrastructure.agents.runner import AnalysisAgentRunner
 from retail_agent.infrastructure.prompts.builder import build_analysis_prompt
@@ -588,7 +586,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
         instructions=prompt.instructions,
         retries={"output": config.agent_limits.output_retries},
         toolsets=[build_analysis_toolset(config)],
-        model_settings=_analysis_model_settings(config),
+        model_settings=analysis_model_settings(config),
         capabilities=[ProcessHistory(_process_message_history)],
         defer_model_check=True,
     )
@@ -603,15 +601,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
             return output
         query_result = ctx.deps.last_query_result
         if query_result is None:
-            ctx.deps.output_validation_retries = ctx.retry + 1
-            ctx.deps.output_retry_reasons.append("data_answer_without_query")
-            ctx.deps.logger.event(
-                ctx.deps.trace_id,
-                "output_validation_retry",
-                reason="data_answer_without_query",
-                retry_attempt=ctx.retry,
-                max_retries=ctx.max_retries,
-            )
+            _record_output_retry(ctx, "data_answer_without_query")
             raise ModelRetry("A data analysis result requires a successful run_sql_query call.")
         if query_result.truncated:
             return output
@@ -622,15 +612,7 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
             and ctx.deps.last_chart_artifact is None
             and ctx.deps.last_chart_failure_code is None
         ):
-            ctx.deps.output_validation_retries = ctx.retry + 1
-            ctx.deps.output_retry_reasons.append("chart_required")
-            ctx.deps.logger.event(
-                ctx.deps.trace_id,
-                "output_validation_retry",
-                reason="chart_required",
-                retry_attempt=ctx.retry,
-                max_retries=ctx.max_retries,
-            )
+            _record_output_retry(ctx, "chart_required")
             raise ModelRetry(
                 "The user explicitly requested a chart. Do not finish yet and do not rerun "
                 "SQL; call generate_chart with the verified rows, then return the narrative."
@@ -694,18 +676,6 @@ def build_analysis_agent(config: AgentConfig) -> Agent:
         return output
 
     return analysis_agent
-
-
-def _analysis_model_settings(config: AgentConfig) -> ModelSettings:
-    settings: dict[str, Any] = {
-        "temperature": config.model.temperature,
-        "max_tokens": config.model.max_output_tokens,
-    }
-    if config.model.llm_model.partition(":")[0] in {"google", "google-cloud"}:
-        settings["google_thinking_config"] = {
-            "thinking_budget": config.model.thinking_budget,
-        }
-    return ModelSettings(**settings)
 
 
 def _record_output_retry(
@@ -948,7 +918,7 @@ async def run_question(
                     model=analysis_model or config.model.llm_model,
                     message_history=history or None,
                     conversation_id=state.session_id,
-                    model_settings=_analysis_model_settings(config),
+                    model_settings=analysis_model_settings(config),
                     usage_limits=_usage_limits(config),
                 )
                 break
@@ -991,7 +961,7 @@ async def run_question(
             duration_ms=duration_ms,
             usage=None,
         )
-        provider_failure = _provider_failure_details(
+        provider_failure = provider_failure_details(
             exc,
             configured_attempts=config.model.provider_retry_attempts,
         )
@@ -1383,13 +1353,7 @@ def _record_tool_event(
     status: str,
     started: float,
 ) -> None:
-    event = {
-        "tool": tool_name,
-        "status": status,
-        "duration_ms": _duration_ms(started),
-    }
-    ctx.deps.tool_events.append(event)
-    ctx.deps.logger.event(ctx.deps.trace_id, "agent_tool_completed", **event)
+    _record_dependency_tool_event(ctx.deps, tool_name, status, started)
 
 
 def _record_dependency_tool_event(
@@ -1475,41 +1439,6 @@ def _truncated_query_report(
     )
 
 
-def _provider_failure_details(
-    exc: Exception,
-    *,
-    configured_attempts: int,
-) -> dict[str, Any]:
-    provider_exc = _nested_provider_exception(exc)
-    status_code = provider_exc.status_code if isinstance(provider_exc, ModelHTTPError) else None
-    if status_code == 429:
-        category = "rate_limited"
-    elif status_code in {408, 500, 502, 503, 504}:
-        category = "transient_provider_error"
-    elif isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError)):
-        category = "provider_unavailable"
-    else:
-        category = "non_provider_error"
-    retry_count = (
-        max(0, configured_attempts - 1) if status_code in {408, 429, 500, 502, 503, 504} else 0
-    )
-    return {
-        "provider_status": (
-            f"http_{status_code}"
-            if status_code is not None
-            else (
-                "transport_error"
-                if isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError))
-                else "not_applicable"
-            )
-        ),
-        "provider_status_code": status_code,
-        "provider_retry_count": retry_count,
-        "provider_terminal_category": category,
-        "provider_error_category": category,
-    }
-
-
 def _model_behavior_failure_category(exc: UnexpectedModelBehavior) -> str:
     normalized = " ".join(str(exc).casefold().split())
     if "output" in normalized and "retr" in normalized:
@@ -1559,27 +1488,9 @@ def _classify_failure(
         return "retry_exhausted", False
     if isinstance(exc, UsageLimitExceeded):
         return "model_unavailable", False
-    if isinstance(
-        _nested_provider_exception(exc),
-        (ModelAPIError, ConnectionError, TimeoutError),
-    ):
+    if is_provider_failure(exc):
         return "model_unavailable", True
     return "internal_error", False
-
-
-def _nested_provider_exception(exc: Exception) -> Exception:
-    if isinstance(exc, (ModelAPIError, ConnectionError, TimeoutError)):
-        return exc
-    if isinstance(exc, BaseExceptionGroup):
-        for nested in reversed(exc.exceptions):
-            if isinstance(nested, Exception):
-                provider_exc = _nested_provider_exception(nested)
-                if isinstance(
-                    provider_exc,
-                    (ModelAPIError, ConnectionError, TimeoutError),
-                ):
-                    return provider_exc
-    return exc
 
 
 def _failure_message(failure_code: FailureCode) -> str:

@@ -115,7 +115,7 @@ def test_chart_smoke_exercises_all_supported_libraries_and_heatmap(tmp_path):
         "matplotlib-png",
         "matplotlib-svg",
         "pandas-line",
-        "seaborn-bar",
+        "seaborn-grouped-bar",
         "six-month-category-heatmap",
     ]
     assert all(Path(item.artifact.path).is_file() for item in artifacts)

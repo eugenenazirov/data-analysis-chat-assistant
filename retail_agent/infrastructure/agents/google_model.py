@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from google.genai.types import HttpRetryOptions
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai import ModelSettings
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -12,6 +13,18 @@ from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 from retail_agent.infrastructure.settings import ApplicationSettings
 
 _RETRYABLE_HTTP_STATUS_CODES = [408, 429, 500, 502, 503, 504]
+
+
+def analysis_model_settings(config: ApplicationSettings) -> ModelSettings:
+    settings: dict[str, Any] = {
+        "temperature": config.model.temperature,
+        "max_tokens": config.model.max_output_tokens,
+    }
+    if config.model.llm_model.partition(":")[0] in {"google", "google-cloud"}:
+        settings["google_thinking_config"] = {
+            "thinking_budget": config.model.thinking_budget,
+        }
+    return ModelSettings(**settings)
 
 
 def build_analysis_model(config: ApplicationSettings) -> Any:
@@ -75,3 +88,62 @@ def build_analysis_model(config: ApplicationSettings) -> Any:
 
 def _is_retryable_provider_failure(exc: Exception) -> bool:
     return isinstance(exc, ModelHTTPError) and exc.status_code in _RETRYABLE_HTTP_STATUS_CODES
+
+
+def provider_failure_details(
+    exc: Exception,
+    *,
+    configured_attempts: int,
+) -> dict[str, Any]:
+    provider_exc = _nested_provider_exception(exc)
+    status_code = provider_exc.status_code if isinstance(provider_exc, ModelHTTPError) else None
+    if status_code == 429:
+        category = "rate_limited"
+    elif status_code in _RETRYABLE_HTTP_STATUS_CODES:
+        category = "transient_provider_error"
+    elif isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError)):
+        category = "provider_unavailable"
+    else:
+        category = "non_provider_error"
+    retry_count = (
+        max(0, configured_attempts - 1)
+        if status_code in _RETRYABLE_HTTP_STATUS_CODES
+        else 0
+    )
+    return {
+        "provider_status": (
+            f"http_{status_code}"
+            if status_code is not None
+            else (
+                "transport_error"
+                if isinstance(provider_exc, (ModelAPIError, ConnectionError, TimeoutError))
+                else "not_applicable"
+            )
+        ),
+        "provider_status_code": status_code,
+        "provider_retry_count": retry_count,
+        "provider_terminal_category": category,
+        "provider_error_category": category,
+    }
+
+
+def is_provider_failure(exc: Exception) -> bool:
+    return isinstance(
+        _nested_provider_exception(exc),
+        (ModelAPIError, ConnectionError, TimeoutError),
+    )
+
+
+def _nested_provider_exception(exc: Exception) -> Exception:
+    if isinstance(exc, (ModelAPIError, ConnectionError, TimeoutError)):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for nested in reversed(exc.exceptions):
+            if isinstance(nested, Exception):
+                provider_exc = _nested_provider_exception(nested)
+                if isinstance(
+                    provider_exc,
+                    (ModelAPIError, ConnectionError, TimeoutError),
+                ):
+                    return provider_exc
+    return exc

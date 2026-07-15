@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:${PYTHON_VERSION}-slim AS runtime
 
 ARG APP_REVISION=unknown
-ARG PROMPT_VERSION=analysis-v10
+ARG PROMPT_VERSION=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -49,7 +49,7 @@ COPY config ./config
 COPY data ./data
 
 RUN APP_REVISION="${APP_REVISION}" PROMPT_VERSION="${PROMPT_VERSION}" python -c \
-    'import json, os; from importlib.metadata import version; import matplotlib, numpy, pandas, seaborn; open("/app/build-metadata.json", "w", encoding="utf-8").write(json.dumps({"revision": os.environ["APP_REVISION"], "prompt_version": os.environ["PROMPT_VERSION"], "chart_runtime": {name: version(name) for name in ("matplotlib", "numpy", "pandas", "seaborn")}}, sort_keys=True))'
+    'import json, os; from importlib.metadata import version; import matplotlib, numpy, pandas, seaborn; from retail_agent.infrastructure.prompts.builder import PROMPT_VERSION; expected = os.environ["PROMPT_VERSION"]; assert expected in {"unknown", PROMPT_VERSION}, f"configured prompt {expected} does not match runtime {PROMPT_VERSION}"; open("/app/build-metadata.json", "w", encoding="utf-8").write(json.dumps({"revision": os.environ["APP_REVISION"], "prompt_version": PROMPT_VERSION, "chart_runtime": {name: version(name) for name in ("matplotlib", "numpy", "pandas", "seaborn")}}, sort_keys=True))'
 
 RUN install -d -o appuser -g appuser /app/logs /app/artifacts/charts
 
