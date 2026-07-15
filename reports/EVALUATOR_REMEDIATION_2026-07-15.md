@@ -115,7 +115,7 @@ per-provider-request timeout prevents silent multi-minute hangs.
 
 ## Verification
 
-- `just check`: pass; 448 tests, 89.64% branch-aware runtime coverage, all
+- `just check`: pass; 448 tests, 89.56% branch-aware runtime coverage, all
   fixtures, dataset governance, guardrails, and 67 replay cases pass.
 - Targeted provider/evaluator/CLI tests: 164 pass.
 - Full saved-attempt semantic regrade: 170/170 pass under quality-v8.

@@ -42,7 +42,7 @@ The credential-free suite covers:
 - evaluation contracts, deterministic scoring, reliability statistics, human
   calibration, release decisions, CI definitions, and image separation.
 
-Verified on 2026-07-15: 448 tests passed with 89.64% branch-aware runtime
+Verified on 2026-07-15: 448 tests passed with 89.56% branch-aware runtime
 coverage, above the 85% gate. The dated execution record is maintained in
 [`live-test-findings.md`](live-test-findings.md).
 

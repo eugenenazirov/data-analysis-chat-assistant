@@ -16,7 +16,7 @@ Verified on 2026-07-15 with Python 3.12 and uv 0.10.8:
 |---|---|
 | Lockfile, environment, and Ruff | Pass |
 | Pytest | 448 passed |
-| Branch-aware runtime coverage | 89.64% (85% gate) |
+| Branch-aware runtime coverage | 89.56% (85% gate) |
 | Fixture provenance and dataset governance | Pass |
 | Replay evaluation | 67/67 automated pass across six partitions |
 | BigQuery smoke under 50 MB cap | Pass; 4,356,216 dry-run bytes, one row |
