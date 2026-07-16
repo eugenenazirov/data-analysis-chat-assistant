@@ -111,8 +111,8 @@ references, then applies deterministic PII redaction.
    just bq-smoke
    ```
 
-Chart artifacts persist in the Compose `chart_artifacts` volume. Local uv runs
-write them to `artifacts/charts/` by default.
+Docker Compose and local uv runs both write chart artifacts directly to the
+host-visible `artifacts/charts/` directory.
 
 For an offline Qdrant smoke test, use deterministic demo embeddings:
 

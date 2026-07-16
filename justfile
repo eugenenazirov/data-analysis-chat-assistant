@@ -99,8 +99,13 @@ qdrant-up:
 qdrant-down:
     docker compose stop qdrant
 
+# Prepare the host bind mount for the non-root application container.
+_artifact-directory:
+    mkdir -p artifacts/charts
+    chmod a+rwx artifacts artifacts/charts
+
 # Build the exact application image used by reviewer-facing commands.
-_live-image:
+_live-image: _artifact-directory
     APP_REVISION="$(git rev-parse --short HEAD)" docker compose build app
 
 # Recreate the approved Golden Knowledge index with the current application image.

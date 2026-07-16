@@ -71,6 +71,8 @@ For a chart request, the final report must name a real file and the command must
 show `rows_returned`, `rows_available`, and `result=complete`. If more than 500
 rows are available, the correct behavior is a deterministic 20-row preview and
 a request to narrow the scope; no chart or completeness claim is allowed.
+Compose bind-mounts the application artifact directory to the host, so the
+reported `artifacts/charts/...` path can be opened directly from the repository.
 
 ## One Turn, End To End
 

@@ -32,10 +32,9 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /gcp/application_default_credentials.json
     volumes:
       - ./logs:/app/logs
-      - chart_artifacts:/app/artifacts
+      - ./artifacts:/app/artifacts
       - ${HOME}/.config/gcloud:/gcp:ro
     command: ["--help"]
 
 volumes:
   qdrant_storage:
-  chart_artifacts:

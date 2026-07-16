@@ -6,6 +6,8 @@ CI_PATH = Path(".github/workflows/ci.yml")
 LIVE_PATH = Path(".github/workflows/live-quality-eval.yml")
 RELEASE_PATH = Path(".github/workflows/release-quality-gate.yml")
 DOCKERFILE_PATH = Path("Dockerfile")
+COMPOSE_PATH = Path("compose.yaml")
+JUSTFILE_PATH = Path("justfile")
 
 
 def _load(path: Path) -> dict:
@@ -66,3 +68,13 @@ def test_evaluation_assets_are_readable_by_the_non_root_image_user():
     dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
 
     assert "COPY --chown=appuser:appuser evals ./evals" in dockerfile
+
+
+def test_compose_exposes_chart_artifacts_in_the_local_workspace():
+    compose = _load(COMPOSE_PATH)
+
+    assert "./artifacts:/app/artifacts" in compose["services"]["app"]["volumes"]
+    assert "chart_artifacts" not in compose["volumes"]
+    justfile = JUSTFILE_PATH.read_text(encoding="utf-8")
+    assert "_live-image: _artifact-directory" in justfile
+    assert "chmod a+rwx artifacts artifacts/charts" in justfile
