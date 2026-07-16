@@ -4,15 +4,25 @@ An interactive guide to the real request and data flow of
 `data-analysis-chat-assistant`. It runs independently of the Python runtime and does
 not require Google credentials, BigQuery, or Qdrant.
 
+From the repository root, the reviewer-facing entrypoint is:
+
+```bash
+just walkthrough-ui
+```
+
+See the root [Project Walkthrough](../PROJECT_WALKTHROUGH.md) for a recommended
+five-minute tour and the matching code paths.
+
 ## Run locally
 
 ```bash
 cd agent-flow-explorer
-npm install
-npm run dev
+npm ci
+npm run dev -- --port 5173 --strictPort
 ```
 
-Vite prints the local URL, which defaults to `http://127.0.0.1:5173`.
+Vite starts at `http://127.0.0.1:5173` and fails clearly if that port is already
+in use.
 
 Production verification:
 
@@ -36,7 +46,6 @@ Every technical label and code pointer is grounded in the current repository. Th
 is an explanatory static simulator: it does not call a real LLM or warehouse, and
 it is not a second product UI.
 
-## Design reference
+## Preview
 
-The visual reference used to build the interface:
-`design/agent-flight-deck-concept.png`.
+![Agent Flight Deck request-flow preview](design/agent-flight-deck-preview.jpg)

@@ -4,6 +4,40 @@ This is the reviewer entrypoint for the working prototype. It explains what is
 implemented, where each responsibility lives, how one question is processed,
 and which production capabilities remain design-only.
 
+## Interactive Tour: Agent Flight Deck
+
+Before configuring credentials or reading implementation details, launch the
+credential-free visual walkthrough from the repository root:
+
+```bash
+just walkthrough-ui
+```
+
+Then open [http://127.0.0.1:5173](http://127.0.0.1:5173). The recipe performs a
+locked `npm ci` inside `agent-flow-explorer/` and starts Vite on that exact
+address. Node.js 20 or newer is the only additional requirement.
+
+Without `just`, run the equivalent commands directly:
+
+```bash
+npm --prefix agent-flow-explorer ci
+npm --prefix agent-flow-explorer run dev -- --port 5173 --strictPort
+```
+
+Recommended five-minute path:
+
+| Tab | What to inspect |
+|---|---|
+| Request Flow | Play the full analytics path, then compare pre-model refusal, PII refusal, retrieval degradation, a result over 500 rows, and chart-only repair. |
+| Architecture | Select all four layers and verify that dependencies point inward toward domain and application contracts. |
+| Guardrails | Follow the independent gates before the model, inside the agent, at the SQL boundary, and after data retrieval. |
+| Telemetry | Switch scenarios and verify tool order, retries, degradation, artifact binding, and the terminal event in one trace. |
+
+The Flight Deck is an explanatory simulator whose labels and code references
+map to this repository. It performs no model, warehouse, or vector-store calls.
+The CLI remains the implemented product interface required by the assignment;
+the walkthrough exists only to make the prototype easier to review.
+
 ## What The Prototype Proves
 
 The application combines:
@@ -17,13 +51,14 @@ The application combines:
 - automatic PNG/SVG chart generation from verified rows;
 - a Clean Architecture application core reusable by another inbound adapter.
 
-The CLI is intentionally the only implemented UI. The production HLD specifies
-the durable API, identity, persistence, audit, promotion, and administrative
+The CLI is intentionally the only implemented product UI. The Agent Flight Deck
+is a reviewer-only explanatory companion. The production HLD specifies the
+durable API, identity, persistence, audit, promotion, and administrative
 workflows separately.
 
 ## Fast Reviewer Path
 
-Start with the complete credential-free gate:
+After the visual tour, run the complete credential-free gate:
 
 ```bash
 just check

@@ -16,6 +16,11 @@ setup:
     uv sync --frozen --all-groups
     uv pip check
 
+# Install and launch the credential-free interactive reviewer walkthrough.
+walkthrough-ui:
+    npm --prefix agent-flow-explorer ci
+    npm --prefix agent-flow-explorer run dev -- --port 5173 --strictPort
+
 # Check dependency consistency without changing the environment.
 _dependency-check:
     uv lock --check
@@ -150,12 +155,12 @@ reviewer-live: live-setup
 # Run the three-repetition credentialed smoke gate for MODEL (defaults to 3.5 Flash).
 release-canary: live-setup
     mkdir -p artifacts
-    QDRANT_URL=http://localhost:6333 GOOGLE_CLOUD_LLM_LOCATION=global GOOGLE_CLOUD_EMBEDDING_LOCATION=us-central1 LLM_MODEL="{{MODEL}}" uv run python -m evals.run quality --mode live --automated-only --cases evals/datasets/smoke.jsonl --repetitions 3 --inter-attempt-delay 5 --output artifacts/quality-eval-live-canary.json
+    QDRANT_URL=http://localhost:6333 GOOGLE_CLOUD_LLM_LOCATION=global GOOGLE_CLOUD_EMBEDDING_LOCATION=us-central1 LLM_MODEL="{{ MODEL }}" uv run python -m evals.run quality --mode live --automated-only --cases evals/datasets/smoke.jsonl --repetitions 3 --inter-attempt-delay 5 --output artifacts/quality-eval-live-canary.json
 
 # Run the 34-case, five-repetition credentialed release candidate for MODEL.
 release-live: live-setup
     mkdir -p artifacts
     cp evals/datasets/smoke.jsonl artifacts/release-cases.jsonl
     sed -e '$a\' evals/datasets/release_holdout.jsonl >> artifacts/release-cases.jsonl
-    QDRANT_URL=http://localhost:6333 GOOGLE_CLOUD_LLM_LOCATION=global GOOGLE_CLOUD_EMBEDDING_LOCATION=us-central1 LLM_MODEL="{{MODEL}}" uv run python -m evals.run quality --mode live --automated-only --cases artifacts/release-cases.jsonl --repetitions 5 --inter-attempt-delay 5 --output artifacts/quality-eval-live-release.json
+    QDRANT_URL=http://localhost:6333 GOOGLE_CLOUD_LLM_LOCATION=global GOOGLE_CLOUD_EMBEDDING_LOCATION=us-central1 LLM_MODEL="{{ MODEL }}" uv run python -m evals.run quality --mode live --automated-only --cases artifacts/release-cases.jsonl --repetitions 5 --inter-attempt-delay 5 --output artifacts/quality-eval-live-release.json
     uv run python -m evals.run human-review-form --report artifacts/quality-eval-live-release.json --cases artifacts/release-cases.jsonl --seed "$(git rev-parse HEAD)" --form-output artifacts/human-review-form.json --pairwise-output artifacts/human-pairwise-form.json --key-output artifacts/human-review-key.json

@@ -5,8 +5,27 @@ a production high-level design. The runtime uses Clean Architecture boundaries,
 PydanticAI 2.9 structured agents, BigQuery, Qdrant, Gemini, bounded multi-turn
 history, evidence validation, and automatic chart generation.
 
-For a reviewer-oriented code tour, start with
-[PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md).
+## Reviewer Quick Tour
+
+Start with the credential-free **Agent Flight Deck**. It visualizes eight
+request paths, Clean Architecture boundaries, independent safety gates, and the
+telemetry emitted across one turn:
+
+```bash
+just walkthrough-ui
+```
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173) and follow the four tabs from
+left to right. The walkthrough is a static reviewer aid grounded in the current
+code; it does not call Gemini, BigQuery, or Qdrant and is not a second product
+UI. If `just` is unavailable, use the equivalent npm commands in the
+[Agent Flight Deck README](agent-flow-explorer/README.md).
+
+![Agent Flight Deck request-flow preview](agent-flow-explorer/design/agent-flight-deck-preview.jpg)
+
+Continue with [PROJECT_WALKTHROUGH.md](PROJECT_WALKTHROUGH.md) for the matching
+code tour, reviewer commands, requirement map, and prototype-versus-production
+boundary.
 
 ## Command Shortcuts
 
@@ -15,6 +34,7 @@ shortcuts for the common developer and reviewer workflows. Run `just` to list
 every available recipe.
 
 ```bash
+just walkthrough-ui
 just setup
 just check
 just review

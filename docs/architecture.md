@@ -7,6 +7,11 @@ Assistant. The CLI in this repository is the working prototype; the API,
 administration, and persistence services below define the production target and
 are deliberately not represented as already implemented.
 
+For an interactive map of the implemented request flow and its runtime
+boundaries, run `just walkthrough-ui` from the repository root and follow the
+[Project Walkthrough](../PROJECT_WALKTHROUGH.md). Agent Flight Deck is a static
+reviewer companion, not part of the production topology described below.
+
 Kubernetes is the single reference runtime. The design is portable across EKS,
 GKE, AKS, and conformant on-premises clusters because application components use
 OCI containers and standard protocols rather than cloud-specific compute,
