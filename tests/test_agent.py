@@ -237,33 +237,40 @@ def test_run_question_defers_golden_retrieval_to_the_model(test_config, tmp_path
     assert "Golden Knowledge analyst precedents" not in fake_agent.calls[0]["prompt"]
     assert "Call only the tools needed" in fake_agent.calls[0]["prompt"]
     started = [event for event in _events(log_path) if event["event"] == "agent_run_started"]
-    assert started[0]["prompt_version"] == "analysis-v11"
+    assert started[0]["prompt_version"] == "analysis-v12"
     assert started[0]["reference_date"] == turn.reference_date.isoformat()
     assert started[0]["persona_version"] == "prototype-config-v1"
     assert started[0]["golden_index_version"] == "test_trios"
 
 
-def test_schema_question_is_deterministic_safe_and_skips_model_and_warehouse(
+def test_schema_question_uses_structured_agent_output_without_execution_tools(
     test_config, tmp_path
 ):
-    class TrackingBigQuery(FakeBigQueryRunner):
-        def __init__(self):
-            super().__init__()
-            self.schema_calls = 0
+    bigquery = FakeBigQueryRunner()
+    golden_store = FakeGoldenStore()
 
-        def describe_allowed_tables(self) -> str:
-            self.schema_calls += 1
-            return "unsafe physical schema"
+    async def callback(prompt, *, deps, **kwargs):
+        assert deps.schema_only is True
+        context = SimpleNamespace(deps=deps)
+        assert await agent.prepare_retrieval_tool(context, SimpleNamespace()) is None
+        assert await agent.prepare_sql_tool(context, SimpleNamespace()) is None
+        assert await agent.prepare_chart_tool(context, SimpleNamespace()) is None
+        return FakeRunResult(
+            output=SchemaExplanationResult(
+                explanation="The safe schema includes order_items and sale_price.",
+                caveats=["Direct identifiers are unavailable."],
+            ),
+            messages=[_message("schema explanation")],
+        )
 
-    bigquery = TrackingBigQuery()
-    fake_agent = FakeAnalysisAgent(lambda *args, **kwargs: pytest.fail("model was called"))
+    fake_agent = FakeAnalysisAgent(callback)
 
     turn = asyncio.run(
         agent.run_question(
             "What safe retail tables and columns can you analyze?",
             config=test_config,
             bigquery=bigquery,
-            golden_store=FakeGoldenStore(),
+            golden_store=golden_store,
             logger=EventLogger(tmp_path / "runs.jsonl"),
             user_id="manager_a",
             analysis_agent=fake_agent,
@@ -271,15 +278,13 @@ def test_schema_question_is_deterministic_safe_and_skips_model_and_warehouse(
     )
 
     assert isinstance(turn.response, AnalysisReport)
-    assert "safe analyzable schema" in turn.response.answer.lower()
+    assert "safe schema" in turn.response.answer.lower()
     assert "order_items" in turn.response.answer
     assert "sale_price" in turn.response.answer
-    assert "postal_code" not in turn.response.answer
-    assert "email" not in turn.response.answer
-    assert bigquery.schema_calls == 0
     assert bigquery.calls == []
-    assert fake_agent.calls == []
-    assert turn.operational.provider_requests == 0
+    assert golden_store.calls == []
+    assert len(fake_agent.calls) == 1
+    assert turn.operational.provider_requests == 1
     assert turn.operational.tool_sequence == []
     assert turn.conversation.turn_index == 1
 
@@ -374,18 +379,22 @@ def test_high_confidence_non_query_routes_skip_model_and_warehouse(
     assert turn.conversation.turn_index == 1
 
 
-def test_run_question_prefetches_required_golden_context_once(test_config, tmp_path):
+def test_run_question_leaves_golden_retrieval_to_the_agent(test_config, tmp_path):
     golden_store = FakeGoldenStore()
     bigquery = FakeBigQueryRunner()
 
     async def callback(prompt, *, deps, model_settings, **kwargs):
-        assert deps.retrieval_attempted is True
-        assert deps.retrieved_trio_ids == ["trio_monthly_revenue_category"]
-        assert deps.tool_sequence == ["retrieve_golden_examples"]
-        assert "Approved Golden Knowledge already retrieved" in prompt
-        assert golden_store.results[0].sql in prompt
+        assert deps.retrieval_attempted is False
+        assert deps.retrieved_trio_ids == []
+        assert deps.tool_sequence == []
+        assert "already retrieved" not in prompt
         assert model_settings["temperature"] == 0
         assert model_settings["google_thinking_config"] == {"thinking_budget": 0}
+        await agent.retrieve_golden_examples(
+            SimpleNamespace(deps=deps, retry=0, max_retries=0),
+            "Which products sell well but have high return risk?",
+            limit=1,
+        )
         await agent.run_sql_query(
             SimpleNamespace(deps=deps, retry=0, max_retries=2),
             "SELECT 42 AS order_count",
@@ -404,7 +413,7 @@ def test_run_question_prefetches_required_golden_context_once(test_config, tmp_p
             config=test_config,
             bigquery=bigquery,
             golden_store=golden_store,
-            logger=EventLogger(tmp_path / "required-retrieval.jsonl"),
+            logger=EventLogger(tmp_path / "model-selected-retrieval.jsonl"),
             user_id="manager_a",
             analysis_agent=FakeAnalysisAgent(callback),
         )
@@ -423,6 +432,24 @@ def test_run_question_prefetches_required_golden_context_once(test_config, tmp_p
 def test_retrieval_tool_is_hidden_after_first_attempt(test_config, tmp_path):
     deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
     deps.retrieval_attempted = True
+
+    prepared = asyncio.run(
+        agent.prepare_retrieval_tool(
+            SimpleNamespace(deps=deps),
+            SimpleNamespace(name="retrieve_golden_examples"),
+        )
+    )
+
+    assert prepared is None
+
+
+def test_retrieval_tool_is_hidden_after_query_success(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
+    deps.last_query_result = QueryResult(
+        sql="SELECT 1",
+        rows=[{"value": 1}],
+        total_rows=1,
+    )
 
     prepared = asyncio.run(
         agent.prepare_retrieval_tool(
@@ -569,9 +596,7 @@ def test_run_question_passes_history_and_contextualizes_follow_up(test_config, t
     assert second.response.answer == "It increased."
     assert second.conversation.turn_index == 2
     assert second.conversation.session_id == first.conversation.session_id
-    assert len(golden_store.calls) == 2
-    assert golden_store.calls[0]["question"] == "Revenue last month?"
-    assert golden_store.calls[1]["question"] == "Compare that with the prior month"
+    assert golden_store.calls == []
 
 
 def test_model_failure_returns_typed_failure_and_logs_event(test_config, tmp_path):
@@ -1011,7 +1036,7 @@ def test_sql_tool_returns_bounded_model_preview_and_retains_full_result(
     assert len(deps.last_query_result.rows) == 25
 
 
-def test_tool_order_rejects_retrieval_after_sql():
+def test_tool_order_rejects_retrieval_after_successful_sql():
     events = [
         {"tool": "retrieve_golden_examples", "status": "succeeded"},
         {"tool": "run_sql_query", "status": "succeeded"},
@@ -1019,6 +1044,16 @@ def test_tool_order_rejects_retrieval_after_sql():
     ]
 
     assert agent._tool_order_is_compliant(events) is False
+
+
+def test_tool_order_allows_retrieval_after_rejected_sql():
+    events = [
+        {"tool": "run_sql_query", "status": "rejected"},
+        {"tool": "retrieve_golden_examples", "status": "succeeded"},
+        {"tool": "run_sql_query", "status": "succeeded"},
+    ]
+
+    assert agent._tool_order_is_compliant(events) is True
 
 
 def test_sql_tool_does_not_model_retry_unknown_query_outcome(test_config, tmp_path):
@@ -1085,14 +1120,17 @@ def test_runtime_context_includes_identity_preferences_and_schema(test_config, t
     assert "Preferred report format" in context
 
 
-def test_sql_tool_waits_for_required_retrieval_attempt(test_config, tmp_path):
+def test_sql_tool_is_model_selectable_until_query_succeeds(test_config, tmp_path):
     deps = _agent_dependencies(test_config, tmp_path)
-    deps.retrieval_required = True
     definition = SimpleNamespace(name="run_sql_query")
 
-    hidden = asyncio.run(agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition))
+    initially_visible = asyncio.run(
+        agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition)
+    )
     deps.retrieval_attempted = True
-    visible = asyncio.run(agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition))
+    visible_after_retrieval = asyncio.run(
+        agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition)
+    )
     deps.last_query_result = QueryResult(
         sql="SELECT 1",
         rows=[{"value": 1}],
@@ -1102,8 +1140,8 @@ def test_sql_tool_waits_for_required_retrieval_attempt(test_config, tmp_path):
         agent.prepare_sql_tool(SimpleNamespace(deps=deps), definition)
     )
 
-    assert hidden is None
-    assert visible is definition
+    assert initially_visible is definition
+    assert visible_after_retrieval is definition
     assert hidden_after_success is None
 
 
@@ -1120,6 +1158,36 @@ def test_schema_only_question_hides_every_execution_tool(test_config, tmp_path):
     assert asyncio.run(agent.prepare_retrieval_tool(context, SimpleNamespace())) is None
     assert asyncio.run(agent.prepare_sql_tool(context, SimpleNamespace())) is None
     assert asyncio.run(agent.prepare_chart_tool(context, SimpleNamespace())) is None
+
+
+def test_native_schema_agent_receives_no_execution_tools(test_config, tmp_path):
+    deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
+    deps.schema_only = True
+
+    def model_function(messages, info):
+        assert info.function_tools == []
+        output_tool = next(
+            tool for tool in info.output_tools if tool.name.endswith("SchemaExplanationResult")
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    output_tool.name,
+                    {"explanation": "Orders and order items are available for analysis."},
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        agent.build_analysis_agent(test_config).run(
+            "Explain the safe schema.",
+            deps=deps,
+            model=FunctionModel(model_function),
+        )
+    )
+
+    assert isinstance(result.output, SchemaExplanationResult)
+    assert deps.tool_sequence == []
 
 
 @pytest.mark.parametrize("retry_budget", [0, 1, 2, 3])
@@ -1221,9 +1289,8 @@ def test_native_agent_continues_after_retrieval_degrades(test_config, tmp_path):
     assert deps.last_query_result is not None
 
 
-def test_required_retrieval_unlocks_sql_without_spending_retry_budget(test_config, tmp_path):
+def test_agent_can_choose_retrieval_before_already_visible_sql(test_config, tmp_path):
     deps = _agent_dependencies(test_config, tmp_path, golden_store=FakeGoldenStore())
-    deps.retrieval_required = True
     calls = 0
 
     def model_function(messages, info):
@@ -1232,7 +1299,7 @@ def test_required_retrieval_unlocks_sql_without_spending_retry_budget(test_confi
         tools = {tool.name for tool in info.function_tools}
         if calls == 1:
             assert "retrieve_golden_examples" in tools
-            assert "run_sql_query" not in tools
+            assert "run_sql_query" in tools
             return ModelResponse(
                 parts=[
                     ToolCallPart(
@@ -1242,6 +1309,7 @@ def test_required_retrieval_unlocks_sql_without_spending_retry_budget(test_confi
                 ]
             )
         if calls == 2:
+            assert "retrieve_golden_examples" not in tools
             assert "run_sql_query" in tools
             return ModelResponse(
                 parts=[ToolCallPart("run_sql_query", {"sql": "SELECT 42 AS order_count"})]

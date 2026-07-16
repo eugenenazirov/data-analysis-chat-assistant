@@ -39,7 +39,7 @@ just live-setup
 
 Expected outcome: Qdrant becomes healthy, the Golden index is recreated,
 diagnostics reports `Revision match: yes`, `Prompt match: yes`, and prompt
-`analysis-v11`; five
+`analysis-v12`; five
 chart smoke cases produce validated artifacts, including PNG, SVG, pandas,
 seaborn, and the 156-cell heatmap.
 
@@ -55,16 +55,16 @@ Qdrant-degraded turn. Run individual probes with `just ask`, `just chat`,
 `just diagnostics`, `just chart-smoke`, and `just bq-smoke`. Every command that
 uses the application image rebuilds it through Docker's cache first.
 
-Expected tool sequences:
+Expected evidence and tool patterns:
 
-| Flow | Expected tools |
+| Flow | Valid tools |
 |---|---|
-| Schema introduction | none; retrieval, SQL, and chart are hidden |
-| Simple analytical question | `run_sql_query` |
-| Ranking/time-window/comparison | application-prefetched `retrieve_golden_examples`, then `run_sql_query` |
-| Chart request | required retrieval when applicable, `run_sql_query`, then `generate_chart` |
+| Schema introduction | model returns structured schema output; retrieval, SQL, and chart are hidden |
+| Simple analytical question | `run_sql_query`; the agent may first use `retrieve_golden_examples` when precedent would help |
+| Ranking/time-window/comparison | agent-selected `retrieve_golden_examples` when useful, then `run_sql_query` |
+| Chart request | optional retrieval when useful, `run_sql_query`, then `generate_chart` |
 | PII-only or unsupported request | none; deterministic refusal or clarification |
-| PII request with a clear safe analytical intent | refuse direct identifiers; `run_sql_query` may return an aggregate keyed only by approved customer ID |
+| PII request with a clear safe analytical intent | refuse direct identifiers; optional retrieval may precede `run_sql_query`, which may return an aggregate keyed only by approved customer ID |
 | Retrieval outage | retrieval returns degraded, SQL continues, report has `degraded=true` and a caveat |
 
 For a chart request, the final report must name a real file and the command must
@@ -86,14 +86,13 @@ a request to narrow the scope; no chart or completeness claim is allowed.
    bounded context rather than a single previous-question string. The turn also
    receives one captured UTC reference date so relative SQL periods and numeric
    evidence validation use the same clock value.
-5. The application prefetches deterministically required Golden Knowledge once;
-   the PydanticAI `FunctionToolset` registers optional retrieval, SQL, and chart
-   tools. Schema-only requests hide all three execution tools. For classified
-   ranking, time-window, customer-behavior, return, comparison, and follow-up
-   questions, SQL remains hidden until the prefetch has completed, including a
-   typed degraded attempt. Schema, clarification, unsupported, and simple
-   unambiguous requests may expose SQL immediately. `generate_chart` remains
-   hidden until `run_sql_query` succeeds in the current run.
+5. The PydanticAI `FunctionToolset` registers retrieval, SQL, and chart tools.
+   The model chooses retrieval when approved analytical precedent would improve
+   the answer and may proceed directly to SQL when it would not. Retrieval is
+   bounded to one attempt and is hidden after SQL succeeds. Schema-only requests
+   keep structured model output while hiding all three execution tools.
+   `generate_chart` remains hidden until `run_sql_query` succeeds in the current
+   run.
 6. Retrieval returns approved precedents or a typed degraded result. It never
    presents an outage as an ordinary empty match set.
 7. SQL passes `sqlglot` validation, table/column allowlists, BigQuery dry run,
@@ -135,8 +134,8 @@ imports no PydanticAI, CLI, SDK, logging-vendor, or settings code.
   rejection shared by structured-output validation.
 - `policies/report_evidence.py`: runtime and evaluation numeric-evidence checks.
 - `policies/privacy.py`: recursive text/value redaction.
-- `policies/retrieval.py`: shared routing instructions and deterministic
-  precedent-required question classification.
+- `policies/retrieval.py`: model-facing retrieval guidance and high-confidence
+  schema-tool visibility classification.
 - `errors.py`: application-safe analytics, retrieval, and chart errors.
 
 ### Application
@@ -250,7 +249,7 @@ dataset, while the Docker `evaluation` target adds both.
 
 | Requirement | Prototype evidence | Production extension |
 |---|---|---|
-| Hybrid intelligence | Conditionally required approved-example retrieval with observable, non-blocking degradation | Human candidate review, versioned index promotion, rollback |
+| Hybrid intelligence | Model-selected approved-example retrieval with observable, non-blocking degradation | Human candidate review, versioned index promotion, rollback |
 | Safe analytics | AST guard, safe columns, byte/row/time limits, evidence checks | Warehouse policy, workload identity, network controls |
 | Multi-turn analysis | Conversation aggregate and complete bounded PydanticAI history | Durable PostgreSQL sessions and summaries |
 | Automatic charts | Dynamic post-query tool and local bounded executor | Isolated chart worker with separate credentials/resources |
@@ -264,7 +263,7 @@ dataset, while the Docker `evaluation` target adds both.
 `config/agent.yaml` is the readable baseline. Environment and `.env` aliases
 override it; explicit initialization has highest priority. Credentials use
 `SecretStr`. Prompt content is packaged at
-`retail_agent/infrastructure/prompts/templates/analysis-v11.md`; the exact tested
+`retail_agent/infrastructure/prompts/templates/analysis-v12.md`; the exact tested
 chart programs are injected from the shared chart-template module, and the prompt
 version is recorded in telemetry and image metadata.
 

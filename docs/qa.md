@@ -27,8 +27,8 @@ The credential-free suite covers:
 - settings precedence, validation, secret masking, and packaged prompts;
 - conversation isolation, bounded complete history, trajectory metrics, and
   tool-summary compaction;
-- deterministic mandatory retrieval, optional model-selected retrieval/SQL
-  paths, valid empty results, bounded retries,
+- bounded model-selected retrieval and SQL paths, schema-only tool hiding,
+  valid empty results, bounded retries,
   provider/warehouse failure boundaries, and duplicate-work prevention;
 - SQL AST, table/column/join scope, PII, projection, row, cost, timeout, stable
   job-ID, unknown-outcome, and safe-division controls;
@@ -42,8 +42,9 @@ The credential-free suite covers:
 - evaluation contracts, deterministic scoring, reliability statistics, human
   calibration, release decisions, CI definitions, and image separation.
 
-Verified on 2026-07-15: 448 tests passed with 89.56% branch-aware runtime
-coverage, above the 85% gate. The dated execution record is maintained in
+Latest local credential-free regression, verified on 2026-07-16: 431 tests
+passed with 89.67% branch-aware runtime coverage, above the 85% gate. The
+immutable reviewer and live-execution evidence remains in
 [`live-test-findings.md`](live-test-findings.md).
 
 ## Evaluation Dataset Contract

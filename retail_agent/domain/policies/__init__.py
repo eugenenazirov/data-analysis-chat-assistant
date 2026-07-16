@@ -20,7 +20,6 @@ from retail_agent.domain.policies.request_routing import (
 from retail_agent.domain.policies.retrieval import (
     RETRIEVAL_ROUTING_RULE,
     is_schema_question,
-    requires_golden_precedent,
 )
 
 __all__ = [
@@ -36,7 +35,6 @@ __all__ = [
     "redact_text",
     "redact_value",
     "is_schema_question",
-    "requires_golden_precedent",
     "report_uses_verified_sql",
     "validate_query_semantics",
 ]

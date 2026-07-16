@@ -50,11 +50,7 @@ from retail_agent.domain.policies.analysis_output import (
 from retail_agent.domain.policies.query_semantics import validate_query_semantics
 from retail_agent.domain.policies.report_evidence import assess_report_evidence
 from retail_agent.domain.policies.request_routing import classify_non_query_request
-from retail_agent.domain.policies.retrieval import (
-    RETRIEVAL_ROUTING_RULE,
-    is_schema_question,
-    requires_golden_precedent,
-)
+from retail_agent.domain.policies.retrieval import is_schema_question
 from retail_agent.infrastructure.agents.google_model import (
     analysis_model_settings,
     is_provider_failure,
@@ -153,7 +149,6 @@ class AgentDependencies:
     last_tool_failure_retryable: bool = False
     sql_tool_invoked: bool = False
     retrieval_attempted: bool = False
-    retrieval_required: bool = False
     retrieval_degraded: bool = False
     schema_only: bool = False
     chart_requested: bool = False
@@ -285,7 +280,7 @@ async def _retrieve_golden_context(
     retry: int = 0,
     max_retries: int = 0,
 ) -> GoldenRetrievalResult:
-    """Run one bounded retrieval, whether orchestrated by the app or the model."""
+    """Run one bounded retrieval selected by the analysis agent."""
 
     started = time.perf_counter()
     deps.retrieval_attempted = True
@@ -443,7 +438,13 @@ async def prepare_retrieval_tool(
     ctx: RunContext[AgentDependencies],
     tool_definition: ToolDefinition,
 ) -> ToolDefinition | None:
-    return None if ctx.deps.schema_only or ctx.deps.retrieval_attempted else tool_definition
+    if (
+        ctx.deps.schema_only
+        or ctx.deps.retrieval_attempted
+        or ctx.deps.last_query_result is not None
+    ):
+        return None
+    return tool_definition
 
 
 async def prepare_sql_tool(
@@ -453,7 +454,6 @@ async def prepare_sql_tool(
     if (
         ctx.deps.schema_only
         or ctx.deps.last_query_result is not None
-        or (ctx.deps.retrieval_required and not ctx.deps.retrieval_attempted)
     ):
         return None
     return tool_definition
@@ -546,7 +546,6 @@ async def generate_chart(
 def build_analysis_toolset(config: AgentConfig) -> FunctionToolset[AgentDependencies]:
     toolset = FunctionToolset[AgentDependencies](
         instructions=(
-            f"{RETRIEVAL_ROUTING_RULE}\n\n"
             "Tool mechanics: run_sql_query returns bounded preview_rows from the only "
             "verified current result; the runtime retains and attaches the complete table. "
             "generate_chart appears only after a successful query and reads the complete "
@@ -750,17 +749,6 @@ def _format_verified_value(column: str, value: Any) -> str:
     return f"{value:,.3f}".rstrip("0").rstrip(".")
 
 
-def _retrieval_query(
-    question: str,
-    prior_query_results: tuple[QueryResult, ...],
-) -> str:
-    if not prior_query_results:
-        return question
-    return (
-        f"Follow-up question: {question}\nPrior verified cohort SQL: {prior_query_results[-1].sql}"
-    )
-
-
 def _prior_cohort_context(prior_query_results: tuple[QueryResult, ...]) -> str:
     if not prior_query_results:
         return ""
@@ -773,14 +761,9 @@ def _prior_cohort_context(prior_query_results: tuple[QueryResult, ...]) -> str:
     )
 
 
-def _retrieved_golden_context(deps: AgentDependencies) -> str:
-    if not deps.retrieval_attempted:
-        return ""
-    if not deps.retrieved_trios:
-        return (
-            "Approved Golden Knowledge retrieval was attempted but unavailable. "
-            "Proceed only with the verified schema and disclose degradation.\n"
-        )
+def _retrieved_golden_recovery_context(
+    retrieved_trios: Sequence[RetrievedTrio],
+) -> str:
     examples = [
         {
             "id": example.id,
@@ -788,11 +771,11 @@ def _retrieved_golden_context(deps: AgentDependencies) -> str:
             "sql": example.sql,
             "analyst_report": example.analyst_report,
         }
-        for example in deps.retrieved_trios
+        for example in retrieved_trios
     ]
     return (
-        "Approved Golden Knowledge already retrieved by the application; do not call "
-        "retrieve_golden_examples again. Apply relevant definitions, then run SQL:\n"
+        "Approved Golden Knowledge was already retrieved in the prior model attempt; do "
+        "not call retrieve_golden_examples again. Apply relevant definitions, then run SQL:\n"
         f"{json.dumps(examples, separators=(',', ':'))}\n"
     )
 
@@ -821,10 +804,6 @@ async def run_question(
         config.conversation.max_history_turns,
         config.conversation.max_history_bytes,
     )
-    retrieval_required = requires_golden_precedent(
-        question,
-        has_history=bool(history),
-    )
     schema_only = is_schema_question(question)
     non_query_disposition = classify_non_query_request(question)
     logger.event(
@@ -835,7 +814,7 @@ async def run_question(
         session_id=state.session_id,
         turn_index=turn_index,
         history_messages=len(history),
-        retrieval_required=retrieval_required,
+        retrieval_strategy="model_selected",
         schema_only=schema_only,
         deterministic_disposition=(
             non_query_disposition.kind if non_query_disposition is not None else None
@@ -847,22 +826,16 @@ async def run_question(
         golden_index_version=config.retrieval.collection,
     )
 
-    if schema_only or non_query_disposition is not None:
-        if schema_only:
-            response = _safe_schema_report(question, config, trace_id)
-            deterministic_route = "schema"
-        else:
-            assert non_query_disposition is not None
-            response = AnalysisReport(
-                question=question,
-                answer=non_query_disposition.answer,
-                refused=non_query_disposition.refused,
-                trace_id=trace_id,
-            )
-            deterministic_route = non_query_disposition.kind
+    if non_query_disposition is not None:
+        response = AnalysisReport(
+            question=question,
+            answer=non_query_disposition.answer,
+            refused=non_query_disposition.refused,
+            trace_id=trace_id,
+        )
         return _complete_deterministic_turn(
             response=response,
-            route=deterministic_route,
+            route=non_query_disposition.kind,
             config=config,
             logger=logger,
             state=state,
@@ -887,24 +860,15 @@ async def run_question(
             for result in state.completed_query_results
             if result is not None and not result.truncated
         ),
-        retrieval_required=retrieval_required,
         schema_only=schema_only,
         chart_requested=bool(_CHART_REQUEST_PATTERN.search(question)),
     )
-
-    if retrieval_required:
-        await _retrieve_golden_context(
-            deps,
-            question=_retrieval_query(question, deps.prior_query_results),
-            limit=1,
-        )
 
     prompt = (
         f"User question: {question}\n"
         "Use the bounded conversation history to resolve follow-up references. "
         "Call only the tools needed for this question.\n"
         f"{_prior_cohort_context(deps.prior_query_results)}"
-        f"{_retrieved_golden_context(deps)}"
         f"Return a report matching preferred format {user.preferred_format}."
     )
     runner = analysis_agent or build_analysis_agent(config)
@@ -1137,31 +1101,6 @@ def _complete_deterministic_turn(
         reference_date=reference_date,
         trace_id=trace_id,
         operational=operational,
-    )
-
-
-def _safe_schema_report(
-    question: str,
-    config: AgentConfig,
-    trace_id: str,
-) -> AnalysisReport:
-    lines = ["Safe analyzable schema:"]
-    for table_name in config.bigquery.allowed_tables:
-        columns = config.safety.safe_columns_by_table[table_name]
-        rendered_columns = ", ".join(f"`{column}`" for column in columns)
-        full_name = f"{config.bigquery.dataset}.{table_name}"
-        lines.append(f"- `{full_name}`: {rendered_columns}")
-    return AnalysisReport(
-        question=question,
-        answer="\n".join(lines),
-        caveats=[
-            "Columns not listed are unavailable to analysis, including direct "
-            "identifiers and precise location fields."
-        ],
-        followups=[
-            "Ask for an aggregate metric, comparison, trend, or chart using these fields."
-        ],
-        trace_id=trace_id,
     )
 
 
@@ -1457,7 +1396,7 @@ def _model_behavior_recovery_prompt(prompt: str, deps: AgentDependencies) -> str
         "warehouse query."
     ]
     if deps.retrieved_trios:
-        context.append(_retrieved_golden_context(deps))
+        context.append(_retrieved_golden_recovery_context(deps.retrieved_trios))
     if deps.last_query_result is not None:
         rows, _ = redact_value(deps.last_query_result.rows[:2])
         columns = sorted(
@@ -1597,9 +1536,6 @@ def _minimum_current_model_requests(deps: AgentDependencies) -> int:
 
 
 def _tool_order_is_compliant(tool_events: list[dict[str, Any]]) -> bool:
-    sql_events = [
-        index for index, event in enumerate(tool_events) if event["tool"] == "run_sql_query"
-    ]
     successful_sql = [
         index
         for index, event in enumerate(tool_events)
@@ -1607,8 +1543,8 @@ def _tool_order_is_compliant(tool_events: list[dict[str, Any]]) -> bool:
     ]
     if len(successful_sql) > 1:
         return False
-    if sql_events and any(
-        index > sql_events[0]
+    if successful_sql and any(
+        index > successful_sql[0]
         for index, event in enumerate(tool_events)
         if event["tool"] == "retrieve_golden_examples"
     ):

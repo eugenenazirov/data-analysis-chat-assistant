@@ -184,18 +184,17 @@ sequenceDiagram
     API->>DB: Lock session version and load summary and recent turns
     DB-->>API: Pinned versions + bounded history
     API->>A: Question + bounded complete history + pinned versions
-    alt Precedent required by the versioned routing policy
-        API->>Q: Prefetch top-k once from active index version
-        Q-->>API: Approved trios or typed degraded result
-        API->>A: Question + bounded history + approved context
-    else Schema, clarification, unsupported, or simple unambiguous request
-        A->>A: Continue without retrieval
+    opt Model selects approved precedent
+        A->>Q: Retrieval tool with standalone contextualized question
+        Q-->>A: Approved trios or typed degraded result
     end
-    A->>G: Proposed SQL tool call
-    G->>G: Parse, allowlist, PII, row and cost controls
-    G->>W: Dry-run and execute with stable job ID
-    W-->>G: Verified QueryResult or typed outcome
-    G-->>A: Up to 500 rows + complete available count, or bounded retry feedback
+    opt Model selects warehouse analysis
+        A->>G: Proposed SQL tool call
+        G->>G: Parse, allowlist, PII, row and cost controls
+        G->>W: Dry-run and execute with stable job ID
+        W-->>G: Verified QueryResult or typed outcome
+        G-->>A: Up to 500 rows + complete available count, or bounded retry feedback
+    end
     opt Model requests a chart after verified SQL
         A->>C: Bounded code + verified rows
         C-->>A: Validated artifact reference or typed failure

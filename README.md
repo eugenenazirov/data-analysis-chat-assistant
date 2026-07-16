@@ -42,16 +42,18 @@ Infrastructure adapters (Gemini, BigQuery, Qdrant, charts, telemetry)
 selects a conversation, calls use cases, renders DTOs, and maps exit codes. A
 future HTTP adapter can invoke the same `AnalyzeQuestion` use case.
 
-During a turn, the application orchestrates mandatory precedent retrieval and
-the PydanticAI agent chooses among the remaining bounded tools:
+During a turn, the PydanticAI agent chooses among bounded tools:
 
-- `retrieve_golden_examples`: rankings, time windows, customer behavior,
-  returns, comparisons, and follow-up cohorts are prefetched exactly once before
-  the model runs; optional retrieval remains model-callable for other questions,
-  while schema, clarification, unsupported, and simple unambiguous requests may
-  skip it;
+- `retrieve_golden_examples`: model-selected approved precedent for metrics,
+  cohorts, joins, filters, rankings, time windows, comparisons, returns,
+  customer behavior, and follow-ups; the tool is skipped when it would not
+  improve the answer and is unavailable after SQL succeeds;
 - `run_sql_query`: guarded, dry-run-checked, read-only BigQuery execution;
 - `generate_chart`: dynamically hidden until the current turn has verified rows.
+
+Schema-only questions still use structured agent output, but dynamic tool
+preparation hides retrieval, SQL, and chart execution so an introduction cannot
+accidentally reach external data systems.
 
 Data answers use a discriminated structured output and require successful SQL.
 The runtime attaches only the SQL actually executed, checks numeric claims

@@ -8,7 +8,7 @@ from retail_agent.domain.policies.analysis_output import NARRATIVE_OUTPUT_RULE
 from retail_agent.domain.policies.retrieval import RETRIEVAL_ROUTING_RULE
 from retail_agent.infrastructure.charts.templates import render_tested_chart_templates
 
-PROMPT_VERSION = "analysis-v11"
+PROMPT_VERSION = "analysis-v12"
 PROMPT_RESOURCE = f"{PROMPT_VERSION}.md"
 
 SAFETY_RULES = (
