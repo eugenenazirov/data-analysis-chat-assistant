@@ -41,7 +41,7 @@ jobs:
           [[ "$workflow_name" == "Live answer-quality candidate" ]]
           [[ "$head_branch" == "$DEFAULT_BRANCH" ]]
           [[ "$conclusion" == "success" ]]
-          [[ "$event" == "schedule" || "$event" == "workflow_dispatch" ]]
+          [[ "$event" == "workflow_dispatch" ]]
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
       - name: Check out evaluated revision

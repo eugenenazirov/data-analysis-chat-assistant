@@ -202,12 +202,16 @@ The workflows separate three decisions:
    on pushes and pull requests.
 2. `Live answer-quality candidate` runs only on the default branch in the
    protected `quality-live-evaluation` environment with workload identity. The
-   daily canary uses smoke × 3; the manually selected release candidate uses
-   smoke plus holdout × 5.
+   manually selected canary uses smoke × 3; the manually selected release
+   candidate uses smoke plus holdout × 5.
 3. `Approve live quality candidate` accepts a successful candidate run ID,
    checks the workflow, event, default branch, exact revision, provenance, and
    every recorded SHA-256 digest, then decides from the downloaded artifact and
    submitted reviews without invoking Gemini or BigQuery.
+
+Before either manual candidate run, configure the `quality-live-evaluation`
+environment with `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT`
+secrets plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` variables.
 
 GitHub artifacts are the handoff boundary between runs, matching GitHub's
 [workflow artifact guidance](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts).

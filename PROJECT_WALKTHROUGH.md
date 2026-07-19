@@ -292,7 +292,7 @@ dataset, while the Docker `evaluation` target adds both.
 | Automatic charts | Dynamic post-query tool and local bounded executor | Isolated chart worker with separate credentials/resources |
 | Resilience | Typed failures, safe retry boundary, degraded verified-row report | Circuit breakers, HA storage, recovery objectives |
 | Observability | Trace/session IDs, versions, tool timings, usage, retries, degradation | OpenTelemetry metrics/logs/traces and alerts |
-| Quality assurance | Branch-gated tests, guardrails, 67 partitioned replay cases, repeated-live and human-gate tests, runtime/evaluation image checks | Scheduled canary plus protected release-candidate and analyst approval workflows |
+| Quality assurance | Branch-gated tests, guardrails, 67 partitioned replay cases, repeated-live and human-gate tests, runtime/evaluation image checks | Manually triggered protected canary, release-candidate, and analyst approval workflows |
 | Saved reports/personas | HLD only | OIDC, PostgreSQL, confirmations, audit, admin UI |
 
 ## Configuration And Versions
@@ -337,7 +337,7 @@ the full 34-case release candidate or two-reviewer packet.
   Golden candidate promotion are production-design-only.
 - The local chart subprocess cannot defend against determined malicious code.
 - Live Gemini/BigQuery behavior requires credentials and is covered by a
-  default-branch-only protected scheduled/manual workflow. Release approval
+  default-branch-only protected manual workflow. Release approval
   verifies and consumes the frozen candidate artifact without another live run.
 
 Those boundaries are deliberate and do not change the inward dependency rule or

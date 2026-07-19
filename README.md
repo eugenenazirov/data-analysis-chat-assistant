@@ -196,9 +196,9 @@ docker run --rm retail-agent-evaluation:local guardrails
 docker run --rm retail-agent-evaluation:local quality --mode replay
 ```
 
-Credentialed evaluation is tiered. The daily canary repeats the smoke set three
-times; a manually selected release candidate repeats smoke plus the held-out set
-five times. Both run only from the default branch in the protected
+Credentialed evaluation is tiered. A manually selected canary repeats the smoke
+set three times; a manually selected release candidate repeats smoke plus the
+held-out set five times. Both run only from the default branch in the protected
 `quality-live-evaluation` environment, use workload identity, enforce a
 per-query BigQuery cap, record reference-query cost separately, and upload
 content-addressed evidence. Release approval consumes that frozen evidence

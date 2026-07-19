@@ -1,8 +1,6 @@
 name: Live answer-quality candidate
 
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       tier:
@@ -19,7 +17,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: live-quality-${{ github.ref }}-${{ github.event_name == 'schedule' && 'canary' || inputs.tier }}
+  group: live-quality-${{ github.ref }}-${{ inputs.tier }}
   cancel-in-progress: false
 
 jobs:
@@ -34,7 +32,7 @@ jobs:
         ports:
           - 6333:6333
     env:
-      EVAL_TIER: ${{ github.event_name == 'schedule' && 'canary' || inputs.tier }}
+      EVAL_TIER: ${{ inputs.tier }}
       EMBEDDING_PROVIDER: gemini
       LLM_MODEL: google-cloud:gemini-3.5-flash
       BQ_MAX_BYTES_BILLED: "50000000"
@@ -44,6 +42,21 @@ jobs:
       GOOGLE_CLOUD_EMBEDDING_LOCATION: ${{ vars.GOOGLE_CLOUD_LOCATION }}
       QDRANT_URL: http://localhost:6333
     steps:
+      - name: Verify live evaluation configuration
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          missing=()
+          [[ -n "$GCP_WORKLOAD_IDENTITY_PROVIDER" ]] || missing+=("secret:GCP_WORKLOAD_IDENTITY_PROVIDER")
+          [[ -n "$GCP_SERVICE_ACCOUNT" ]] || missing+=("secret:GCP_SERVICE_ACCOUNT")
+          [[ -n "$GOOGLE_CLOUD_PROJECT" ]] || missing+=("variable:GOOGLE_CLOUD_PROJECT")
+          [[ -n "$GOOGLE_CLOUD_LOCATION" ]] || missing+=("variable:GOOGLE_CLOUD_LOCATION")
+          if (( ${#missing[@]} )); then
+            printf '::error::Missing quality-live-evaluation configuration: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
@@ -137,7 +150,7 @@ jobs:
           PY
 
       - name: Upload immutable evaluation evidence
-        if: always()
+        if: ${{ always() && hashFiles('artifacts/**') != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: live-eval-${{ env.EVAL_TIER }}-${{ github.run_id }}

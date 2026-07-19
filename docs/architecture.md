@@ -430,14 +430,15 @@ partition policy before unit/integration tests, guardrails, and every replay
 partition.
 
 Credentialed evaluation runs on the default branch in a protected environment
-using federated identity. A three-repetition smoke canary provides daily drift
-detection. A five-repetition release candidate combines smoke and held-out cases,
-freezes candidate/reference telemetry plus file digests, and creates separate
-blind A/B and pointwise analyst packets. The assignment key stays restricted.
-Approval accepts a specific successful candidate-run ID, verifies workflow,
-branch, revision, event, artifact provenance, and hashes, then combines the
-frozen report with two-reviewer structured scores. It never reruns the model or
-warehouse during approval.
+using federated identity. A manually triggered three-repetition smoke canary
+provides on-demand drift detection. A manually triggered five-repetition release
+candidate combines smoke and held-out cases, freezes candidate/reference
+telemetry plus file digests, and creates separate blind A/B and pointwise analyst
+packets. The assignment key stays restricted. Approval accepts a specific
+successful candidate-run ID, verifies workflow, branch, revision, event,
+artifact provenance, and hashes, then combines the frozen report with
+two-reviewer structured scores. It never reruns the model or warehouse during
+approval.
 
 A release is promoted only when automated thresholds, stability, operational
 budgets, human dimension floors, resolved disagreements/rejections, and blinded
